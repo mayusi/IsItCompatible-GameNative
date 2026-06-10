@@ -7,6 +7,8 @@ import com.winlator.container.ContainerData
  *
  * [config]            : the ContainerData that was tested.
  * [description]       : human-readable description of what was swept (e.g. "Turnip 26.2.0 + dxvk 2.4.1").
+ * [shortLabel]        : compact description with the "Pass N · DimName:" prefix stripped,
+ *                       e.g. "Turnip V30 + dxvk + Box64 Perf". Populated by aggregateRuns/runTrial.
  * [status]            : STABLE = completed + hit FPS threshold; UNSTABLE = completed but low fps;
  *                       HUNG / CRASHED / SKIPPED = did not complete normally.
  * [avgFps]            : mean FPS across the measurement window (0 if not measured).
@@ -30,6 +32,20 @@ import com.winlator.container.ContainerData
  * [outlierFlagged]    : true if the multi-run FPS readings differed by > 40%, suggesting
  *                       one run was a thermal/cache artifact. The average is still used but
  *                       this flag lets the UI surface a warning.
+ *
+ * --- v1.11.0 IIC additions (all have defaults — existing code compiles unchanged) ---
+ *
+ * [bootSucceeded]          : true if the game window appeared and did NOT crash within the
+ *                            PROBE measure window. Used only by COMPAT_PROBE ranking.
+ * [avgPowerW]              : mean power draw in watts during the trial (discharging samples only).
+ *                            Null if device was charging or sysfs path unreadable.
+ * [chargeCounterDeltaUAh]  : battery charge-counter delta (µAh) from trial start to end.
+ *                            Null if unreadable or device was not discharging.
+ * [fpsNormScore]           : normalised FPS score [0..1] computed post-sweep (avgFps / maxAvgFps).
+ * [stabNormScore]          : normalised stability score [0..1] (1 - fpsStdDev / maxStdDev).
+ * [battNormScore]          : normalised battery score [0..1] (1 - avgPowerW / maxPowerW).
+ *                            Null if no battery signal was available.
+ * [tempNormScore]          : normalised temperature score [0..1] (1 - gpuTempEndC / 80).coerceIn(0,1).
  */
 data class TunerResult(
     val config: ContainerData,
@@ -48,6 +64,24 @@ data class TunerResult(
     val runsCompleted: Int = 1,
     /** True if multi-run FPS readings differed by > 40% — one run may be a thermal artifact. */
     val outlierFlagged: Boolean = false,
+
+    // --- v1.11.0 IIC additions -----------------------------------------------
+    /** Short label with "Pass N · DimName:" prefix stripped. e.g. "Turnip V30 + dxvk + Box64 Perf". */
+    val shortLabel: String = "",
+    /** COMPAT_PROBE: true if game window appeared and did not crash within the probe measure window. */
+    val bootSucceeded: Boolean = false,
+    /** Mean power draw in watts averaged over discharging-only samples; null if unavailable. */
+    val avgPowerW: Float? = null,
+    /** Battery charge-counter delta (µAh) over the trial; null if unreadable. */
+    val chargeCounterDeltaUAh: Int? = null,
+    /** Normalised FPS score in [0..1] (computed post-sweep by composite ranker). */
+    val fpsNormScore: Float = 0f,
+    /** Normalised stability score in [0..1] (computed post-sweep by composite ranker). */
+    val stabNormScore: Float = 0f,
+    /** Normalised battery score in [0..1]; null if battery signal not available. */
+    val battNormScore: Float? = null,
+    /** Normalised temperature score in [0..1] (computed post-sweep by composite ranker). */
+    val tempNormScore: Float = 0f,
 ) {
     enum class TrialStatus {
         /** Completed measurement; avgFps >= playable threshold */
@@ -71,6 +105,24 @@ data class TunerResult(
 
         /** FPS floor below which a completed run is UNSTABLE rather than STABLE. */
         const val PLAYABLE_FPS_THRESHOLD = 25f
+
+        /**
+         * Strips the "Pass N · DimName:" prefix from a trial description to produce a
+         * compact short label.
+         *
+         * e.g. "Pass 1 · Driver: Wrapper: Turnip Gen8 V30" → "Turnip Gen8 V30"
+         *      "Pass 1 · DX Wrapper: dxvk"                 → "dxvk"
+         *      "Turnip-latest + dxvk (probe)"               → "Turnip-latest + dxvk (probe)"
+         */
+        fun buildShortLabel(description: String): String {
+            // Strip "Pass N · <DimLabel>: " prefix if present
+            val colonIdx = description.lastIndexOf(": ")
+            return if (colonIdx >= 0 && description.contains("·")) {
+                description.substring(colonIdx + 2).trim()
+            } else {
+                description.trim()
+            }
+        }
     }
 
     /**

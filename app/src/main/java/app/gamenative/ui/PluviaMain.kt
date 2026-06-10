@@ -1418,13 +1418,22 @@ fun PluviaMain(
                         }
                     }
 
+                    // Refresh the real discharge state each time the setup dialog opens so
+                    // the FPS_BATTERY charging-warning reflects reality before the sweep starts.
+                    LaunchedEffect(autoTunerSetupAppId) {
+                        if (autoTunerSetupAppId != null) {
+                            autoTunerViewModel.refreshBatteryState()
+                        }
+                    }
+
                     // Show AutoTuner setup dialog if triggered
                     autoTunerSetupAppId?.let { tunerAppId ->
                         val gameName = ContainerUtils.resolveGameName(tunerAppId)
                         AutoTunerSetupDialog(
                             gameName = gameName,
+                            batteryAvailable = autoTunerViewModel.uiState.collectAsStateWithLifecycle().value.batteryAvailable,
                             onDismiss = { autoTunerSetupAppId = null },
-                            onStart = { goal, mode, measurementMode ->
+                            onStart = { goal, mode, measurementMode, customWeights ->
                                 autoTunerSetupAppId = null
                                 autoTunerViewModel.startTuning(
                                     context = context,
@@ -1432,6 +1441,7 @@ fun PluviaMain(
                                     goal = goal,
                                     mode = mode,
                                     measurementMode = measurementMode,
+                                    customWeights = customWeights,
                                 )
                                 navController.navigate(PluviaScreen.AutoTunerProgress.route(tunerAppId))
                             },

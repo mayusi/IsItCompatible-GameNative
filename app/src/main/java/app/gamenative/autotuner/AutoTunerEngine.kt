@@ -26,6 +26,9 @@ import java.io.File
 //
 //  STEP 1 — Create the engine:
 //      val engine = AutoTunerEngine(context, appId, goal, mode, measurementMode)
+//      // Optional: pass customWeights for TunerGoal.CUSTOM
+//      val engine = AutoTunerEngine(context, appId, TunerGoal.CUSTOM, mode, measurementMode,
+//                                   customWeights = GoalWeights(0.5f, 0.3f, 0.1f, 0.1f))
 //
 //  STEP 2 — Observe progress flow (collect on a lifecycle-aware scope):
 //      engine.progressFlow.collect { progress -> updateUI(progress) }
@@ -84,7 +87,12 @@ enum class MeasurementMode { AUTO, MANUAL }
 /** Progress events emitted by AutoTunerEngine on progressFlow. */
 sealed class TunerProgress {
     /** Sweep initialised; total trial count known. */
-    data class Started(val total: Int, val estimatedMinutes: Int) : TunerProgress()
+    data class Started(
+        val total: Int,
+        val estimatedMinutes: Int,
+        /** True if the device is discharging at sweep start (battery signal available). */
+        val batteryAvailable: Boolean = false,
+    ) : TunerProgress()
 
     /** Engine is preparing configuration for trial [trialIndex]. */
     data class Preparing(
@@ -133,6 +141,10 @@ sealed class TunerProgress {
         val runIndex: Int = 1,
         /** How many runs this config will be measured. 1 for QUICK. */
         val runsPerConfig: Int = 1,
+        /** Current GPU temperature in °C; -1 if unreadable. */
+        val currentGpuTempC: Int = -1,
+        /** Current power draw in watts; null if unavailable or charging. */
+        val currentPowerW: Float? = null,
     ) : TunerProgress()
 
     /** Trial aborted early (crash/hang detected). */
@@ -155,6 +167,8 @@ sealed class TunerProgress {
     data class TrialComplete(
         val result: TunerResult,
         val bestSoFar: TunerResult?,
+        /** Ranked results so far (all usable results, composite-scored). */
+        val rankedSoFar: List<TunerResult> = emptyList(),
     ) : TunerProgress()
 
     /** All trials done; winner elected. */
@@ -172,6 +186,8 @@ data class TunerOutcome(
     val rankedResults: List<TunerResult>,
     val totalTrials: Int,
     val completedTrials: Int,
+    /** True if battery drain signal was available during the sweep (device was discharging). */
+    val batteryAvailable: Boolean = false,
 )
 
 /**
@@ -243,6 +259,77 @@ private object GpuTemp {
 }
 
 // =============================================================================
+//  BATTERY / POWER SENSOR HELPER
+// =============================================================================
+
+/**
+ * Battery and power-draw sensor reader.
+ *
+ * All reads are wrapped in try/catch — these sysfs paths are world-readable on
+ * standard Android kernels (no root required) but may not exist on all devices.
+ * All methods return null / false on any failure.
+ *
+ * Confirmed readable on the Odin 2 Pro (MediaTek / Adreno 8-series) via adb;
+ * standard Linux power-supply class paths.  Needs device verification on other
+ * boards — see the DEVICE-VERIFICATION section in the engine notes below.
+ *
+ * Path reference (Linux kernel power_supply class):
+ *   /sys/class/power_supply/battery/status       — "Discharging" | "Charging" | "Full" | …
+ *   /sys/class/power_supply/battery/power_now    — instantaneous power in µW
+ *   /sys/class/power_supply/battery/charge_counter — battery charge in µAh
+ */
+object BatteryReader {
+    private const val BATTERY_PATH = "/sys/class/power_supply/battery"
+    private const val STATUS_PATH = "$BATTERY_PATH/status"
+    private const val POWER_NOW_PATH = "$BATTERY_PATH/power_now"
+    private const val CHARGE_COUNTER_PATH = "$BATTERY_PATH/charge_counter"
+
+    /** Returns true if the battery status file reads "Discharging". */
+    fun isDischarging(): Boolean {
+        return try {
+            File(STATUS_PATH).readText().trim().equals("Discharging", ignoreCase = true)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Reads instantaneous power draw in watts.
+     *
+     * Returns null if:
+     *  - device is NOT "Discharging" (while charging, power_now reflects charger draw — unreliable)
+     *  - the sysfs path does not exist or is unreadable
+     *  - the value is outside the plausible range (0..100 W)
+     *
+     * NOTE: Must only be called/used when [isDischarging] is true; the Discharging guard
+     * is also applied inline here for safety.
+     */
+    fun readPowerW(): Float? {
+        return try {
+            if (!isDischarging()) return null
+            val rawUW = File(POWER_NOW_PATH).readText().trim().toLongOrNull() ?: return null
+            val watts = rawUW / 1_000_000f
+            if (watts in 0f..100f) watts else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Reads the battery charge counter in µAh.
+     * Returns null if the path is unreadable.
+     * Use start/end delta to compute energy consumed over a trial.
+     */
+    fun readChargeCounterUAh(): Int? {
+        return try {
+            File(CHARGE_COUNTER_PATH).readText().trim().toIntOrNull()
+        } catch (_: Exception) {
+            null
+        }
+    }
+}
+
+// =============================================================================
 //  FPS SESSION FILE READER
 // =============================================================================
 
@@ -294,9 +381,43 @@ private data class FpsSessionData(
  *
  * @param context         Application context (for file/container access).
  * @param appId           Game app ID (e.g. "STEAM_12345").
- * @param goal            Optimisation objective.
- * @param mode            Sweep depth (Quick / Standard / Thorough).
+ * @param goal            Optimisation objective (7 intents; see TunerGoal).
+ * @param mode            Sweep depth (Probe / Quick / Standard / Thorough).
  * @param measurementMode AUTO (hands-off FPS read) or MANUAL (user plays + stops).
+ * @param customWeights   Optional GoalWeights for TunerGoal.CUSTOM; ignored for other goals.
+ *
+ * DEVICE VERIFICATION NEEDED:
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The following features have NOT been exercised on a physical device and need
+ * a real sweep to confirm correctness:
+ *
+ *   1. BatteryReader.readPowerW() / isDischarging()
+ *      Path: /sys/class/power_supply/battery/power_now (µW)
+ *      Confirmed readable on Odin 2 Pro via adb; unverified on other boards.
+ *      Must verify: value is µW (divide by 1e6 gives watts in 1-10 W range for mobile),
+ *      path exists, world-readable without root, and only returns valid data while
+ *      discharging (not while charging from a PD charger).
+ *
+ *   2. BatteryReader.readChargeCounterUAh()
+ *      Path: /sys/class/power_supply/battery/charge_counter
+ *      Delta (start-end) used as fallback energy proxy. Needs verification that the
+ *      counter decrements (not increments) as charge is consumed.
+ *
+ *   3. COMPAT_PROBE early-abort-on-boot
+ *      The engine sets bootSucceeded=true when the game window appears in the probe
+ *      measure window. Verify: (a) windowMappedChannel fires reliably within measureSec
+ *      for booting games; (b) early-abort actually skips remaining probe trials correctly.
+ *
+ *   4. Composite normalisation (rankResultsComposite)
+ *      maxAvgFps / maxStdDev / maxPowerW / maxTempEndC are computed across all usable
+ *      results. If only 1 result is usable, all norms = 1.0 → composite = weight total.
+ *      Verify this edge case is handled gracefully.
+ *
+ *   5. FPS_BATTERY no-battery fallback
+ *      When FPS_BATTERY is chosen but the device is charging, battNormScore stays null
+ *      and weights fall back to GoalWeights.FPS_BATTERY_FALLBACK.
+ *      Verify: UI warning appears; fallback weights produce sensible ranking.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 class AutoTunerEngine(
     private val context: Context,
@@ -304,16 +425,17 @@ class AutoTunerEngine(
     private val goal: TunerGoal,
     private val mode: SweepMode,
     private val measurementMode: MeasurementMode = MeasurementMode.AUTO,
+    /** Optional user-supplied weights for TunerGoal.CUSTOM. Ignored for other goals. */
+    private val customWeights: GoalWeights? = null,
 ) {
     private val TAG = "AutoTunerEngine"
 
     // -------------------------------------------------------------------------
     // Timing constants (all in seconds)
     // -------------------------------------------------------------------------
-    private val WARMUP_SEC = 15
-    private val AUTO_MEASURE_SEC = 45
+    private val WARMUP_SEC = if (mode == SweepMode.PROBE) SweepPlan.PROBE_WARMUP_SEC else 15
+    private val AUTO_MEASURE_SEC = if (mode == SweepMode.PROBE) SweepPlan.PROBE_MEASURE_SEC else 45
     private val WINDOW_WAIT_TIMEOUT_SEC = 90L   // max seconds to wait for game window
-    private val LAUNCH_HANG_THRESHOLD_SEC = 20L // early abort if crash within this window
     private val TEARDOWN_WAIT_SEC = 10L
     private val BETWEEN_TRIAL_COOLDOWN_SEC = 15
     private val THERMAL_GATE_TEMP_C = 80
@@ -358,12 +480,6 @@ class AutoTunerEngine(
 
     // -------------------------------------------------------------------------
     // Auto-exit callback — set by the UI layer after construction.
-    // The engine calls this when it wants the currently-running trial game to be
-    // closed programmatically (measurement window expired, crash detected, or
-    // manual-stop in MANUAL mode).  The UI must implement it using the SAME exit
-    // path as the in-game overlay bar's "Exit Game" button so Wine teardown is
-    // identical to a manual close.  After the exit completes the UI must call
-    // trialController.onExitComplete() as usual.
     // -------------------------------------------------------------------------
     var onRequestTrialExit: (() -> Unit)? = null
 
@@ -450,6 +566,13 @@ class AutoTunerEngine(
                     put("totalTrials", outcome.totalTrials)
                     put("completedTrials", outcome.completedTrials)
                     put("timestamp", System.currentTimeMillis())
+                    // v1.11.0 additions
+                    winner.avgPowerW?.let { put("avgPowerW", it.toDouble()) }
+                    put("fpsNormScore", winner.fpsNormScore.toDouble())
+                    put("stabNormScore", winner.stabNormScore.toDouble())
+                    winner.battNormScore?.let { put("battNormScore", it.toDouble()) }
+                    put("tempNormScore", winner.tempNormScore.toDouble())
+                    put("batteryAvailable", outcome.batteryAvailable)
                 }
                 container.putExtra("autotuner_result_v1", summary.toString())
                 container.saveData()
@@ -468,9 +591,26 @@ class AutoTunerEngine(
     private suspend fun runSweep(emit: suspend (TunerProgress) -> Unit) {
         val totalEstimated = SweepPlan.estimatedTrialCount(mode)
         val estimatedMinutes = SweepPlan.estimatedMinutes(mode)
-        emit(TunerProgress.Started(totalEstimated, estimatedMinutes))
 
-        // Baseline from device defaults (DeviceProfileDetector already ran)
+        // Check battery availability at sweep start
+        val batteryAvailable = BatteryReader.isDischarging()
+        Timber.tag(TAG).i("Sweep start: batteryAvailable=$batteryAvailable goal=${goal.name} mode=${mode.name}")
+
+        if (goal.requiresBatterySignal && !batteryAvailable) {
+            Timber.tag(TAG).w(
+                "Goal ${goal.name} requires battery signal but device is not discharging. " +
+                    "Battery norms will be null; goal falls back to no-battery weights.",
+            )
+        }
+
+        emit(TunerProgress.Started(totalEstimated, estimatedMinutes, batteryAvailable))
+
+        if (goal.isFastProbe || mode == SweepMode.PROBE) {
+            runProbeSweep(emit, batteryAvailable)
+            return
+        }
+
+        // --- Normal coordinate-descent sweep ---
         val baseline = ContainerUtils.getDefaultContainerData()
         var currentBest: ContainerData = baseline
         var currentBestResult: TunerResult? = null
@@ -489,6 +629,7 @@ class AutoTunerEngine(
                 total = totalEstimated,
                 emit = emit,
                 currentBestResult = currentBestResult,
+                batteryAvailable = batteryAvailable,
             )
             globalTrialIndex += dimTrials.size * mode.runsPerConfig
             allResults.addAll(aggregated)
@@ -496,7 +637,7 @@ class AutoTunerEngine(
             // After dimension: pick best from all stable aggregated results so far
             val stableSoFar = allResults.filter { it.isUsable }
             if (stableSoFar.isNotEmpty()) {
-                currentBestResult = rankResults(stableSoFar, goal).first()
+                currentBestResult = rankResults(stableSoFar, goal, batteryAvailable).first()
                 currentBest = currentBestResult.config
             }
         }
@@ -515,13 +656,14 @@ class AutoTunerEngine(
                 total = totalEstimated,
                 emit = emit,
                 currentBestResult = currentBestResult,
+                batteryAvailable = batteryAvailable,
             )
             globalTrialIndex += pass2Trials.size * mode.runsPerConfig
             allResults.addAll(pass2Aggregated)
         }
 
-        // --- Final ranking ---
-        val ranked = rankResults(allResults.filter { it.isUsable }, goal)
+        // --- Final composite ranking ---
+        val ranked = rankResults(allResults.filter { it.isUsable }, goal, batteryAvailable)
         val winner = ranked.firstOrNull() ?: allResults.minByOrNull { it.avgFps }
         val scoredResults = allResults.map { r ->
             val pos = ranked.indexOf(r)
@@ -536,6 +678,7 @@ class AutoTunerEngine(
             rankedResults = ranked,
             totalTrials = totalEstimated,
             completedTrials = globalTrialIndex,
+            batteryAvailable = batteryAvailable,
         )
         outcomeResult = outcome
 
@@ -543,6 +686,91 @@ class AutoTunerEngine(
         IntentLaunchManager.clearTemporaryOverride(appId)
 
         emit(TunerProgress.SweepComplete(outcome))
+    }
+
+    // -------------------------------------------------------------------------
+    // PROBE SWEEP — flat archetype list, early-abort-on-boot
+    // -------------------------------------------------------------------------
+
+    /**
+     * Runs the COMPAT_PROBE flat archetype sweep.
+     *
+     * Each probe trial uses short warmup (8 s) + short measure (20 s).
+     * Scoring is boot-render only: bootSucceeded = window appeared AND no crash within
+     * the measure window.
+     *
+     * Early-abort strategy: once a config produces bootSucceeded=true, skip remaining trials
+     * and declare it the winner. This keeps COMPAT_PROBE fast (typically 1-2 launches).
+     *
+     * All probe results are still collected for the full-results display (the UI shows
+     * "tried 3/6, first boot success at trial 2" etc.).
+     */
+    private suspend fun runProbeSweep(
+        emit: suspend (TunerProgress) -> Unit,
+        batteryAvailable: Boolean,
+    ) {
+        val baseline = ContainerUtils.getDefaultContainerData()
+        val probeTrials = SweepPlan.buildProbeTrials(baseline)
+        val total = probeTrials.size
+
+        for ((idx, trial) in probeTrials.withIndex()) {
+            checkCancelled()
+
+            val result = runTrial(
+                trialDef = trial,
+                trialIndex = idx,
+                total = total,
+                runIndex = 1,
+                runsPerConfig = 1,
+                emit = emit,
+                batteryAvailable = batteryAvailable,
+            )
+            allResults.add(result)
+
+            val ranked = rankProbeResults(allResults)
+            val bestSoFar = ranked.firstOrNull()
+
+            emit(TunerProgress.TrialComplete(result, bestSoFar, ranked))
+
+            // Early-abort: first boot-success ends the probe
+            if (result.bootSucceeded) {
+                Timber.tag(TAG).i(
+                    "PROBE early-abort: bootSucceeded on trial $idx '${trial.description}' — skipping remaining trials",
+                )
+                break
+            }
+        }
+
+        // Rank probe results: boot-success first, then by crash time (avgFps proxy)
+        val ranked = rankProbeResults(allResults)
+        val winner = ranked.firstOrNull()
+
+        val scoredResults = allResults.map { r ->
+            val pos = ranked.indexOf(r)
+            r.copy(goalScore = if (pos >= 0) (ranked.size - pos).toFloat() else 0f)
+        }
+
+        val outcome = TunerOutcome(
+            goal = goal,
+            winner = winner,
+            allResults = scoredResults,
+            rankedResults = ranked,
+            totalTrials = total,
+            completedTrials = allResults.size,
+            batteryAvailable = batteryAvailable,
+        )
+        outcomeResult = outcome
+
+        IntentLaunchManager.clearTemporaryOverride(appId)
+        emit(TunerProgress.SweepComplete(outcome))
+    }
+
+    /** Ranks probe results: bootSucceeded=true first, then by avgFps desc (survival-time proxy). */
+    private fun rankProbeResults(results: List<TunerResult>): List<TunerResult> {
+        return results.sortedWith(
+            compareByDescending<TunerResult> { if (it.bootSucceeded) 1 else 0 }
+                .thenByDescending { it.avgFps },
+        )
     }
 
     // -------------------------------------------------------------------------
@@ -557,18 +785,9 @@ class AutoTunerEngine(
      *   Pass 2: run each candidate again in order → [A2, B2, C2, ...]
      *   Aggregate: A = avg(A1, A2), B = avg(B1, B2), etc.
      *
-     *   This gives each candidate one "cooler" sample and one "warmer" sample,
-     *   cancelling the order-bias that would arise if all runs of config-A ran
-     *   back-to-back before config-B was tested at all.
-     *
-     *   The thermal-gate cooldown in runTrial (before each launch, if GPU >= 80°C)
-     *   handles spikes; the inter-trial cooldown handles steady-state heat.
-     *
-     * QUICK mode (runsPerConfig == 1): passes through to a simple single-run loop,
-     *   identical to the old behaviour.
+     * QUICK mode (runsPerConfig == 1): simple single-run loop.
      *
      * Returns one aggregated [TunerResult] per candidate (not per raw run).
-     * [currentBestResult] is used only for TrialComplete event annotations.
      */
     private suspend fun runDimensionWithAveraging(
         dimTrials: List<TrialDefinition>,
@@ -576,6 +795,7 @@ class AutoTunerEngine(
         total: Int,
         emit: suspend (TunerProgress) -> Unit,
         currentBestResult: TunerResult?,
+        batteryAvailable: Boolean,
     ): List<TunerResult> {
         val runsPerConfig = mode.runsPerConfig
 
@@ -592,19 +812,24 @@ class AutoTunerEngine(
                     runIndex = 1,
                     runsPerConfig = 1,
                     emit = emit,
+                    batteryAvailable = batteryAvailable,
                 )
                 results.add(result)
                 if (result.isUsable) {
-                    val ranked = rankResults(results.filter { it.isUsable }, goal)
+                    val ranked = rankResults(results.filter { it.isUsable }, goal, batteryAvailable)
                     if (ranked.isNotEmpty()) localBest = ranked.first()
                 }
-                emit(TunerProgress.TrialComplete(result, localBest))
+                val rankedSoFar = rankResults(
+                    (allResults + results).filter { it.isUsable },
+                    goal,
+                    batteryAvailable,
+                )
+                emit(TunerProgress.TrialComplete(result, localBest, rankedSoFar))
             }
             return results
         }
 
         // Multi-run path: interleaved passes
-        // rawRuns[configIndex] accumulates TunerResults across all run-passes for that config
         val rawRuns: Array<MutableList<TunerResult>> = Array(dimTrials.size) { mutableListOf() }
         var launchIndex = globalTrialIndex
 
@@ -618,6 +843,7 @@ class AutoTunerEngine(
                     runIndex = runPass,
                     runsPerConfig = runsPerConfig,
                     emit = emit,
+                    batteryAvailable = batteryAvailable,
                 )
                 rawRuns[configIdx].add(rawResult)
                 launchIndex++
@@ -632,15 +858,19 @@ class AutoTunerEngine(
             val agg = aggregateRuns(
                 runs = runs,
                 trialDef = trial,
-                // Use the index of the first raw launch for this config as the representative index
                 trialIndex = globalTrialIndex + configIdx,
             )
             aggregated.add(agg)
             if (agg.isUsable) {
-                val ranked = rankResults(aggregated.filter { it.isUsable }, goal)
+                val ranked = rankResults(aggregated.filter { it.isUsable }, goal, batteryAvailable)
                 if (ranked.isNotEmpty()) localBest = ranked.first()
             }
-            emit(TunerProgress.TrialComplete(agg, localBest))
+            val rankedSoFar = rankResults(
+                (allResults + aggregated).filter { it.isUsable },
+                goal,
+                batteryAvailable,
+            )
+            emit(TunerProgress.TrialComplete(agg, localBest, rankedSoFar))
         }
         return aggregated
     }
@@ -652,18 +882,13 @@ class AutoTunerEngine(
     /**
      * Combines [runs] (all raw results for the same config) into a single [TunerResult].
      *
-     * Aggregation rules:
-     *  - avgFps     : arithmetic mean of each run's avgFps (only successful runs contribute)
-     *  - minFps     : arithmetic mean of each run's minFps (successful runs only)
-     *  - maxFps     : arithmetic mean of each run's maxFps (successful runs only)
-     *  - fpsStdDev  : maximum across all runs (conservative: worst-case stability)
+     * Aggregation rules (unchanged from v1.10.x except for new fields):
+     *  - avgFps     : arithmetic mean (successful runs only)
+     *  - fpsStdDev  : maximum (conservative worst-case stability)
      *  - status     : worst-case (CRASHED > HUNG > UNSTABLE > STABLE)
-     *  - throttleSuspect : true if ANY run flagged it
-     *  - gpuTempStartC   : from the first run
-     *  - gpuTempEndC     : from the last run
-     *  - runsCompleted   : count of runs that produced data (not HUNG/CRASHED early)
-     *  - outlierFlagged  : true if successful-run avgFps values differ by > 40%
-     *                      (suggests one run was a thermal/cache artifact)
+     *  - avgPowerW  : mean of non-null readings across runs
+     *  - chargeCounterDeltaUAh : sum across runs
+     *  - shortLabel  : built from trialDef.description
      */
     private fun aggregateRuns(
         runs: List<TunerResult>,
@@ -674,12 +899,12 @@ class AutoTunerEngine(
             return TunerResult(
                 config = trialDef.config,
                 description = trialDef.description,
+                shortLabel = TunerResult.buildShortLabel(trialDef.description),
                 status = TunerResult.TrialStatus.CRASHED,
                 trialIndex = trialIndex,
             )
         }
 
-        // Determine worst-case status priority: CRASHED > HUNG > UNSTABLE > STABLE > SKIPPED
         val statusPriority = listOf(
             TunerResult.TrialStatus.CRASHED,
             TunerResult.TrialStatus.HUNG,
@@ -692,26 +917,21 @@ class AutoTunerEngine(
             .minByOrNull { statusPriority.indexOf(it).let { idx -> if (idx < 0) Int.MAX_VALUE else idx } }
             ?: TunerResult.TrialStatus.CRASHED
 
-        // Only include runs that completed with a measurement (STABLE or UNSTABLE)
         val measuredRuns = runs.filter {
             it.status == TunerResult.TrialStatus.STABLE || it.status == TunerResult.TrialStatus.UNSTABLE
         }
 
         val runsCompleted = measuredRuns.size
 
-        // Aggregated FPS metrics (from measured runs only)
         val avgFps = if (measuredRuns.isEmpty()) 0f else measuredRuns.map { it.avgFps }.average().toFloat()
         val minFps = if (measuredRuns.isEmpty()) 0f else measuredRuns.map { it.minFps }.average().toFloat()
         val maxFps = if (measuredRuns.isEmpty()) 0f else measuredRuns.map { it.maxFps }.average().toFloat()
         val fpsStdDev = if (measuredRuns.isEmpty()) 0f else measuredRuns.maxOf { it.fpsStdDev }
 
-        // Thermal fields
         val throttleSuspect = runs.any { it.throttleSuspect }
         val gpuTempStart = runs.first().gpuTempStartC
         val gpuTempEnd = runs.last().gpuTempEndC
 
-        // Outlier detection: if measured-run avgFps values differ by > 40% relative to the mean,
-        // flag it — one run was likely a thermal spike or cold-cache artifact.
         val outlierFlagged = if (measuredRuns.size >= 2) {
             val fpsMean = avgFps
             val maxDeviation = measuredRuns.maxOf { kotlin.math.abs(it.avgFps - fpsMean) }
@@ -720,17 +940,27 @@ class AutoTunerEngine(
             false
         }
 
+        // Aggregate battery fields
+        val powerReadings = measuredRuns.mapNotNull { it.avgPowerW }
+        val aggAvgPowerW = if (powerReadings.isEmpty()) null else powerReadings.average().toFloat()
+        val chargeDeltas = measuredRuns.mapNotNull { it.chargeCounterDeltaUAh }
+        val aggChargeCounterDeltaUAh = if (chargeDeltas.isEmpty()) null else chargeDeltas.sum()
+
+        val bootSucceeded = runs.any { it.bootSucceeded }
+
         val outlierSuffix = if (outlierFlagged) " [outlier flagged]" else ""
 
         Timber.tag(TAG).i(
             "Aggregated ${runs.size} run(s) for '${trialDef.description}': " +
                 "avgFps=$avgFps minFps=$minFps maxFps=$maxFps stdDev=$fpsStdDev " +
-                "status=$worstStatus throttle=$throttleSuspect outlier=$outlierFlagged",
+                "status=$worstStatus throttle=$throttleSuspect outlier=$outlierFlagged " +
+                "avgPowerW=$aggAvgPowerW",
         )
 
         return TunerResult(
             config = trialDef.config,
             description = trialDef.description + outlierSuffix,
+            shortLabel = TunerResult.buildShortLabel(trialDef.description),
             status = worstStatus,
             avgFps = avgFps.coerceIn(0f, 9999f),
             minFps = minFps.coerceIn(0f, 9999f),
@@ -742,6 +972,9 @@ class AutoTunerEngine(
             trialIndex = trialIndex,
             runsCompleted = runsCompleted.coerceAtLeast(1),
             outlierFlagged = outlierFlagged,
+            bootSucceeded = bootSucceeded,
+            avgPowerW = aggAvgPowerW,
+            chargeCounterDeltaUAh = aggChargeCounterDeltaUAh,
         )
     }
 
@@ -750,8 +983,8 @@ class AutoTunerEngine(
      *   PREPARING → config applied (auto override) → READY_TO_LAUNCH emitted
      *   → wait for window → WARMUP → MEASURING → teardown → COOLDOWN
      *
-     * [runIndex]      : 1-based index of this run within the multi-run set for this config.
-     * [runsPerConfig] : total runs planned for this config (1 for QUICK).
+     * New in v1.11.0: during MEASURING, samples GpuTemp + BatteryReader every tick.
+     * Sets bootSucceeded in the returned TunerResult for PROBE mode.
      */
     private suspend fun runTrial(
         trialDef: TrialDefinition,
@@ -760,12 +993,14 @@ class AutoTunerEngine(
         runIndex: Int = 1,
         runsPerConfig: Int = 1,
         emit: suspend (TunerProgress) -> Unit,
+        batteryAvailable: Boolean,
     ): TunerResult {
         try {
             emit(TunerProgress.Preparing(trialIndex, total, trialDef.description, runIndex, runsPerConfig))
 
             // 1. Read GPU temp at trial start
             val gpuTempStart = GpuTemp.readTempC()
+            val chargeCounterStart = if (batteryAvailable) BatteryReader.readChargeCounterUAh() else null
 
             // Thermal gate: if GPU is hot, insert a cooldown before starting
             if (gpuTempStart >= THERMAL_GATE_TEMP_C) {
@@ -792,12 +1027,11 @@ class AutoTunerEngine(
             manualStopChannel.tryReceive()
             var frameRating: FrameRating? = frameRatingChannel.tryReceive().getOrNull()
 
-            // 3. Signal UI to launch — UI must call applyAutoConfigOverride + navigate to XServerScreen
+            // 3. Signal UI to launch
             emit(TunerProgress.ReadyToLaunch(trialIndex, total, trialDef.description, trialDef.config, runIndex, runsPerConfig))
 
             // 4. Wait for game window (or crash/timeout)
             val windowAppeared = withTimeoutOrNull(WINDOW_WAIT_TIMEOUT_SEC * 1_000) {
-                // Race: window mapped vs crash vs cancellation
                 var windowSeen = false
                 while (!windowSeen && !cancelled) {
                     when {
@@ -810,15 +1044,12 @@ class AutoTunerEngine(
             } ?: false
 
             if (!windowAppeared || cancelled) {
-                // Crashed or hung before window appeared
                 val alreadyCrashed = guestTerminatedChannel.tryReceive().isSuccess
                 val status = if (alreadyCrashed) {
                     TunerResult.TrialStatus.CRASHED
                 } else {
                     TunerResult.TrialStatus.HUNG
                 }
-                // If the game is hung (no GuestProgramTerminated), request a programmatic exit
-                // so Wine doesn't remain as a zombie. If it already crashed, teardown handles it.
                 if (!alreadyCrashed && !cancelled) {
                     Timber.tag(TAG).w("Trial $trialIndex hung/timed-out — requesting programmatic trial exit")
                     triggerTrialExit()
@@ -828,32 +1059,39 @@ class AutoTunerEngine(
                 return TunerResult(
                     config = trialDef.config,
                     description = trialDef.description,
+                    shortLabel = TunerResult.buildShortLabel(trialDef.description),
                     status = status,
                     gpuTempStartC = gpuTempStart,
                     gpuTempEndC = GpuTemp.readTempC(),
                     trialIndex = trialIndex,
                     runsCompleted = 0,
+                    bootSucceeded = false,
                 )
             }
+
+            // For PROBE mode: window appearing IS the success signal — set bootSucceeded=true
+            // and track it; we then continue measuring briefly to check for immediate crash.
+            val windowAppearedTime = System.currentTimeMillis()
 
             // Try to get FrameRating if not already provided
             frameRating = frameRatingChannel.tryReceive().getOrNull() ?: frameRating
 
-            // 5. WARMUP — discard first 15 s of FPS readings
+            // 5. WARMUP
             for (s in WARMUP_SEC downTo 1) {
                 checkCancelled()
-                // Early-abort: crash within LAUNCH_HANG_THRESHOLD_SEC of window appearing
                 if (guestTerminatedChannel.tryReceive().isSuccess) {
                     emit(TunerProgress.TrialAborted(trialIndex, TunerResult.TrialStatus.CRASHED, runIndex))
                     teardown(emit, trialIndex, total, gpuTempStart)
                     return TunerResult(
                         config = trialDef.config,
                         description = trialDef.description,
+                        shortLabel = TunerResult.buildShortLabel(trialDef.description),
                         status = TunerResult.TrialStatus.CRASHED,
                         gpuTempStartC = gpuTempStart,
                         gpuTempEndC = GpuTemp.readTempC(),
                         trialIndex = trialIndex,
                         runsCompleted = 0,
+                        bootSucceeded = false, // crashed during warmup = boot failure in probe
                     )
                 }
                 emit(TunerProgress.Warmup(trialIndex, total, s, runIndex, runsPerConfig))
@@ -865,17 +1103,40 @@ class AutoTunerEngine(
                 frameRating?.reset()
             }
 
-            // 6. MEASUREMENT WINDOW
+            // 6. MEASUREMENT WINDOW — sample GPU temp + battery every tick
             var crashed = false
+            val powerSamples = mutableListOf<Float>()  // discharging-only samples in watts
+            var bootSucceeded = true  // window appeared; will flip to false if crashes during measure
+
             if (measurementMode == MeasurementMode.AUTO) {
                 for (s in AUTO_MEASURE_SEC downTo 1) {
                     checkCancelled()
                     if (guestTerminatedChannel.tryReceive().isSuccess) {
                         crashed = true
+                        // In PROBE mode a crash during the measure window invalidates boot success
+                        bootSucceeded = false
                         break
                     }
                     val currentFps = frameRating?.getCurrentFPS() ?: 0f
-                    emit(TunerProgress.Measuring(trialIndex, total, s, currentFps, runIndex, runsPerConfig))
+                    val currentTempC = GpuTemp.readTempC()
+                    val currentPowerW = if (batteryAvailable) BatteryReader.readPowerW() else null
+                    currentPowerW?.let { powerSamples.add(it) }
+
+                    // For PROBE mode: early success on stable fps reading
+                    // (bootSucceeded already true; no early-abort here — engine handles it post-trial)
+
+                    emit(
+                        TunerProgress.Measuring(
+                            trialIndex = trialIndex,
+                            total = total,
+                            remainingSeconds = s,
+                            currentFps = currentFps,
+                            runIndex = runIndex,
+                            runsPerConfig = runsPerConfig,
+                            currentGpuTempC = currentTempC,
+                            currentPowerW = currentPowerW,
+                        ),
+                    )
                     delay(1_000)
                 }
             } else {
@@ -886,11 +1147,27 @@ class AutoTunerEngine(
                     when {
                         manualStopChannel.tryReceive().isSuccess -> measuring = false
                         guestTerminatedChannel.tryReceive().isSuccess -> {
-                            crashed = true; measuring = false
+                            crashed = true
+                            bootSucceeded = false
+                            measuring = false
                         }
                         else -> {
                             val currentFps = frameRating?.getCurrentFPS() ?: 0f
-                            emit(TunerProgress.Measuring(trialIndex, total, 0, currentFps, runIndex, runsPerConfig))
+                            val currentTempC = GpuTemp.readTempC()
+                            val currentPowerW = if (batteryAvailable) BatteryReader.readPowerW() else null
+                            currentPowerW?.let { powerSamples.add(it) }
+                            emit(
+                                TunerProgress.Measuring(
+                                    trialIndex = trialIndex,
+                                    total = total,
+                                    remainingSeconds = 0,
+                                    currentFps = currentFps,
+                                    runIndex = runIndex,
+                                    runsPerConfig = runsPerConfig,
+                                    currentGpuTempC = currentTempC,
+                                    currentPowerW = currentPowerW,
+                                ),
+                            )
                             delay(1_000)
                             measureSec++
                         }
@@ -898,15 +1175,13 @@ class AutoTunerEngine(
                 }
             }
 
-            // 7a. AUTO-CLOSE the trial game — fire the same exit path the overlay bar uses.
-            //     Only needed when the game is still running (i.e. measurement window expired
-            //     or MANUAL stop — not when the game already crashed on its own).
+            // 7a. AUTO-CLOSE the trial game
             if (!crashed) {
                 Timber.tag(TAG).i("Trial $trialIndex measurement done — requesting programmatic trial exit")
                 triggerTrialExit()
             }
 
-            // 7. Write FPS summary (AUTO mode: call writeSessionSummary; read the JSON)
+            // 7b. Write FPS summary
             withContext(Dispatchers.Main.immediate) {
                 frameRating?.writeSessionSummary()
             }
@@ -917,15 +1192,23 @@ class AutoTunerEngine(
                 FpsSessionReader.read(context)
             }
 
-            // Fallback to in-memory FrameRating values if JSON not available
             val avgFps = fpsData?.avgFps ?: frameRating?.getAvgFPS() ?: 0f
             val maxFps = fpsData?.maxFps ?: frameRating?.getAvgFPS() ?: 0f
             val minFps = fpsData?.minFps ?: 0f
             val stdDev = frameRating?.getFpsStdDev() ?: 0f
 
             val gpuTempEnd = GpuTemp.readTempC()
+            val chargeCounterEnd = if (batteryAvailable) BatteryReader.readChargeCounterUAh() else null
+            val chargeCounterDelta = if (chargeCounterStart != null && chargeCounterEnd != null) {
+                // charge counter decreases as charge is consumed
+                chargeCounterStart - chargeCounterEnd
+            } else null
+
             val throttleSuspect = gpuTempStart >= 0 && gpuTempEnd >= 0 &&
                 (gpuTempEnd - gpuTempStart) >= TunerResult.THROTTLE_DELTA_C
+
+            // Average power from discharging samples
+            val avgPowerW = if (powerSamples.isNotEmpty()) powerSamples.average().toFloat() else null
 
             val status = when {
                 crashed -> TunerResult.TrialStatus.CRASHED
@@ -935,7 +1218,9 @@ class AutoTunerEngine(
 
             Timber.tag(TAG).i(
                 "Trial $trialIndex complete: status=$status avgFps=$avgFps " +
-                    "stdDev=$stdDev throttle=$throttleSuspect desc=${trialDef.description}",
+                    "stdDev=$stdDev throttle=$throttleSuspect bootSucceeded=$bootSucceeded " +
+                    "avgPowerW=$avgPowerW chargeCounterDelta=$chargeCounterDelta " +
+                    "desc=${trialDef.description}",
             )
 
             teardown(emit, trialIndex, total, gpuTempStart)
@@ -943,6 +1228,7 @@ class AutoTunerEngine(
             return TunerResult(
                 config = trialDef.config,
                 description = trialDef.description,
+                shortLabel = TunerResult.buildShortLabel(trialDef.description),
                 status = status,
                 avgFps = avgFps.coerceIn(0f, 9999f),
                 minFps = minFps.coerceIn(0f, 9999f),
@@ -952,7 +1238,10 @@ class AutoTunerEngine(
                 gpuTempEndC = gpuTempEnd,
                 throttleSuspect = throttleSuspect,
                 trialIndex = trialIndex,
-                runsCompleted = 1,  // raw single run; aggregateRuns() will combine N of these
+                runsCompleted = 1,
+                bootSucceeded = bootSucceeded,
+                avgPowerW = avgPowerW,
+                chargeCounterDeltaUAh = chargeCounterDelta,
             )
         } catch (ce: CancellationException) {
             throw ce
@@ -962,6 +1251,7 @@ class AutoTunerEngine(
             return TunerResult(
                 config = trialDef.config,
                 description = trialDef.description,
+                shortLabel = TunerResult.buildShortLabel(trialDef.description),
                 status = TunerResult.TrialStatus.CRASHED,
                 trialIndex = trialIndex,
                 runsCompleted = 0,
@@ -971,9 +1261,6 @@ class AutoTunerEngine(
 
     /**
      * Post-trial teardown: signal UI to exit, kill stale Wine processes, cooldown.
-     *
-     * The UI must call trialController.onExitComplete() after it has navigated away
-     * from XServerScreen and ProcessHelper.hardKillStaleWineProcesses() is safe to call.
      */
     private suspend fun teardown(
         emit: suspend (TunerProgress) -> Unit,
@@ -981,10 +1268,8 @@ class AutoTunerEngine(
         total: Int,
         gpuTempStart: Int,
     ) {
-        // Clear the override so the next launch doesn't inherit it
         IntentLaunchManager.clearTemporaryOverride(appId)
 
-        // Wait for the UI to signal exit complete (navigated away from XServerScreen)
         val exited = withTimeoutOrNull(TEARDOWN_WAIT_SEC * 1_000) {
             while (exitCompleteChannel.tryReceive().isFailure && !cancelled) {
                 delay(200)
@@ -995,14 +1280,12 @@ class AutoTunerEngine(
             Timber.tag(TAG).w("Trial $trialIndex: UI did not signal onExitComplete within ${TEARDOWN_WAIT_SEC}s")
         }
 
-        // Hard-kill any lingering Wine processes
         withContext(Dispatchers.IO) {
             try {
                 ProcessHelper.hardKillStaleWineProcesses()
             } catch (e: Exception) {
                 Timber.tag(TAG).w(e, "hardKillStaleWineProcesses threw — continuing")
             }
-            // Additional wait for process list to drain
             val deadline = System.currentTimeMillis() + TEARDOWN_WAIT_SEC * 1_000
             while (ProcessHelper.listRunningWineProcesses().isNotEmpty() &&
                 System.currentTimeMillis() < deadline
@@ -1011,7 +1294,6 @@ class AutoTunerEngine(
             }
         }
 
-        // Inter-trial cooldown
         val gpuTemp = GpuTemp.readTempC()
         for (s in BETWEEN_TRIAL_COOLDOWN_SEC downTo 1) {
             if (cancelled) break
@@ -1021,43 +1303,117 @@ class AutoTunerEngine(
     }
 
     // -------------------------------------------------------------------------
-    // Goal-specific ranking
+    // Goal-specific ranking  (composite post-sweep normalisation)
     // -------------------------------------------------------------------------
 
     /**
-     * Ranks a list of usable (STABLE) results according to [goal].
+     * Ranks a list of usable (STABLE) results according to [goal] and [batteryAvailable].
      *
-     * LOW_END: pre-filter to results above the playable threshold that use "System"
-     *          driver or the lowest VRAM; fall back to all stable if none qualify.
-     * HIGH_END: pre-filter to Wrapper/Turnip results; fall back to all stable if none.
-     * MAX_FPS / MAX_STABILITY: sort all stable results directly.
+     * LOW_END: pre-filters + lightnessScore comparator (unchanged).
+     * COMPAT_PROBE: should not reach here (probe uses rankProbeResults); delegates to
+     *               goal.comparator as safe fallback.
+     * All other goals: post-sweep composite normalisation (see rankResultsComposite).
+     *
+     * After ranking, normalised scores are stamped back into each TunerResult so the
+     * UI can display relative bars without re-computing.
      */
-    internal fun rankResults(stable: List<TunerResult>, goal: TunerGoal): List<TunerResult> {
+    internal fun rankResults(
+        stable: List<TunerResult>,
+        goal: TunerGoal,
+        batteryAvailable: Boolean = false,
+    ): List<TunerResult> {
         if (stable.isEmpty()) return emptyList()
+
         return when (goal) {
             TunerGoal.LOW_END -> {
-                // Prefer System driver AND above playable threshold
+                // Preserve existing lightnessScore path — no composite needed
                 val lightAndPlayable = stable.filter {
                     it.avgFps >= TunerResult.PLAYABLE_FPS_THRESHOLD &&
                         it.config.graphicsDriver.equals("System", ignoreCase = true)
                 }
                 val candidates = lightAndPlayable.ifEmpty {
-                    // Fall back: anything above threshold
                     stable.filter { it.avgFps >= TunerResult.PLAYABLE_FPS_THRESHOLD }
                 }.ifEmpty { stable }
                 candidates.sortedWith(goal.comparator)
             }
 
-            TunerGoal.HIGH_END -> {
-                // Prefer Wrapper/Turnip results
-                val wrapperStable = stable.filter {
-                    it.config.graphicsDriver.equals("Wrapper", ignoreCase = true)
-                }
-                wrapperStable.ifEmpty { stable }.sortedWith(goal.comparator)
+            TunerGoal.COMPAT_PROBE -> {
+                // Should not reach here in normal operation; safe fallback
+                stable.sortedWith(goal.comparator)
             }
 
-            else -> stable.sortedWith(goal.comparator)
+            else -> rankResultsComposite(stable, goal, batteryAvailable)
         }
+    }
+
+    /**
+     * Composite post-sweep normalisation ranking.
+     *
+     * 1. Compute max values across all results:
+     *      maxAvgFps, maxStdDev, maxPowerW, maxTempEndC
+     * 2. Per result compute normalised scores [0..1]:
+     *      fpsNorm  = avgFps / maxAvgFps
+     *      stabNorm = 1 - (fpsStdDev / maxStdDev)
+     *      battNorm = 1 - (avgPowerW / maxPowerW)   [null if no battery signal]
+     *      tempNorm = (1 - gpuTempEndC / 80.0).coerceIn(0, 1)
+     * 3. Select effective weights:
+     *      CUSTOM goal → customWeights ?: goal.weights
+     *      FPS_BATTERY + !batteryAvailable → goal.weights.withoutBatterySignal()
+     *      others → goal.weights
+     * 4. composite = weighted sum / weight total
+     * 5. Sort by composite desc; stamp normalised scores back into TunerResult.
+     */
+    private fun rankResultsComposite(
+        stable: List<TunerResult>,
+        goal: TunerGoal,
+        batteryAvailable: Boolean,
+    ): List<TunerResult> {
+        // --- 1. Compute maxima ---
+        val maxAvgFps = stable.maxOf { it.avgFps }.coerceAtLeast(1f)
+        val maxStdDev = stable.maxOf { it.fpsStdDev }.coerceAtLeast(1f)
+        val powerReadings = stable.mapNotNull { it.avgPowerW }
+        val maxPowerW = if (powerReadings.isNotEmpty()) powerReadings.max().coerceAtLeast(0.001f) else null
+
+        // --- 2. Select effective weights ---
+        val effectiveWeights: GoalWeights = when {
+            goal == TunerGoal.CUSTOM -> customWeights ?: goal.weights
+            goal == TunerGoal.FPS_BATTERY && !batteryAvailable -> GoalWeights.FPS_BATTERY_FALLBACK
+            else -> goal.weights
+        }
+
+        val weightTotal = effectiveWeights.total.coerceAtLeast(0.001f)
+
+        // --- 3. Normalise and score ---
+        val scored = stable.map { r ->
+            val fpsNorm = (r.avgFps / maxAvgFps).coerceIn(0f, 1f)
+            val stabNorm = (1f - r.fpsStdDev / maxStdDev).coerceIn(0f, 1f)
+            val battNorm: Float? = if (batteryAvailable && maxPowerW != null && r.avgPowerW != null) {
+                (1f - r.avgPowerW / maxPowerW).coerceIn(0f, 1f)
+            } else null
+            val tempNorm = if (r.gpuTempEndC >= 0) {
+                (1f - r.gpuTempEndC / 80f).coerceIn(0f, 1f)
+            } else {
+                0.5f // unknown temp: neutral
+            }
+
+            val composite = (
+                effectiveWeights.fps * fpsNorm +
+                    effectiveWeights.stability * stabNorm +
+                    (effectiveWeights.battery * (battNorm ?: 0f)) +
+                    effectiveWeights.temperature * tempNorm
+                ) / weightTotal
+
+            r.copy(
+                fpsNormScore = fpsNorm,
+                stabNormScore = stabNorm,
+                battNormScore = battNorm,
+                tempNormScore = tempNorm,
+                goalScore = composite,
+            )
+        }
+
+        // --- 4. Sort by composite desc ---
+        return scored.sortedByDescending { it.goalScore }
     }
 
     // -------------------------------------------------------------------------

@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.gamenative.PluviaApp
 import app.gamenative.autotuner.AutoTunerEngine
+import app.gamenative.autotuner.BatteryReader
+import app.gamenative.autotuner.GoalWeights
 import app.gamenative.autotuner.MeasurementMode
 import app.gamenative.autotuner.SweepMode
 import app.gamenative.autotuner.TunerGoal
@@ -12,8 +14,11 @@ import app.gamenative.autotuner.TunerOutcome
 import app.gamenative.autotuner.TunerProgress
 import app.gamenative.autotuner.TunerResult
 import app.gamenative.events.AndroidEvent
+import app.gamenative.utils.ContainerUtils
 import com.winlator.widget.FrameRating
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,6 +51,8 @@ data class AutoTunerUiState(
     val remainingSeconds: Int = 0,
     val currentFps: Float = 0f,
     val gpuTempC: Int = -1,
+    /** Current power draw in watts during MEASURING phase; null if unavailable. */
+    val currentPowerW: Float? = null,
     val bestSoFar: TunerResult? = null,
     val allResults: List<TunerResult> = emptyList(),
     val outcome: TunerOutcome? = null,
@@ -57,6 +64,10 @@ data class AutoTunerUiState(
     val measurementMode: MeasurementMode = MeasurementMode.AUTO,
     val appId: String = "",
     val estimatedMinutes: Int = 0,
+    /** True if the device was discharging at sweep start (battery signal available). */
+    val batteryAvailable: Boolean = false,
+    /** Live-ranked results (sorted by goal) updated after each TrialComplete. */
+    val rankedResults: List<TunerResult> = emptyList(),
 )
 
 /**
@@ -109,9 +120,11 @@ class AutoTunerViewModel : ViewModel() {
      *
      * @param context         Application context.
      * @param appId           Game app id.
-     * @param goal            Tuning objective.
-     * @param mode            Sweep depth.
+     * @param goal            Tuning objective (7 intents; see TunerGoal).
+     * @param mode            Sweep depth (Probe / Quick / Standard / Thorough).
+     *                        When goal==COMPAT_PROBE the engine forces SweepMode.PROBE internally.
      * @param measurementMode Auto or manual measurement.
+     * @param customWeights   Optional weights for TunerGoal.CUSTOM; ignored for other goals.
      */
     fun startTuning(
         context: Context,
@@ -119,18 +132,23 @@ class AutoTunerViewModel : ViewModel() {
         goal: TunerGoal,
         mode: SweepMode,
         measurementMode: MeasurementMode,
+        customWeights: GoalWeights? = null,
     ) {
         if (sweepJob?.isActive == true) {
             Timber.tag(TAG).w("startTuning called while sweep already running — ignoring")
             return
         }
 
+        // COMPAT_PROBE always forces PROBE sweep mode
+        val effectiveMode = if (goal.isFastProbe) SweepMode.PROBE else mode
+
         val eng = AutoTunerEngine(
             context = context.applicationContext,
             appId = appId,
             goal = goal,
-            mode = mode,
+            mode = effectiveMode,
             measurementMode = measurementMode,
+            customWeights = customWeights,
         )
         // Wire the auto-exit callback so the engine can close the trial game programmatically.
         eng.onRequestTrialExit = { requestTrialExit() }
@@ -139,7 +157,7 @@ class AutoTunerViewModel : ViewModel() {
         _uiState.value = AutoTunerUiState(
             phase = AutoTunerPhase.PREPARING,
             goal = goal,
-            mode = mode,
+            mode = effectiveMode,
             measurementMode = measurementMode,
             appId = appId,
         )
@@ -163,6 +181,22 @@ class AutoTunerViewModel : ViewModel() {
     }
 
     /**
+     * Refreshes [AutoTunerUiState.batteryAvailable] by reading the real discharge state
+     * directly from sysfs via [BatteryReader.isDischarging].
+     *
+     * Call this when the setup dialog opens (before any sweep starts) so the
+     * FPS_BATTERY charging-warning reflects the device's actual state at setup time,
+     * not the engine's sweep-start value which is only available after [startTuning].
+     *
+     * Safe to call from any thread; wrapped in try/catch by BatteryReader internally.
+     */
+    fun refreshBatteryState() {
+        val discharging = BatteryReader.isDischarging()
+        Timber.tag(TAG).d("refreshBatteryState: isDischarging=$discharging")
+        _uiState.value = _uiState.value.copy(batteryAvailable = discharging)
+    }
+
+    /**
      * Persist the winning config. Call after user confirms on the results screen.
      * Must be called from a coroutine (e.g. viewModelScope.launch).
      */
@@ -173,6 +207,58 @@ class AutoTunerViewModel : ViewModel() {
                 Timber.tag(TAG).i("Winner applied successfully")
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "applyWinner failed")
+            }
+        }
+    }
+
+    /**
+     * Applies any arbitrary result config (not just the winner) — used by the
+     * "Apply #2 instead" and per-row apply buttons in the results screen.
+     *
+     * Reuses the same persist path as applyWinner: ContainerUtils.applyToContainer
+     * (saveToDisk=true) + the autotuner_result_v1 extraData write.
+     */
+    fun applyConfig(context: Context, result: TunerResult) {
+        viewModelScope.launch {
+            try {
+                val outcome = _uiState.value.outcome ?: return@launch
+                val appId = _uiState.value.appId
+                withContext(Dispatchers.IO) {
+                    val container = ContainerUtils.getContainer(context.applicationContext, appId)
+                    ContainerUtils.applyToContainer(
+                        context.applicationContext,
+                        container,
+                        result.config,
+                        saveToDisk = true,
+                    )
+                    val summary = org.json.JSONObject().apply {
+                        put("goal", outcome.goal.name)
+                        put("mode", _uiState.value.mode.name)
+                        put("description", result.description)
+                        put("avgFps", result.avgFps.toDouble())
+                        put("minFps", result.minFps.toDouble())
+                        put("maxFps", result.maxFps.toDouble())
+                        put("fpsStdDev", result.fpsStdDev.toDouble())
+                        put("gpuTempStartC", result.gpuTempStartC)
+                        put("gpuTempEndC", result.gpuTempEndC)
+                        put("throttleSuspect", result.throttleSuspect)
+                        put("totalTrials", outcome.totalTrials)
+                        put("completedTrials", outcome.completedTrials)
+                        put("timestamp", System.currentTimeMillis())
+                        result.avgPowerW?.let { put("avgPowerW", it.toDouble()) }
+                        put("fpsNormScore", result.fpsNormScore.toDouble())
+                        put("stabNormScore", result.stabNormScore.toDouble())
+                        result.battNormScore?.let { put("battNormScore", it.toDouble()) }
+                        put("tempNormScore", result.tempNormScore.toDouble())
+                        put("batteryAvailable", outcome.batteryAvailable)
+                        put("userSelectedConfig", true) // distinguish from auto-winner
+                    }
+                    container.putExtra("autotuner_result_v1", summary.toString())
+                    container.saveData()
+                }
+                Timber.tag(TAG).i("applyConfig applied result '${result.shortLabel}' for $appId")
+            } catch (e: Exception) {
+                Timber.tag(TAG).e(e, "applyConfig failed")
             }
         }
     }
@@ -252,6 +338,7 @@ class AutoTunerViewModel : ViewModel() {
                     phase = AutoTunerPhase.PREPARING,
                     totalTrials = progress.total,
                     estimatedMinutes = progress.estimatedMinutes,
+                    batteryAvailable = progress.batteryAvailable,
                 )
             }
 
@@ -293,6 +380,8 @@ class AutoTunerViewModel : ViewModel() {
                     totalTrials = progress.total,
                     remainingSeconds = progress.remainingSeconds,
                     currentFps = progress.currentFps,
+                    gpuTempC = progress.currentGpuTempC,
+                    currentPowerW = progress.currentPowerW,
                 )
             }
 
@@ -320,6 +409,7 @@ class AutoTunerViewModel : ViewModel() {
                 _uiState.value = _uiState.value.copy(
                     phase = AutoTunerPhase.BETWEEN_TRIALS,
                     allResults = updated,
+                    rankedResults = progress.rankedSoFar,
                     bestSoFar = progress.bestSoFar,
                     trialIsRunning = false,
                 )
