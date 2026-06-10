@@ -91,6 +91,10 @@ sealed class TunerProgress {
         val trialIndex: Int,
         val total: Int,
         val description: String,
+        /** Which run of this config (1-based). 1 when runsPerConfig == 1. */
+        val runIndex: Int = 1,
+        /** How many runs this config will be measured. 1 for QUICK. */
+        val runsPerConfig: Int = 1,
     ) : TunerProgress()
 
     /**
@@ -102,6 +106,10 @@ sealed class TunerProgress {
         val total: Int,
         val description: String,
         val trialConfig: ContainerData,
+        /** Which run of this config (1-based). 1 when runsPerConfig == 1. */
+        val runIndex: Int = 1,
+        /** How many runs this config will be measured. 1 for QUICK. */
+        val runsPerConfig: Int = 1,
     ) : TunerProgress()
 
     /** Warmup period (discard initial FPS readings). */
@@ -109,6 +117,10 @@ sealed class TunerProgress {
         val trialIndex: Int,
         val total: Int,
         val remainingSeconds: Int,
+        /** Which run of this config (1-based). 1 when runsPerConfig == 1. */
+        val runIndex: Int = 1,
+        /** How many runs this config will be measured. 1 for QUICK. */
+        val runsPerConfig: Int = 1,
     ) : TunerProgress()
 
     /** Active measurement window. */
@@ -117,12 +129,18 @@ sealed class TunerProgress {
         val total: Int,
         val remainingSeconds: Int,
         val currentFps: Float,
+        /** Which run of this config (1-based). 1 when runsPerConfig == 1. */
+        val runIndex: Int = 1,
+        /** How many runs this config will be measured. 1 for QUICK. */
+        val runsPerConfig: Int = 1,
     ) : TunerProgress()
 
     /** Trial aborted early (crash/hang detected). */
     data class TrialAborted(
         val trialIndex: Int,
         val reason: TunerResult.TrialStatus,
+        /** Which run of this config (1-based). 1 when runsPerConfig == 1. */
+        val runIndex: Int = 1,
     ) : TunerProgress()
 
     /** Cooldown between trials; optional GPU temp annotation. */
@@ -449,11 +467,7 @@ class AutoTunerEngine(
 
     private suspend fun runSweep(emit: suspend (TunerProgress) -> Unit) {
         val totalEstimated = SweepPlan.estimatedTrialCount(mode)
-        val estimatedMinutes = when (mode) {
-            SweepMode.QUICK -> 10
-            SweepMode.STANDARD -> 20
-            SweepMode.THOROUGH -> 35
-        }
+        val estimatedMinutes = SweepPlan.estimatedMinutes(mode)
         emit(TunerProgress.Started(totalEstimated, estimatedMinutes))
 
         // Baseline from device defaults (DeviceProfileDetector already ran)
@@ -464,34 +478,22 @@ class AutoTunerEngine(
         val dimensions = SweepPlan.dimensionsForMode(mode)
         var globalTrialIndex = 0
 
-        // --- First pass: iterate each dimension ---
+        // --- First pass: iterate each dimension with multi-run averaging ---
         for (dim in dimensions) {
             checkCancelled()
             val dimTrials = SweepPlan.buildDimensionTrials(dim, currentBest, passIndex = 0)
-            val dimResults = mutableListOf<TunerResult>()
 
-            for (trial in dimTrials) {
-                checkCancelled()
-                val result = runTrial(
-                    trialDef = trial,
-                    trialIndex = globalTrialIndex,
-                    total = totalEstimated,
-                    emit = emit,
-                )
-                allResults.add(result)
-                dimResults.add(result)
-                globalTrialIndex++
+            val aggregated = runDimensionWithAveraging(
+                dimTrials = dimTrials,
+                globalTrialIndex = globalTrialIndex,
+                total = totalEstimated,
+                emit = emit,
+                currentBestResult = currentBestResult,
+            )
+            globalTrialIndex += dimTrials.size * mode.runsPerConfig
+            allResults.addAll(aggregated)
 
-                if (result.isUsable) {
-                    val ranked = rankResults(dimResults.filter { it.isUsable }, goal)
-                    if (ranked.isNotEmpty()) {
-                        currentBestResult = ranked.first()
-                        currentBest = currentBestResult.config
-                    }
-                }
-                emit(TunerProgress.TrialComplete(result, currentBestResult))
-            }
-            // After dimension: update currentBest from all stable results so far
+            // After dimension: pick best from all stable aggregated results so far
             val stableSoFar = allResults.filter { it.isUsable }
             if (stableSoFar.isNotEmpty()) {
                 currentBestResult = rankResults(stableSoFar, goal).first()
@@ -507,18 +509,15 @@ class AutoTunerEngine(
                 currentBest,
                 passIndex = 1,
             )
-            for (trial in pass2Trials) {
-                checkCancelled()
-                val result = runTrial(
-                    trialDef = trial,
-                    trialIndex = globalTrialIndex,
-                    total = totalEstimated,
-                    emit = emit,
-                )
-                allResults.add(result)
-                globalTrialIndex++
-                emit(TunerProgress.TrialComplete(result, currentBestResult))
-            }
+            val pass2Aggregated = runDimensionWithAveraging(
+                dimTrials = pass2Trials,
+                globalTrialIndex = globalTrialIndex,
+                total = totalEstimated,
+                emit = emit,
+                currentBestResult = currentBestResult,
+            )
+            globalTrialIndex += pass2Trials.size * mode.runsPerConfig
+            allResults.addAll(pass2Aggregated)
         }
 
         // --- Final ranking ---
@@ -546,19 +545,224 @@ class AutoTunerEngine(
         emit(TunerProgress.SweepComplete(outcome))
     }
 
+    // -------------------------------------------------------------------------
+    // Multi-run interleaved sweep of one dimension's candidate set
+    // -------------------------------------------------------------------------
+
+    /**
+     * Runs all candidate configs in [dimTrials] with interleaved multi-run averaging.
+     *
+     * INTERLEAVE STRATEGY (STANDARD/THOROUGH, runsPerConfig >= 2):
+     *   Pass 1: run each candidate once in order  → [A1, B1, C1, ...]
+     *   Pass 2: run each candidate again in order → [A2, B2, C2, ...]
+     *   Aggregate: A = avg(A1, A2), B = avg(B1, B2), etc.
+     *
+     *   This gives each candidate one "cooler" sample and one "warmer" sample,
+     *   cancelling the order-bias that would arise if all runs of config-A ran
+     *   back-to-back before config-B was tested at all.
+     *
+     *   The thermal-gate cooldown in runTrial (before each launch, if GPU >= 80°C)
+     *   handles spikes; the inter-trial cooldown handles steady-state heat.
+     *
+     * QUICK mode (runsPerConfig == 1): passes through to a simple single-run loop,
+     *   identical to the old behaviour.
+     *
+     * Returns one aggregated [TunerResult] per candidate (not per raw run).
+     * [currentBestResult] is used only for TrialComplete event annotations.
+     */
+    private suspend fun runDimensionWithAveraging(
+        dimTrials: List<TrialDefinition>,
+        globalTrialIndex: Int,
+        total: Int,
+        emit: suspend (TunerProgress) -> Unit,
+        currentBestResult: TunerResult?,
+    ): List<TunerResult> {
+        val runsPerConfig = mode.runsPerConfig
+
+        if (runsPerConfig == 1) {
+            // Fast path: single-run, no averaging needed
+            val results = mutableListOf<TunerResult>()
+            var localBest = currentBestResult
+            dimTrials.forEachIndexed { i, trial ->
+                checkCancelled()
+                val result = runTrial(
+                    trialDef = trial,
+                    trialIndex = globalTrialIndex + i,
+                    total = total,
+                    runIndex = 1,
+                    runsPerConfig = 1,
+                    emit = emit,
+                )
+                results.add(result)
+                if (result.isUsable) {
+                    val ranked = rankResults(results.filter { it.isUsable }, goal)
+                    if (ranked.isNotEmpty()) localBest = ranked.first()
+                }
+                emit(TunerProgress.TrialComplete(result, localBest))
+            }
+            return results
+        }
+
+        // Multi-run path: interleaved passes
+        // rawRuns[configIndex] accumulates TunerResults across all run-passes for that config
+        val rawRuns: Array<MutableList<TunerResult>> = Array(dimTrials.size) { mutableListOf() }
+        var launchIndex = globalTrialIndex
+
+        for (runPass in 1..runsPerConfig) {
+            dimTrials.forEachIndexed { configIdx, trial ->
+                checkCancelled()
+                val rawResult = runTrial(
+                    trialDef = trial,
+                    trialIndex = launchIndex,
+                    total = total,
+                    runIndex = runPass,
+                    runsPerConfig = runsPerConfig,
+                    emit = emit,
+                )
+                rawRuns[configIdx].add(rawResult)
+                launchIndex++
+            }
+        }
+
+        // Aggregate: one TunerResult per config
+        val aggregated = mutableListOf<TunerResult>()
+        var localBest = currentBestResult
+        dimTrials.forEachIndexed { configIdx, trial ->
+            val runs = rawRuns[configIdx]
+            val agg = aggregateRuns(
+                runs = runs,
+                trialDef = trial,
+                // Use the index of the first raw launch for this config as the representative index
+                trialIndex = globalTrialIndex + configIdx,
+            )
+            aggregated.add(agg)
+            if (agg.isUsable) {
+                val ranked = rankResults(aggregated.filter { it.isUsable }, goal)
+                if (ranked.isNotEmpty()) localBest = ranked.first()
+            }
+            emit(TunerProgress.TrialComplete(agg, localBest))
+        }
+        return aggregated
+    }
+
+    // -------------------------------------------------------------------------
+    // Run aggregation: N raw TunerResults → one averaged TunerResult
+    // -------------------------------------------------------------------------
+
+    /**
+     * Combines [runs] (all raw results for the same config) into a single [TunerResult].
+     *
+     * Aggregation rules:
+     *  - avgFps     : arithmetic mean of each run's avgFps (only successful runs contribute)
+     *  - minFps     : arithmetic mean of each run's minFps (successful runs only)
+     *  - maxFps     : arithmetic mean of each run's maxFps (successful runs only)
+     *  - fpsStdDev  : maximum across all runs (conservative: worst-case stability)
+     *  - status     : worst-case (CRASHED > HUNG > UNSTABLE > STABLE)
+     *  - throttleSuspect : true if ANY run flagged it
+     *  - gpuTempStartC   : from the first run
+     *  - gpuTempEndC     : from the last run
+     *  - runsCompleted   : count of runs that produced data (not HUNG/CRASHED early)
+     *  - outlierFlagged  : true if successful-run avgFps values differ by > 40%
+     *                      (suggests one run was a thermal/cache artifact)
+     */
+    private fun aggregateRuns(
+        runs: List<TunerResult>,
+        trialDef: TrialDefinition,
+        trialIndex: Int,
+    ): TunerResult {
+        if (runs.isEmpty()) {
+            return TunerResult(
+                config = trialDef.config,
+                description = trialDef.description,
+                status = TunerResult.TrialStatus.CRASHED,
+                trialIndex = trialIndex,
+            )
+        }
+
+        // Determine worst-case status priority: CRASHED > HUNG > UNSTABLE > STABLE > SKIPPED
+        val statusPriority = listOf(
+            TunerResult.TrialStatus.CRASHED,
+            TunerResult.TrialStatus.HUNG,
+            TunerResult.TrialStatus.UNSTABLE,
+            TunerResult.TrialStatus.STABLE,
+            TunerResult.TrialStatus.SKIPPED,
+        )
+        val worstStatus = runs
+            .map { it.status }
+            .minByOrNull { statusPriority.indexOf(it).let { idx -> if (idx < 0) Int.MAX_VALUE else idx } }
+            ?: TunerResult.TrialStatus.CRASHED
+
+        // Only include runs that completed with a measurement (STABLE or UNSTABLE)
+        val measuredRuns = runs.filter {
+            it.status == TunerResult.TrialStatus.STABLE || it.status == TunerResult.TrialStatus.UNSTABLE
+        }
+
+        val runsCompleted = measuredRuns.size
+
+        // Aggregated FPS metrics (from measured runs only)
+        val avgFps = if (measuredRuns.isEmpty()) 0f else measuredRuns.map { it.avgFps }.average().toFloat()
+        val minFps = if (measuredRuns.isEmpty()) 0f else measuredRuns.map { it.minFps }.average().toFloat()
+        val maxFps = if (measuredRuns.isEmpty()) 0f else measuredRuns.map { it.maxFps }.average().toFloat()
+        val fpsStdDev = if (measuredRuns.isEmpty()) 0f else measuredRuns.maxOf { it.fpsStdDev }
+
+        // Thermal fields
+        val throttleSuspect = runs.any { it.throttleSuspect }
+        val gpuTempStart = runs.first().gpuTempStartC
+        val gpuTempEnd = runs.last().gpuTempEndC
+
+        // Outlier detection: if measured-run avgFps values differ by > 40% relative to the mean,
+        // flag it — one run was likely a thermal spike or cold-cache artifact.
+        val outlierFlagged = if (measuredRuns.size >= 2) {
+            val fpsMean = avgFps
+            val maxDeviation = measuredRuns.maxOf { kotlin.math.abs(it.avgFps - fpsMean) }
+            fpsMean > 0f && (maxDeviation / fpsMean) > 0.40f
+        } else {
+            false
+        }
+
+        val outlierSuffix = if (outlierFlagged) " [outlier flagged]" else ""
+
+        Timber.tag(TAG).i(
+            "Aggregated ${runs.size} run(s) for '${trialDef.description}': " +
+                "avgFps=$avgFps minFps=$minFps maxFps=$maxFps stdDev=$fpsStdDev " +
+                "status=$worstStatus throttle=$throttleSuspect outlier=$outlierFlagged",
+        )
+
+        return TunerResult(
+            config = trialDef.config,
+            description = trialDef.description + outlierSuffix,
+            status = worstStatus,
+            avgFps = avgFps.coerceIn(0f, 9999f),
+            minFps = minFps.coerceIn(0f, 9999f),
+            maxFps = maxFps.coerceIn(0f, 9999f),
+            fpsStdDev = fpsStdDev.coerceIn(0f, 9999f),
+            gpuTempStartC = gpuTempStart,
+            gpuTempEndC = gpuTempEnd,
+            throttleSuspect = throttleSuspect,
+            trialIndex = trialIndex,
+            runsCompleted = runsCompleted.coerceAtLeast(1),
+            outlierFlagged = outlierFlagged,
+        )
+    }
+
     /**
      * Runs a single trial end-to-end:
      *   PREPARING → config applied (auto override) → READY_TO_LAUNCH emitted
      *   → wait for window → WARMUP → MEASURING → teardown → COOLDOWN
+     *
+     * [runIndex]      : 1-based index of this run within the multi-run set for this config.
+     * [runsPerConfig] : total runs planned for this config (1 for QUICK).
      */
     private suspend fun runTrial(
         trialDef: TrialDefinition,
         trialIndex: Int,
         total: Int,
+        runIndex: Int = 1,
+        runsPerConfig: Int = 1,
         emit: suspend (TunerProgress) -> Unit,
     ): TunerResult {
         try {
-            emit(TunerProgress.Preparing(trialIndex, total, trialDef.description))
+            emit(TunerProgress.Preparing(trialIndex, total, trialDef.description, runIndex, runsPerConfig))
 
             // 1. Read GPU temp at trial start
             val gpuTempStart = GpuTemp.readTempC()
@@ -589,7 +793,7 @@ class AutoTunerEngine(
             var frameRating: FrameRating? = frameRatingChannel.tryReceive().getOrNull()
 
             // 3. Signal UI to launch — UI must call applyAutoConfigOverride + navigate to XServerScreen
-            emit(TunerProgress.ReadyToLaunch(trialIndex, total, trialDef.description, trialDef.config))
+            emit(TunerProgress.ReadyToLaunch(trialIndex, total, trialDef.description, trialDef.config, runIndex, runsPerConfig))
 
             // 4. Wait for game window (or crash/timeout)
             val windowAppeared = withTimeoutOrNull(WINDOW_WAIT_TIMEOUT_SEC * 1_000) {
@@ -619,7 +823,7 @@ class AutoTunerEngine(
                     Timber.tag(TAG).w("Trial $trialIndex hung/timed-out — requesting programmatic trial exit")
                     triggerTrialExit()
                 }
-                emit(TunerProgress.TrialAborted(trialIndex, status))
+                emit(TunerProgress.TrialAborted(trialIndex, status, runIndex))
                 teardown(emit, trialIndex, total, gpuTempStart)
                 return TunerResult(
                     config = trialDef.config,
@@ -628,6 +832,7 @@ class AutoTunerEngine(
                     gpuTempStartC = gpuTempStart,
                     gpuTempEndC = GpuTemp.readTempC(),
                     trialIndex = trialIndex,
+                    runsCompleted = 0,
                 )
             }
 
@@ -639,7 +844,7 @@ class AutoTunerEngine(
                 checkCancelled()
                 // Early-abort: crash within LAUNCH_HANG_THRESHOLD_SEC of window appearing
                 if (guestTerminatedChannel.tryReceive().isSuccess) {
-                    emit(TunerProgress.TrialAborted(trialIndex, TunerResult.TrialStatus.CRASHED))
+                    emit(TunerProgress.TrialAborted(trialIndex, TunerResult.TrialStatus.CRASHED, runIndex))
                     teardown(emit, trialIndex, total, gpuTempStart)
                     return TunerResult(
                         config = trialDef.config,
@@ -648,9 +853,10 @@ class AutoTunerEngine(
                         gpuTempStartC = gpuTempStart,
                         gpuTempEndC = GpuTemp.readTempC(),
                         trialIndex = trialIndex,
+                        runsCompleted = 0,
                     )
                 }
-                emit(TunerProgress.Warmup(trialIndex, total, s))
+                emit(TunerProgress.Warmup(trialIndex, total, s, runIndex, runsPerConfig))
                 delay(1_000)
             }
 
@@ -669,7 +875,7 @@ class AutoTunerEngine(
                         break
                     }
                     val currentFps = frameRating?.getCurrentFPS() ?: 0f
-                    emit(TunerProgress.Measuring(trialIndex, total, s, currentFps))
+                    emit(TunerProgress.Measuring(trialIndex, total, s, currentFps, runIndex, runsPerConfig))
                     delay(1_000)
                 }
             } else {
@@ -684,7 +890,7 @@ class AutoTunerEngine(
                         }
                         else -> {
                             val currentFps = frameRating?.getCurrentFPS() ?: 0f
-                            emit(TunerProgress.Measuring(trialIndex, total, 0, currentFps))
+                            emit(TunerProgress.Measuring(trialIndex, total, 0, currentFps, runIndex, runsPerConfig))
                             delay(1_000)
                             measureSec++
                         }
@@ -746,6 +952,7 @@ class AutoTunerEngine(
                 gpuTempEndC = gpuTempEnd,
                 throttleSuspect = throttleSuspect,
                 trialIndex = trialIndex,
+                runsCompleted = 1,  // raw single run; aggregateRuns() will combine N of these
             )
         } catch (ce: CancellationException) {
             throw ce
@@ -757,6 +964,7 @@ class AutoTunerEngine(
                 description = trialDef.description,
                 status = TunerResult.TrialStatus.CRASHED,
                 trialIndex = trialIndex,
+                runsCompleted = 0,
             )
         }
     }

@@ -1,5 +1,7 @@
 package app.gamenative.ui.screen.autotuner
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -17,6 +19,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -41,8 +44,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.gamenative.autotuner.MeasurementMode
+import app.gamenative.autotuner.SweepMode
 import app.gamenative.autotuner.TunerOutcome
 import app.gamenative.autotuner.TunerResult
+import app.gamenative.autotuner.TunerShareUtils
 
 /**
  * Shows the final sweep results:
@@ -145,6 +151,15 @@ fun AutoTunerResultsScreen(
                         }
                     }
                 }
+
+                // Share / Contribute button row
+                ShareResultSection(
+                    gameName = gameName,
+                    appId = state.appId,
+                    outcome = outcome,
+                    sweepMode = state.mode,
+                    measurementMode = state.measurementMode,
+                )
             }
 
             // Disclaimer
@@ -184,6 +199,108 @@ fun AutoTunerResultsScreen(
             }
 
             Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+/**
+ * Share / Contribute section shown below the Apply button.
+ *
+ * HONEST DESIGN NOTE:
+ * There is no "contribute tuner result" API endpoint on api.gamenative.app —
+ * /api/best-config and /api/game-runs are GET/fetch-only, and /api/game-run accepts
+ * user-played ratings, not auto-tuner sweep results.
+ *
+ * This section uses an Android ACTION_SEND share intent instead:
+ *   - "Share result" fires a system share sheet with the full formatted result +
+ *     IIC-compatible config JSON. The user can paste it wherever they like.
+ *   - "Open GitHub issue" opens a pre-filled issue on mayusi/IsItCompatible
+ *     (the repo where authored-windows-runners.json lives) so the maintainer
+ *     can review and merge the result into the authored config DB.
+ *
+ * The shared JSON matches the gameNativeConfig schema in authored-windows-runners.json,
+ * so merging a contributed result is a straightforward copy-paste.
+ */
+@Composable
+private fun ShareResultSection(
+    gameName: String,
+    appId: String,
+    outcome: TunerOutcome,
+    sweepMode: SweepMode,
+    measurementMode: MeasurementMode,
+) {
+    val context = LocalContext.current
+
+    // Build the share payload once (only when winner exists).
+    val payload = remember(outcome, gameName, appId) {
+        TunerShareUtils.buildSharePayload(
+            context = context,
+            gameName = gameName,
+            appId = appId,
+            outcome = outcome,
+            sweepMode = sweepMode,
+            measurementMode = measurementMode,
+        )
+    }
+
+    if (payload == null) return
+
+    HorizontalDivider()
+
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = MaterialTheme.shapes.small,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "Share device-measured result",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "These results were empirically measured on this device (menu/early-game FPS only). " +
+                    "Sharing them lets others see what worked on your hardware. " +
+                    "The config JSON matches the IIC authored-config format for easy merging.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                // ACTION_SEND share intent — routes to any installed share target.
+                OutlinedButton(
+                    onClick = { TunerShareUtils.shareViaIntent(context, payload) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = null,
+                        modifier = Modifier.padding(end = 6.dp),
+                    )
+                    Text("Share result")
+                }
+
+                // Pre-filled GitHub issue on mayusi/IsItCompatible.
+                OutlinedButton(
+                    onClick = {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(payload.githubIssueUrl)).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(intent)
+                    },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Open GitHub issue")
+                }
+            }
         }
     }
 }

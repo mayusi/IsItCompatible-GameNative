@@ -6,17 +6,40 @@ import com.winlator.container.ContainerData
 import timber.log.Timber
 
 /**
- * Sweep mode controls how many dimensions and trials are included.
+ * Sweep mode controls how many dimensions, trials, and runs-per-config are used.
  *
- * [QUICK]    ~8 trials  — Dimensions A + B + C (driver, dxwrapper, box64preset)
- * [STANDARD] ~11 trials — Dimensions A + B + C + D (+ fexcorePreset)
- * [THOROUGH] ~16 trials — All 5 dimensions + a second-pass re-sweep of A with the best
- *                          DX wrapper / Box64 preset locked in (catches interaction effects)
+ * [QUICK]    ~8 config slots  × 1 run = ~8 launches  — ~10–15 min
+ *            Dimensions A + B + C (driver, dxwrapper, box64preset).
+ *            Single-run to keep it fast; no averaging.
+ *
+ * [STANDARD] ~11 config slots × 2 runs = ~22 launches — ~35–45 min
+ *            Adds FEXCore preset sweep.
+ *            2 runs per config with interleaved ordering (each config gets one
+ *            "cooler" sample and one "warmer" sample within each dimension), averaged.
+ *
+ * [THOROUGH] ~16 config slots × 2 runs = ~32 launches — ~50–65 min
+ *            All 5 dimensions + second-pass driver re-sweep.
+ *            2 runs per config, interleaved. Most reliable winner.
+ *
+ * Time budget notes: each "launch" is ~warmup(15 s) + measure(45 s) + teardown/cooldown(~60 s)
+ * = ~2 min per launch. Estimates above use 2 min/launch with thermal-gate overhead.
  */
-enum class SweepMode(val label: String, val description: String) {
-    QUICK("Quick (~8 runs, ~10 min)", "Tests driver, DX wrapper, and Box64 preset."),
-    STANDARD("Standard (~11 runs, ~20 min)", "Adds FEXCore preset sweep."),
-    THOROUGH("Thorough (~16 runs, ~35 min)", "All dimensions + second-pass driver re-sweep."),
+enum class SweepMode(val label: String, val description: String, val runsPerConfig: Int) {
+    QUICK(
+        "Quick (~8 runs, ~10–15 min)",
+        "Tests driver, DX wrapper, and Box64 preset. Single-run, fastest.",
+        runsPerConfig = 1,
+    ),
+    STANDARD(
+        "Standard (~22 runs, ~35–45 min)",
+        "Adds FEXCore preset. 2 runs per config, interleaved for thermal fairness.",
+        runsPerConfig = 2,
+    ),
+    THOROUGH(
+        "Thorough (~32 runs, ~50–65 min)",
+        "All dimensions + second-pass driver re-sweep. 2 runs per config, most reliable.",
+        runsPerConfig = 2,
+    ),
 }
 
 /**
@@ -139,14 +162,23 @@ class SweepPlan private constructor(
         }
 
         /**
-         * Counts the maximum number of trials for a given mode (for progress display).
-         * THOROUGH adds one extra dimension-A pass.
+         * Counts the total number of individual game launches for a given mode (for progress
+         * display).  THOROUGH adds one extra dimension-A pass.  Multiplied by runsPerConfig
+         * so the progress bar reflects the true number of launches.
          */
         fun estimatedTrialCount(mode: SweepMode): Int {
             val dims = dimensionsForMode(mode)
-            val firstPass = dims.sumOf { it.values.size }
-            val secondPass = if (mode == SweepMode.THOROUGH) TunerDimension.GRAPHICS_DRIVER.values.size else 0
-            return firstPass + secondPass
+            val configSlots = dims.sumOf { it.values.size } +
+                if (mode == SweepMode.THOROUGH) TunerDimension.GRAPHICS_DRIVER.values.size else 0
+            return configSlots * mode.runsPerConfig
+        }
+
+        /**
+         * Estimated total minutes for [mode], rounded up, based on ~2 min per launch
+         * (15 s warmup + 45 s measure + ~60 s teardown/cooldown).
+         */
+        fun estimatedMinutes(mode: SweepMode): Int {
+            return estimatedTrialCount(mode) * 2
         }
     }
 }
