@@ -68,7 +68,9 @@ object SessionFeedbackBroadcaster {
 
             val sessionMinutes = if (sessionStartMs > 0L) {
                 val elapsedMs = System.currentTimeMillis() - sessionStartMs
-                (elapsedMs / 60_000L).toInt().coerceAtLeast(0)
+                // Clamp to [0, 1440] (0..24 h).  Guards against a corrupt/missing start
+                // timestamp producing a nonsensical or overflowing minute value.
+                (elapsedMs / 60_000L).toInt().coerceIn(0, 1440)
             } else {
                 0
             }

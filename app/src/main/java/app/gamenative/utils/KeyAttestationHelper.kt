@@ -97,7 +97,10 @@ object KeyAttestationHelper {
             PrefManager.keyAttestationAvailable = true
             Pair(nonce, chain)
         } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "Key attestation failed, continuing without it")
+            // Expected on debug builds (no hardware attestation / debug signing).
+            // Non-fatal: the API accepts requests without attestation; this is an
+            // enrichment signal only.  Log at W (not E) so it doesn't look like a crash.
+            Timber.tag(TAG).w("Key attestation unavailable (expected on debug/unsigned builds) — proceeding without it: ${e.message}")
             PrefManager.keyAttestationAvailable = false
             null
         }
