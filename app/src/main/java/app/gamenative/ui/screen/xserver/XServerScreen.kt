@@ -308,6 +308,14 @@ fun XServerScreen(
     bootToContainer: Boolean,
     testGraphics: Boolean = false,
     isOffline: Boolean = false,
+    /**
+     * True when this XServerScreen instance is running as part of an auto-tuner trial.
+     * When true, [AndroidEvent.RequestTrialExit] will trigger a programmatic exit using the
+     * same path as the in-game overlay bar's "Exit Game" button.  Must be false (default)
+     * for normal (non-tuner) game sessions so routine event-bus noise never accidentally
+     * closes a game.
+     */
+    tunerTrialRunning: Boolean = false,
     registerBackAction: ( ( ) -> Unit ) -> Unit,
     navigateBack: () -> Unit,
     onExit: (onComplete: (() -> Unit)?) -> Unit,
@@ -1434,6 +1442,19 @@ fun XServerScreen(
             Timber.i("onForceCloseApp")
             exit(xServerView!!.getxServer().winHandler, frameRating, currentAppInfo, container, appId, onExit, navigateBack)
         }
+        // Auto-tuner: engine requests programmatic trial exit via event bus.
+        // Mirrors the exact path of QuickMenuAction.EXIT_GAME (overlay bar's "Exit Game" button):
+        //   forceResumeIfSuspended() so Wine can receive SIGTERM cleanly, then exit().
+        // Gated on tunerTrialRunning so this NEVER fires during a normal (non-tuner) game session.
+        val onRequestTrialExit: (AndroidEvent.RequestTrialExit) -> Unit = {
+            if (tunerTrialRunning) {
+                Timber.i("[AutoTuner] RequestTrialExit received — auto-closing trial (same path as overlay Exit Game)")
+                forceResumeIfSuspended()
+                exit(xServerView?.getxServer()?.winHandler, frameRating, currentAppInfo, container, appId, onExit, navigateBack)
+            } else {
+                Timber.w("[AutoTuner] RequestTrialExit received but tunerTrialRunning=false — ignoring (safety gate)")
+            }
+        }
         val onPlayingBlocked: (SteamEvent.PlayingBlocked) -> Unit = { event ->
             if (isOffline || container.isSteamOfflineMode()) {
                 Timber.i("onPlayingBlocked suppressed (offline=$isOffline, containerOffline=${container.isSteamOfflineMode()})")
@@ -1452,6 +1473,7 @@ fun XServerScreen(
         PluviaApp.events.on<AndroidEvent.MotionEvent, Boolean>(onMotionEvent)
         PluviaApp.events.on<AndroidEvent.GuestProgramTerminated, Unit>(onGuestProgramTerminated)
         PluviaApp.events.on<SteamEvent.ForceCloseApp, Unit>(onForceCloseApp)
+        PluviaApp.events.on<AndroidEvent.RequestTrialExit, Unit>(onRequestTrialExit)
         PluviaApp.events.on<SteamEvent.PlayingBlocked, Unit>(onPlayingBlocked)
         ProcessHelper.addDebugCallback(debugCallback)
 
@@ -1461,6 +1483,7 @@ fun XServerScreen(
             PluviaApp.events.off<AndroidEvent.MotionEvent, Boolean>(onMotionEvent)
             PluviaApp.events.off<AndroidEvent.GuestProgramTerminated, Unit>(onGuestProgramTerminated)
             PluviaApp.events.off<SteamEvent.ForceCloseApp, Unit>(onForceCloseApp)
+            PluviaApp.events.off<AndroidEvent.RequestTrialExit, Unit>(onRequestTrialExit)
             PluviaApp.events.off<SteamEvent.PlayingBlocked, Unit>(onPlayingBlocked)
             ProcessHelper.removeDebugCallback(debugCallback)
         }

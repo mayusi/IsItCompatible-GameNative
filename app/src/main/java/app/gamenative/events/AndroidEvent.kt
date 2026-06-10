@@ -29,5 +29,13 @@ interface AndroidEvent<T> : Event<T> {
     data class GOGAuthCodeReceived(val authCode: String) : AndroidEvent<Unit>
     data class EpicAuthCodeReceived(val authCode: String) : AndroidEvent<Unit>
     data object ServiceReady : AndroidEvent<Unit>
+    /**
+     * Emitted by the auto-tuner when the measurement window ends (or a crash/abort is detected)
+     * to request that the currently running trial game session be closed programmatically.
+     * XServerScreen listens for this and invokes its internal exit() path — the same path used
+     * by the in-game overlay bar's "Exit Game" button — so teardown is identical to a manual close.
+     * Gated in XServerScreen to tuner-trial sessions only (tunerTrialRunning flag).
+     */
+    data object RequestTrialExit : AndroidEvent<Unit>
     // data class SetAppBarVisibility(val visible: Boolean) : AndroidEvent<Unit>
 }

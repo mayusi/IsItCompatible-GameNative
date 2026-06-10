@@ -188,6 +188,16 @@ interface TunerTrialController {
      * Engine will end the measurement window and proceed to teardown.
      */
     fun onManualStopRecording()
+
+    /**
+     * Called by the engine when it wants the currently running trial game session to be
+     * closed programmatically.  The UI layer must invoke the same exit path that the
+     * in-game overlay bar's "Exit Game" button uses (forceResumeIfSuspended + exit()),
+     * so Wine teardown is clean and identical to a manual close.
+     *
+     * After the exit completes the UI must call [onExitComplete] as usual.
+     */
+    fun requestTrialExit()
 }
 
 // =============================================================================
@@ -320,7 +330,24 @@ class AutoTunerEngine(
         override fun onManualStopRecording() {
             manualStopChannel.trySend(Unit)
         }
+        override fun requestTrialExit() {
+            // Implemented by the UI layer (AutoTunerViewModel / PluviaMain).
+            // The default no-op here is never called because AutoTunerViewModel
+            // replaces trialController.requestTrialExit with a real implementation
+            // via the requestExitCallback set below.
+        }
     }
+
+    // -------------------------------------------------------------------------
+    // Auto-exit callback — set by the UI layer after construction.
+    // The engine calls this when it wants the currently-running trial game to be
+    // closed programmatically (measurement window expired, crash detected, or
+    // manual-stop in MANUAL mode).  The UI must implement it using the SAME exit
+    // path as the in-game overlay bar's "Exit Game" button so Wine teardown is
+    // identical to a manual close.  After the exit completes the UI must call
+    // trialController.onExitComplete() as usual.
+    // -------------------------------------------------------------------------
+    var onRequestTrialExit: (() -> Unit)? = null
 
     // -------------------------------------------------------------------------
     // Internal state
@@ -357,11 +384,22 @@ class AutoTunerEngine(
     /** Cancels the in-progress sweep. Safe to call from any thread. */
     fun cancel() {
         cancelled = true
+        // Request the UI to close any currently-running trial game.
+        onRequestTrialExit?.invoke()
         // Unblock any suspended channels so the sweep coroutine can exit
         windowMappedChannel.trySend(Unit)
         guestTerminatedChannel.trySend(Unit)
         exitCompleteChannel.trySend(Unit)
         manualStopChannel.trySend(Unit)
+    }
+
+    /**
+     * Asks the UI to programmatically close the running trial.
+     * Safe to call from any thread; only fires when the callback is registered.
+     */
+    private fun triggerTrialExit() {
+        Timber.tag(TAG).d("triggerTrialExit — invoking onRequestTrialExit callback")
+        onRequestTrialExit?.invoke()
     }
 
     /**
@@ -569,10 +607,17 @@ class AutoTunerEngine(
 
             if (!windowAppeared || cancelled) {
                 // Crashed or hung before window appeared
-                val status = if (guestTerminatedChannel.tryReceive().isSuccess) {
+                val alreadyCrashed = guestTerminatedChannel.tryReceive().isSuccess
+                val status = if (alreadyCrashed) {
                     TunerResult.TrialStatus.CRASHED
                 } else {
                     TunerResult.TrialStatus.HUNG
+                }
+                // If the game is hung (no GuestProgramTerminated), request a programmatic exit
+                // so Wine doesn't remain as a zombie. If it already crashed, teardown handles it.
+                if (!alreadyCrashed && !cancelled) {
+                    Timber.tag(TAG).w("Trial $trialIndex hung/timed-out — requesting programmatic trial exit")
+                    triggerTrialExit()
                 }
                 emit(TunerProgress.TrialAborted(trialIndex, status))
                 teardown(emit, trialIndex, total, gpuTempStart)
@@ -645,6 +690,14 @@ class AutoTunerEngine(
                         }
                     }
                 }
+            }
+
+            // 7a. AUTO-CLOSE the trial game — fire the same exit path the overlay bar uses.
+            //     Only needed when the game is still running (i.e. measurement window expired
+            //     or MANUAL stop — not when the game already crashed on its own).
+            if (!crashed) {
+                Timber.tag(TAG).i("Trial $trialIndex measurement done — requesting programmatic trial exit")
+                triggerTrialExit()
             }
 
             // 7. Write FPS summary (AUTO mode: call writeSessionSummary; read the JSON)

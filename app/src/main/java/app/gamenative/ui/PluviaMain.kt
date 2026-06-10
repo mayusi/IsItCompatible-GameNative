@@ -1560,6 +1560,7 @@ fun PluviaMain(
                         bootToContainer = state.bootToContainer,
                         testGraphics = state.testGraphics,
                         isOffline = xServerIsOffline,
+                        tunerTrialRunning = tunerTrialRunning,
                         registerBackAction = { cb ->
                             Timber.d("registerBackAction called: $cb")
                             gameBackAction = cb

@@ -3,6 +3,7 @@ package app.gamenative.ui.screen.autotuner
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.gamenative.PluviaApp
 import app.gamenative.autotuner.AutoTunerEngine
 import app.gamenative.autotuner.MeasurementMode
 import app.gamenative.autotuner.SweepMode
@@ -10,6 +11,7 @@ import app.gamenative.autotuner.TunerGoal
 import app.gamenative.autotuner.TunerOutcome
 import app.gamenative.autotuner.TunerProgress
 import app.gamenative.autotuner.TunerResult
+import app.gamenative.events.AndroidEvent
 import com.winlator.widget.FrameRating
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -130,6 +132,8 @@ class AutoTunerViewModel : ViewModel() {
             mode = mode,
             measurementMode = measurementMode,
         )
+        // Wire the auto-exit callback so the engine can close the trial game programmatically.
+        eng.onRequestTrialExit = { requestTrialExit() }
         engine = eng
 
         _uiState.value = AutoTunerUiState(
@@ -210,6 +214,25 @@ class AutoTunerViewModel : ViewModel() {
     fun onManualStopRecording() {
         Timber.tag(TAG).d("onManualStopRecording -> trialController")
         engine?.trialController?.onManualStopRecording()
+    }
+
+    /**
+     * Called by the engine (via [AutoTunerEngine.onRequestTrialExit]) when the measurement
+     * window ends, a crash/hang is detected, or the user taps "Stop Recording" in MANUAL mode.
+     *
+     * Emits [AndroidEvent.RequestTrialExit] on the event bus.  XServerScreen listens for this
+     * event and invokes its internal [exit()] function — the exact same path that the in-game
+     * overlay bar's "Exit Game" button uses — so Wine teardown is clean and identical to a
+     * manual close.  Only fires when [trialIsRunning] is true to ensure it never closes a
+     * normal (non-tuner) game session.
+     */
+    fun requestTrialExit() {
+        if (!_uiState.value.trialIsRunning) {
+            Timber.tag(TAG).d("requestTrialExit ignored — no trial currently running")
+            return
+        }
+        Timber.tag(TAG).i("requestTrialExit — emitting AndroidEvent.RequestTrialExit")
+        PluviaApp.events.emit(AndroidEvent.RequestTrialExit)
     }
 
     /** Called by the Progress screen after it has triggered the XServerScreen launch. */
