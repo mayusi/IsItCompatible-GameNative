@@ -30,6 +30,8 @@ import app.gamenative.data.GameSource
 import app.gamenative.data.LibraryItem
 import app.gamenative.gamefixes.CollectionRegistry
 import app.gamenative.gamefixes.CollectionSubGame
+import app.gamenative.ui.screen.library.AppScreenContent
+import app.gamenative.ui.screen.library.CollectionSubGamesSection
 import app.gamenative.events.AndroidEvent
 import app.gamenative.ui.component.dialog.ContainerConfigDialog
 import app.gamenative.ui.data.AppMenuOption
@@ -1211,8 +1213,34 @@ abstract class BaseAppScreen {
             CollectionRegistry.getCollection(rawId)
         }
 
+        // Build the collection slot composable once (null for non-collection or not-installed games).
+        // Keeping this logic outside AppScreenContent reduces that function's param count, which
+        // prevents the Android dex VerifyError caused by Compose-compiler register overflow in
+        // large-param-count @Composable functions.
+        val collectionSlot: (@Composable () -> Unit)? = if (isInstalledState && gameCollection != null) {
+            {
+                CollectionSubGamesSection(
+                    collection = gameCollection,
+                    lastPlayedExePath = PrefManager.getLastPlayedSubGame(appId),
+                    onPlaySubGame = { subGame: CollectionSubGame ->
+                        uiScope.launch(Dispatchers.IO) {
+                            val container = ContainerUtils.getOrCreateContainer(context, appId)
+                            container.executablePath = subGame.exePath
+                            if (subGame.execArgs.isNotEmpty()) container.execArgs = subGame.execArgs
+                            container.saveData()
+                            // Persist last-played and trigger launch only after saveData() completes
+                            withContext(Dispatchers.Main) {
+                                PrefManager.setLastPlayedSubGame(appId, subGame.exePath)
+                                onDownloadInstallClick(context, libraryItem, onClickPlay)
+                            }
+                        }
+                    },
+                )
+            }
+        } else null
+
         // Render the common UI
-        app.gamenative.ui.screen.library.AppScreenContent(
+        AppScreenContent(
             displayInfo = displayInfo,
             isInstalled = isInstalledState,
             isValidToDownload = isValidToDownloadState,
@@ -1263,20 +1291,7 @@ abstract class BaseAppScreen {
                 }
             },
             onBack = onBack,
-            gameCollection = if (isInstalledState) gameCollection else null,
-            onPlaySubGame = if (isInstalledState && gameCollection != null) { subGame: CollectionSubGame ->
-                uiScope.launch(Dispatchers.IO) {
-                    val container = ContainerUtils.getOrCreateContainer(context, appId)
-                    container.executablePath = subGame.exePath
-                    if (subGame.execArgs.isNotEmpty()) container.execArgs = subGame.execArgs
-                    container.saveData()
-                    // Persist last-played and trigger launch only after saveData() completes
-                    withContext(Dispatchers.Main) {
-                        PrefManager.setLastPlayedSubGame(appId, subGame.exePath)
-                        onDownloadInstallClick(context, libraryItem, onClickPlay)
-                    }
-                }
-            } else null,
+            collectionSlot = collectionSlot,
             optionsMenu = optionsMenu.toTypedArray(),
         )
 

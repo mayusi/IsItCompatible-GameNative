@@ -4,7 +4,6 @@ package app.gamenative.ui.screen.library
 
 import android.content.Intent
 import android.content.res.Configuration
-import app.gamenative.gamefixes.CollectionRegistry
 import app.gamenative.gamefixes.CollectionSubGame
 import app.gamenative.gamefixes.GameCollection
 import app.gamenative.ui.screen.library.components.ambient.AmbientDownloadOverlay
@@ -514,10 +513,8 @@ internal fun AppScreenContent(
     onDeleteDownloadClick: () -> Unit,
     onUpdateClick: () -> Unit,
     onBack: () -> Unit = {},
-    /** If non-null, a "Games in this collection" section is rendered above the Play button. */
-    gameCollection: GameCollection? = null,
-    /** Called when the user taps Play on a specific sub-game row. */
-    onPlaySubGame: ((CollectionSubGame) -> Unit)? = null,
+    /** If non-null, rendered above the action bar inside the hero section (collection sub-game list). */
+    collectionSlot: (@Composable () -> Unit)? = null,
     vararg optionsMenu: AppMenuOption,
 ) {
     val context = LocalContext.current
@@ -813,12 +810,8 @@ internal fun AppScreenContent(
                     Spacer(modifier = Modifier.height(16.dp))
 
                     // "Games in this collection" section — shown above action bar when installed
-                    if (isInstalled && gameCollection != null && onPlaySubGame != null) {
-                        CollectionSubGamesSection(
-                            collection = gameCollection,
-                            lastPlayedExePath = PrefManager.getLastPlayedSubGame(displayInfo.appId),
-                            onPlaySubGame = onPlaySubGame,
-                        )
+                    if (collectionSlot != null) {
+                        collectionSlot()
                         Spacer(modifier = Modifier.height(8.dp))
                     }
 
