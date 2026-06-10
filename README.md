@@ -1,14 +1,16 @@
 # GameNative (IIC) — Is It Compatible? Fork
 
-A personal fork of [GameNative](https://github.com/utkarshdalal/GameNative) packaged as
-`app.gamenative.iic` so it installs **alongside** the official GameNative app without
-conflicting. Built for the **Is It Compatible?** companion workflow — bakes in per-game
-auto-fixes and device-tuned defaults, especially for AYN Odin / Adreno 830 /
-Snapdragon 8 Elite hardware.
+**v1.12.0-IIC** | Package: `app.gamenative.iic` | Android 9+ (modern flavor)
 
-> **Note:** This fork cannot update an existing official GameNative installation in-place.
-> Because it is signed with a different key, Android treats it as a separate app. Install
-> it alongside the official build; your saves and container data are stored per-package.
+A personal fork of [GameNative](https://github.com/utkarshdalal/GameNative) by utkarshdalal,
+packaged as `app.gamenative.iic` so it installs **alongside** the official app without
+conflicting. Built for the **Is It Compatible?** companion-app workflow — bakes in per-game
+auto-fixes, device-tuned defaults across 6 GPU classes, and an empirical Auto-Tuner that
+sweeps configs to find what works best for each game on your hardware.
+
+> **Note:** Because this fork is signed with a different key, Android treats it as a separate
+> app. It cannot update an existing official GameNative installation in-place. Install it
+> alongside; saves and container data are stored per-package.
 
 ---
 
@@ -16,96 +18,168 @@ Snapdragon 8 Elite hardware.
 
 GameNative lets you run PC games from your Steam, Epic, and GOG libraries directly on
 Android — no streaming required. It is built on top of the
-[Winlator](https://github.com/brunodev85/winlator) Wine/Box86 stack, extended with
-cloud saves, auto-applied game configs, and a native Android UI. See the upstream repo
-for full documentation.
+[Winlator](https://github.com/brunodev85/winlator) Wine/Box64 stack, extended with cloud
+saves, auto-applied game configs, and a native Android UI.
 
-This fork (`v1.8.2-IIC`) tracks the upstream source closely and adds the patches
-described below.
+All core functionality, the upstream game-compatibility pipeline, cloud saves, and the Android
+UI are the work of [utkarshdalal/GameNative](https://github.com/utkarshdalal/GameNative).
+This fork adds the IIC-specific patches described below.
 
 ---
 
-## Key changes vs upstream
+## IIC Fork Features
 
-### Virtual-controller / hardware controller support (AYN Odin)
+### Auto-Tuner
 
-The upstream input stack expects controllers to declare `INPUT_PROP_POINTING_STICK` or a
-similar physical flag. Hardware gamepads on the AYN Odin (and similar Android handhelds)
-present as **virtual input devices**, which the upstream code skipped. This fork accepts
-virtual-input devices as valid gamepads so the Odin built-in controller works without
-pairing an external Bluetooth pad.
+The centerpiece of this fork. The Auto-Tuner empirically sweeps through Wine/graphics
+configs and measures real performance on your device to find the best setup for each game.
 
-### evshim shared-memory path derived from the running package
+**Seven optimization goals:**
 
-The `evshim` native shim (which bridges hardware joystick state into the Wine
-environment via shared memory) previously used a hardcoded base path baked for
-`app.gamenative`. When the app runs as `app.gamenative.iic` the path diverged and the
-controller was silently dead. The shim now derives the base path from the process
-`/proc/self/cmdline` at runtime, falling back to `EVSHIM_BASE_PATH` env override, then
-the hardcoded path — so the controller works correctly under any package name.
-
-### Controller button release-edge fix
-
-Button-up events (key release) were occasionally swallowed when the SDL virtual joystick
-re-attached mid-session. The updater thread now flushes a synthetic release edge before
-re-attaching, preventing sticky buttons after a reconnect.
-
-### dxwrapper version self-heal
-
-If a container's configured dxwrapper version is no longer present in the bundled asset
-set (e.g. after an app update removes an old variant), the app now auto-selects the
-newest available version instead of falling through to a silent failure at launch.
-
-### Force-internal-storage
-
-Containers are created in internal storage by default to avoid FUSE/vold latency and the
-`SIGKILL` storms that can occur on some devices when Android's external-storage daemon
-races the Wine process during startup.
-
-### suspendPolicy auto-default
-
-New containers default `suspendPolicy` to `auto` (the system decides based on
-foreground/background transitions) rather than the upstream `manual`, which required
-users to explicitly resume after switching away from the game.
-
-### BOM-safe container config parsing
-
-The container config parser now strips a UTF-8 byte-order mark if present before
-attempting JSON/INI parsing. A BOM written by Windows-side tools (e.g. Notepad) caused
-silent parse failures and reset containers to defaults.
-
-### Per-game GameFixes
-
-| Game | Fix |
+| Goal | What it optimises |
 |---|---|
-| Devil May Cry HD Collection — Steam App ID 631510 | Deletes a stale shader-cache file that causes a hard crash on first launch after an update |
+| Compatibility Probe | "Does it even run?" — fast boot check (~5-8 min), ~6 archetype configs |
+| Max FPS | Highest average frame rate |
+| FPS + Stability | Best balance of frame rate and smoothness (good for online play) |
+| FPS + Battery | Best FPS per watt — extends playtime (device must be unplugged) |
+| FPS + Cool | Best FPS while keeping thermals low — good for long sessions |
+| Low-End Friendly | Lightest stable config for modest hardware |
+| Custom Weights | User-defined FPS/stability/battery/temperature weight sliders |
 
-### Adreno 830 / Snapdragon 8 Elite tuned defaults
+**Sweep mechanics:**
+- Two measurement modes: Auto (hands-off, reads FPS session data) and Manual (user plays,
+  taps "Stop Recording")
+- Per-trial: warmup phase, measurement window, cooldown with GPU temp tracking
+- Black-screen / crash detection — aborted trials are recorded, not silently discarded
+- Fix-finding during sweep: if a trial crashes, the engine attempts known fixes and retries
+  before marking the config as failed
+- Results screen shows all ranked configs with FPS, stability, battery, and temperature data
+- Sweep can be canceled mid-run; the best result so far is preserved
 
-On first run, `DeviceProfileDetector` detects Adreno 830-class GPUs
-(`GPUInformation.isAdreno8Elite()`) and writes optimised preference defaults:
-SD-8-Elite driver track, Turnip via adrenotools wrapper, 4 GB VRAM allocation, Vulkan
-backend. These only apply once and can be overridden per-container.
+### Per-Game GameFixes Registry
 
-### Ko-fi nag disabled
+A registry of compiled-in fixes covering Steam, GOG, and Epic games. Applied automatically
+at launch when a matching game is detected.
 
-The periodic Ko-fi support prompt is suppressed in this build. Please consider supporting
-the upstream project directly at [ko-fi.com/gamenative](https://ko-fi.com/gamenative).
+**OTA updates:** The registry is also hosted at
+[`gamefixes/registry.json`](gamefixes/registry.json) in this repo.
+The app syncs this file in the background so new fixes can be deployed without a full app
+update. Compiled-in fixes always take priority over OTA entries.
+
+Covers 40+ games across Steam/GOG/Epic (shader-cache cleanup, DLL overrides, registry
+keys, Wine env vars, and more).
+
+### DeviceProfileDetector — 6 GPU Classes
+
+On first launch, writes GPU-class-appropriate preference defaults once. Subsequent launches
+leave user overrides intact.
+
+| GPU Class | Chip Examples | Driver | VRAM |
+|---|---|---|---|
+| Adreno 830 / 8 Elite | AYN Odin 2 Pro, SD8 Elite phones | Turnip (Wrapper) | 4 GB |
+| Adreno 750 / 8 Gen 3 | SD8 Gen 3 phones | Turnip (Wrapper) | 3 GB |
+| Adreno 740 / 8 Gen 2 | SD8 Gen 2 phones | Turnip (Wrapper) | 2 GB |
+| Adreno 6xx / 865-888 | SD865/888 phones | Wrapper (system GLES fallback) | 2 GB |
+| Mali-G7xx / Dimensity | Dimensity 9000–9300 | System Vulkan | 2 GB |
+| Mali lower / Helio | Helio-class | System Vulkan | 1 GB |
+
+If no class matches, stock defaults remain unchanged.
+
+### BestConfigService
+
+On each game launch, fetches a GPU-matched recommended config from the upstream GameNative
+API and applies it in a background thread — no UI block. Skipped when an intent already
+supplied a config (e.g. Auto-Tuner result).
+
+### Multi-Game Collection Support
+
+For games that ship multiple titles in one install (one Steam/store ID, multiple
+executables), the fork presents a "Games in this collection" picker instead of requiring
+manual executable path changes.
+
+Built-in collection: **Devil May Cry HD Collection** (Steam 631510) — DMC1, DMC2, DMC3:
+Dante's Awakening. The crashing `dmcLauncher.exe` is excluded automatically.
+
+Additional collections can be deployed via OTA (same sync mechanism as the game-fix
+registry; `assets/gamefixes/collections.json` bundled in-app).
+
+### Crash Classifier
+
+After a game exits abnormally, the fork classifies the Wine debug output against known
+crash patterns and surfaces a human-readable suggestion with a one-tap fix action where
+possible (e.g. DLL override, registry fix).
+
+### AYN Odin / Virtual Controller Support
+
+Upstream GameNative expected controllers to declare physical input flags. Hardware
+gamepads on AYN Odin (and similar Android handhelds) present as virtual input devices,
+which upstream skipped. This fork accepts virtual-input devices as valid gamepads.
+
+The `evshim` native shim now derives its shared-memory base path from the running package
+name (`/proc/self/cmdline`) rather than a hardcoded path, so it works correctly under
+`app.gamenative.iic`.
+
+### Other Fixes
+
+- **Controller button release-edge fix** — synthetic release edge flushed on re-attach to
+  prevent sticky buttons
+- **dxwrapper self-heal** — if a container's configured dxwrapper version is no longer
+  present, the app auto-selects the newest available version
+- **Force-internal-storage** — new containers default to internal storage to avoid FUSE
+  latency and `SIGKILL` races on some devices
+- **suspendPolicy auto** — new containers default to `auto` rather than `manual`, so the
+  system handles foreground/background transitions without manual intervention
+- **BOM-safe config parsing** — strips UTF-8 BOM before JSON/INI parsing; prevents silent
+  parse failures from Windows-side tools
+- **Ko-fi nag disabled** — the periodic Ko-fi prompt is suppressed. Please consider
+  supporting the upstream project directly at [ko-fi.com/gamenative](https://ko-fi.com/gamenative)
+
+---
+
+## IIC Fork vs Vanilla GameNative
+
+| Feature | Vanilla GameNative | This Fork (IIC) |
+|---|---|---|
+| Package ID | `app.gamenative` | `app.gamenative.iic` |
+| Install alongside official | — | Yes (separate package) |
+| Auto-Tuner | No | Yes (7 goals, 2 modes) |
+| Crash classifier | No | Yes (one-tap fixes) |
+| Per-game fixes | Upstream registry | 40+ compiled-in + OTA updates |
+| Device GPU defaults | No | 6 GPU classes, one-shot |
+| Best config on launch | Upstream API | Upstream API + auto-apply |
+| Multi-game collections | No | DMC HD + OTA collections.json |
+| AYN Odin controller | Partial | Full virtual-device support |
+| IIC app session feedback | No | Yes (broadcast at session end) |
 
 ---
 
 ## Installation
 
-1. Download the `.apk` from the [Releases](../../releases) page (or build from source —
-   see below).
-2. Enable "Install from unknown sources" in Android settings.
-3. Install the APK. It will appear as a separate app alongside any existing GameNative
-   install.
-4. Log in to Steam and play.
+This fork is distributed through the **Is It Compatible?** companion app. Alternatively,
+download an APK from the [Releases](../../releases) page if available, or build from
+source (see below).
+
+1. Enable "Install from unknown sources" in Android settings.
+2. Install the APK. It appears as a separate app alongside any existing GameNative install.
+3. Log in to Steam (or Epic/GOG) and play.
 
 ---
 
-## Building from source
+## OTA Game-Fix Files
+
+Two JSON files are hosted in this repo and synced by the app in the background:
+
+| File | Contents |
+|---|---|
+| [`gamefixes/registry.json`](gamefixes/registry.json) | Per-game Wine/DLL fixes (delete files, env vars, registry keys, DLL overrides) |
+| `assets/gamefixes/collections.json` (bundled in-app) | Multi-game collection definitions |
+
+Compiled-in entries always take priority over OTA entries — there is no regression for
+games already covered at build time.
+
+---
+
+## Building from Source
 
 Standard Android Studio project. Tested with AGP 8.x and NDK `27.3.13750724`.
 
@@ -113,22 +187,22 @@ Standard Android Studio project. Tested with AGP 8.x and NDK `27.3.13750724`.
 # Optional: add a SteamGridDB API key for game artwork
 echo "STEAMGRIDDB_API_KEY=your_key_here" >> local.properties
 
-./gradlew assembleModernIicDebug
+./gradlew assembleModernDebug
 ```
 
-The `modern` + `iic` flavor combination produces `app.gamenative.iic`. The `gold` flavor
-produces `app.gamenative.gold` (an unrelated build variant retained from upstream).
+The `modern` flavor produces `app.gamenative.iic` (via `applicationIdSuffix = ".iic"`).
+The `legacy` flavor produces `app.gamenative` (same ID as upstream — intended for older
+Android builds, not the IIC fork).
 
 > **Large asset note:** `app/src/legacy/assets/extras.tzst` (~82 MB) is excluded from
 > this repository via `.gitignore` because it exceeds GitHub's per-file warning threshold.
-> It is pulled in during the Gradle build from the upstream asset pipeline. To build
-> locally, copy it from an upstream checkout or a Gradle cache into the expected path.
+> Copy it from an upstream checkout or Gradle cache into the expected path before building.
 
 ---
 
 ## License
 
-This repository is a fork of GameNative and is distributed under the same terms:
+Fork of GameNative, distributed under the same terms:
 **[GNU General Public License v3.0](LICENSE)** — see the `LICENSE` file.
 
 See [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) for attributions, copyleft source offers,
@@ -141,7 +215,7 @@ the Winlator/Wine lineage).
 
 - **GameNative** — original project by [utkarshdalal](https://github.com/utkarshdalal/GameNative).
   All core functionality, the upstream game-compatibility pipeline, cloud saves, and the
-  Android UI are their work. This fork only adds the patches described above.
+  Android UI are their work. This fork only adds the IIC-specific patches described above.
 - **Winlator** — Wine-on-Android container runtime by
   [brunodev85](https://github.com/brunodev85/winlator), which GameNative builds upon.
 - Built with assistance from Claude (Anthropic).
