@@ -76,3 +76,6 @@ app/src/legacy/assets/extras.tzst
 *.aab
 **/build/
 .kotlin/
+
+# GitHub Actions workflows — excluded from this personal fork (gh OAuth lacks workflow scope)
+.github/workflows/
