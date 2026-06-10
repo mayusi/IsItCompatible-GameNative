@@ -1222,25 +1222,31 @@ abstract class BaseAppScreen {
             isUpdatePending = isUpdatePendingState,
             downloadInfo = downloadInfo,
             onDownloadInstallClick = {
-                // For collections, launch the last-played (or first) sub-game
-                if (gameCollection != null && isInstalledState) {
+                // For collections, save the sub-game config first, then launch after saveData() completes
+                val collectionSubGame = if (gameCollection != null && isInstalledState) {
                     val lastExe = PrefManager.getLastPlayedSubGame(appId)
-                    val subGame = gameCollection.subGames.firstOrNull { it.exePath.equals(lastExe, ignoreCase = true) }
+                    gameCollection.subGames.firstOrNull { it.exePath.equals(lastExe, ignoreCase = true) }
                         ?: gameCollection.subGames.firstOrNull()
-                    if (subGame != null) {
-                        uiScope.launch(Dispatchers.IO) {
-                            val container = ContainerUtils.getOrCreateContainer(context, appId)
-                            container.executablePath = subGame.exePath
-                            if (subGame.execArgs.isNotEmpty()) container.execArgs = subGame.execArgs
-                            container.saveData()
+                } else null
+
+                if (collectionSubGame != null) {
+                    uiScope.launch(Dispatchers.IO) {
+                        val container = ContainerUtils.getOrCreateContainer(context, appId)
+                        container.executablePath = collectionSubGame.exePath
+                        if (collectionSubGame.execArgs.isNotEmpty()) container.execArgs = collectionSubGame.execArgs
+                        container.saveData()
+                        // Persist last-played and trigger launch only after saveData() completes
+                        withContext(Dispatchers.Main) {
+                            PrefManager.setLastPlayedSubGame(appId, collectionSubGame.exePath)
+                            onDownloadInstallClick(context, libraryItem, onClickPlay)
                         }
-                        PrefManager.setLastPlayedSubGame(appId, subGame.exePath)
                     }
-                }
-                onDownloadInstallClick(context, libraryItem, onClickPlay)
-                uiScope.launch {
-                    delay(100)
-                    performStateRefresh(true)
+                } else {
+                    onDownloadInstallClick(context, libraryItem, onClickPlay)
+                    uiScope.launch {
+                        delay(100)
+                        performStateRefresh(true)
+                    }
                 }
             },
             onPauseResumeClick = {
@@ -1264,9 +1270,12 @@ abstract class BaseAppScreen {
                     container.executablePath = subGame.exePath
                     if (subGame.execArgs.isNotEmpty()) container.execArgs = subGame.execArgs
                     container.saveData()
+                    // Persist last-played and trigger launch only after saveData() completes
+                    withContext(Dispatchers.Main) {
+                        PrefManager.setLastPlayedSubGame(appId, subGame.exePath)
+                        onDownloadInstallClick(context, libraryItem, onClickPlay)
+                    }
                 }
-                PrefManager.setLastPlayedSubGame(appId, subGame.exePath)
-                onDownloadInstallClick(context, libraryItem, onClickPlay)
             } else null,
             optionsMenu = optionsMenu.toTypedArray(),
         )
