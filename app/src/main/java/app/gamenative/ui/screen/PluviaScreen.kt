@@ -12,4 +12,9 @@ sealed class PluviaScreen(val route: String) {
         fun route(id: Long) = "chat/$id"
         const val ARG_ID = "id"
     }
+    data object AutoTunerProgress : PluviaScreen("autotuner_progress/{appId}") {
+        fun route(appId: String) = "autotuner_progress/$appId"
+        const val ARG_APP_ID = "appId"
+    }
+    data object AutoTunerResults : PluviaScreen("autotuner_results")
 }

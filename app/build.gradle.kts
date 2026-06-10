@@ -51,8 +51,8 @@ android {
 
         minSdk = 26
 
-        versionCode = 28
-        versionName = "1.9.3-IIC"
+        versionCode = 29
+        versionName = "1.10.0-IIC"
 
         buildConfigField("boolean", "GOLD", "false")
         fun secret(name: String) =

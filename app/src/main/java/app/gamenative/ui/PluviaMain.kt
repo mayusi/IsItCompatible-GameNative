@@ -84,6 +84,10 @@ import app.gamenative.ui.enums.Orientation
 import app.gamenative.ui.model.MainViewModel
 import app.gamenative.ui.screen.HomeScreen
 import app.gamenative.ui.screen.PluviaScreen
+import app.gamenative.ui.screen.autotuner.AutoTunerProgressScreen
+import app.gamenative.ui.screen.autotuner.AutoTunerResultsScreen
+import app.gamenative.ui.screen.autotuner.AutoTunerSetupDialog
+import app.gamenative.ui.screen.autotuner.AutoTunerViewModel
 import app.gamenative.ui.screen.login.UserLoginScreen
 import app.gamenative.ui.screen.settings.SettingsScreen
 import app.gamenative.ui.screen.xserver.XServerScreen
@@ -302,6 +306,41 @@ fun PluviaMain(
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
 
     var openContainerConfigForAppId by rememberSaveable { mutableStateOf<String?>(null) }
+
+    // ── AutoTuner state ──────────────────────────────────────────────
+    // Single ViewModel shared between setup dialog, progress screen, and results screen.
+    // Using remember (not hiltViewModel) so it is tied to PluviaMain's lifecycle and
+    // survives nav-stack changes without being recreated.
+    val autoTunerViewModel = remember { AutoTunerViewModel() }
+    var autoTunerSetupAppId by rememberSaveable { mutableStateOf<String?>(null) }
+
+    // Observe pendingLaunch: when the engine signals ReadyToLaunch, drive the trial
+    // through the normal preLaunchApp → launchApp → XServer path.
+    val pendingLaunch by autoTunerViewModel.pendingLaunch.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingLaunch) {
+        val launch = pendingLaunch ?: return@LaunchedEffect
+        val tunerAppId = autoTunerViewModel.uiState.value.appId
+        if (tunerAppId.isBlank()) return@LaunchedEffect
+        // Mark consumed immediately so we don't re-trigger
+        autoTunerViewModel.onTrialLaunched()
+        Timber.tag("PluviaMain").i("[AutoTuner] ReadyToLaunch for trial ${launch.trialIndex} — driving normal launch for $tunerAppId")
+        // Drive the game launch via the normal path (reuses preLaunchApp + launchApp).
+        viewModel.setLaunchedAppId(tunerAppId)
+        viewModel.setBootToContainer(false)
+        viewModel.setOffline(false)
+        preLaunchApp(
+            context = context,
+            appId = tunerAppId,
+            useTemporaryOverride = true,  // engine already applied the override via applyAutoConfigOverride
+            setLoadingDialogVisible = viewModel::setLoadingDialogVisible,
+            setLoadingProgress = viewModel::setLoadingDialogProgress,
+            setLoadingMessage = viewModel::setLoadingDialogMessage,
+            setMessageDialogState = setMessageDialogState,
+            onSuccess = viewModel::launchApp,
+            isOffline = false,
+        )
+    }
+    // ── End AutoTuner state ──────────────────────────────────────────
 
     // Track if connection banner was dismissed by user
     var connectionBannerDismissed by rememberSaveable { mutableStateOf(false) }
@@ -744,15 +783,25 @@ fun PluviaMain(
         )
     }
 
+    // Forward GuestProgramTerminated to the tuner engine when a trial is running.
+    val onGuestTerminatedForTuner: (AndroidEvent.GuestProgramTerminated) -> Unit = {
+        if (autoTunerViewModel.uiState.value.trialIsRunning) {
+            Timber.tag("PluviaMain").d("[AutoTuner] GuestProgramTerminated forwarded to trialController")
+            autoTunerViewModel.onGuestTerminated()
+        }
+    }
+
     LaunchedEffect(Unit) {
         PluviaApp.events.on<AndroidEvent.PromptSaveContainerConfig, Unit>(onPromptSaveConfig)
         PluviaApp.events.on<AndroidEvent.ShowGameFeedback, Unit>(onShowGameFeedback)
+        PluviaApp.events.on<AndroidEvent.GuestProgramTerminated, Unit>(onGuestTerminatedForTuner)
     }
 
     DisposableEffect(Unit) {
         onDispose {
             PluviaApp.events.off<AndroidEvent.PromptSaveContainerConfig, Unit>(onPromptSaveConfig)
             PluviaApp.events.off<AndroidEvent.ShowGameFeedback, Unit>(onShowGameFeedback)
+            PluviaApp.events.off<AndroidEvent.GuestProgramTerminated, Unit>(onGuestTerminatedForTuner)
         }
     }
 
@@ -1350,6 +1399,26 @@ fun PluviaMain(
                         }
                     }
 
+                    // Show AutoTuner setup dialog if triggered
+                    autoTunerSetupAppId?.let { tunerAppId ->
+                        val gameName = ContainerUtils.resolveGameName(tunerAppId)
+                        AutoTunerSetupDialog(
+                            gameName = gameName,
+                            onDismiss = { autoTunerSetupAppId = null },
+                            onStart = { goal, mode, measurementMode ->
+                                autoTunerSetupAppId = null
+                                autoTunerViewModel.startTuning(
+                                    context = context,
+                                    appId = tunerAppId,
+                                    goal = goal,
+                                    mode = mode,
+                                    measurementMode = measurementMode,
+                                )
+                                navController.navigate(PluviaScreen.AutoTunerProgress.route(tunerAppId))
+                            },
+                        )
+                    }
+
                     HomeScreen(
                         onClickPlay = { appId, asContainer ->
                             trackGameLaunched(appId)
@@ -1411,7 +1480,51 @@ fun PluviaMain(
                                 else PluviaScreen.Home.route
                             )
                         },
+                        onAutoTune = { appId ->
+                            autoTunerSetupAppId = appId
+                        },
                         isOffline = isOffline,
+                    )
+                }
+
+                /** AutoTuner Progress **/
+                composable(
+                    route = PluviaScreen.AutoTunerProgress.route,
+                    arguments = listOf(
+                        navArgument(PluviaScreen.AutoTunerProgress.ARG_APP_ID) {
+                            type = NavType.StringType
+                        },
+                    ),
+                ) { backStackEntry ->
+                    val appId = backStackEntry.arguments?.getString(PluviaScreen.AutoTunerProgress.ARG_APP_ID) ?: ""
+                    val gameName = ContainerUtils.resolveGameName(appId)
+
+                    AutoTunerProgressScreen(
+                        viewModel = autoTunerViewModel,
+                        gameName = gameName,
+                        onCancel = {
+                            navController.popBackStack()
+                        },
+                        onSweepComplete = {
+                            navController.navigate(PluviaScreen.AutoTunerResults.route) {
+                                popUpTo(PluviaScreen.AutoTunerProgress.route) {
+                                    inclusive = true
+                                }
+                            }
+                        },
+                    )
+                }
+
+                /** AutoTuner Results **/
+                composable(route = PluviaScreen.AutoTunerResults.route) {
+                    val appId = autoTunerViewModel.uiState.value.appId
+                    val gameName = ContainerUtils.resolveGameName(appId)
+                    AutoTunerResultsScreen(
+                        viewModel = autoTunerViewModel,
+                        gameName = gameName,
+                        onDismiss = {
+                            navController.popBackStack()
+                        },
                     )
                 }
 
@@ -1439,6 +1552,9 @@ fun PluviaMain(
                 /** Game Screen **/
                 composable(route = PluviaScreen.XServer.route) {
                     val xServerIsOffline by viewModel.isOffline.collectAsStateWithLifecycle()
+                    // Read tuner state at composition time to decide whether to forward callbacks.
+                    // This is safe: trialIsRunning is a stable snapshot; it won't flip mid-session.
+                    val tunerTrialRunning = autoTunerViewModel.uiState.value.trialIsRunning
                     XServerScreen(
                         appId = state.launchedAppId,
                         bootToContainer = state.bootToContainer,
@@ -1455,7 +1571,12 @@ fun PluviaMain(
                                     ?.route
 
                                 if (currentRoute == PluviaScreen.XServer.route) {
-                                    if (MainActivity.wasLaunchedViaExternalIntent) {
+                                    if (tunerTrialRunning) {
+                                        // Tuner trial ended — signal the engine and pop back to progress screen.
+                                        Timber.d("[AutoTuner] Trial navigateBack — signalling onExitComplete")
+                                        autoTunerViewModel.onExitComplete()
+                                        navController.popBackStack()
+                                    } else if (MainActivity.wasLaunchedViaExternalIntent) {
                                         Timber.d("[IntentLaunch]: Finishing activity to return to external launcher")
                                         MainActivity.wasLaunchedViaExternalIntent = false
                                         (context as? android.app.Activity)?.finish()
@@ -1465,14 +1586,34 @@ fun PluviaMain(
                                 }
                             }
                         },
-                        onWindowMapped = { context, window ->
-                            viewModel.onWindowMapped(context, window, state.launchedAppId)
+                        onWindowMapped = { ctx, window ->
+                            viewModel.onWindowMapped(ctx, window, state.launchedAppId)
+                            if (tunerTrialRunning) {
+                                Timber.d("[AutoTuner] onWindowMapped forwarded to trialController")
+                                autoTunerViewModel.onWindowMapped()
+                            }
                         },
                         onExit = { onComplete ->
                             viewModel.exitSteamApp(context, state.launchedAppId, onComplete)
+                            if (tunerTrialRunning) {
+                                // onExitComplete is also called from navigateBack above, but call
+                                // here as well for the path where XServerScreen tears itself down
+                                // internally (GuestProgramTerminated).
+                                Timber.d("[AutoTuner] onExit forwarded to trialController.onExitComplete")
+                                autoTunerViewModel.onExitComplete()
+                            }
                         },
                         onGameLaunchError = { error ->
                             viewModel.onGameLaunchError(error)
+                            if (tunerTrialRunning) {
+                                autoTunerViewModel.onGuestTerminated()
+                            }
+                        },
+                        onFrameRatingReady = { fr ->
+                            if (tunerTrialRunning) {
+                                Timber.d("[AutoTuner] FrameRating ready — forwarding to trialController")
+                                autoTunerViewModel.provideFrameRating(fr)
+                            }
                         },
                     )
                 }

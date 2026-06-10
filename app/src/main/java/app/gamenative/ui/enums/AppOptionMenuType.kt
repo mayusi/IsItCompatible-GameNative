@@ -33,4 +33,5 @@ enum class AppOptionMenuType(@StringRes val title: Int) {
     ManageGameContent(R.string.option_manage_dlc),
     ManageWorkshop(R.string.option_manage_workshop),
     ChangeBranch(R.string.change_branch),
+    AutoTune(R.string.option_auto_tune),
 }

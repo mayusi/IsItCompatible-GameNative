@@ -314,6 +314,8 @@ fun XServerScreen(
     onWindowMapped: ((Context, Window) -> Unit)? = null,
     onWindowUnmapped: ((Window) -> Unit)? = null,
     onGameLaunchError: ((String) -> Unit)? = null,
+    /** Optional: called once with the FrameRating instance when it is created (e.g. for auto-tuner). */
+    onFrameRatingReady: ((FrameRating) -> Unit)? = null,
 ) {
     Timber.i("Starting up XServerScreen")
     val context = LocalContext.current
@@ -2285,6 +2287,8 @@ fun XServerScreen(
             frameRating = FrameRating(context)
             frameRating?.setVisibility(View.GONE)
             xServerView.renderer.setFrameRating(frameRating)
+            // Notify auto-tuner (if active) that FrameRating is ready
+            frameRating?.let { onFrameRatingReady?.invoke(it) }
 
             if (isPerformanceHudEnabled) {
                 frameLayout.post {

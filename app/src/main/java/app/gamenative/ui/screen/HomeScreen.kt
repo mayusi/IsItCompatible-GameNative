@@ -23,6 +23,7 @@ fun HomeScreen(
     onClickExit: () -> Unit,
     onClickPlay: (String, Boolean) -> Unit,
     onTestGraphics: (String) -> Unit,
+    onAutoTune: (String) -> Unit = {},
     onLogout: () -> Unit,
     onNavigateRoute: (String) -> Unit,
     onGoOnline: () -> Unit,
@@ -43,6 +44,7 @@ fun HomeScreen(
         HomeDestination.Library -> HomeLibraryScreen(
             onClickPlay = onClickPlay,
             onTestGraphics = onTestGraphics,
+            onAutoTune = onAutoTune,
             onNavigateRoute = onNavigateRoute,
             onLogout = onLogout,
             onGoOnline = onGoOnline,

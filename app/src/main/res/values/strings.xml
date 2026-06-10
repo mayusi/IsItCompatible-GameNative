@@ -1516,6 +1516,7 @@
     <string name="option_force_upload_local">Force upload local saves</string>
     <string name="option_fetch_game_images">Fetch game images</string>
     <string name="option_test_graphics">Test graphics</string>
+    <string name="option_auto_tune">Auto-tune config</string>
     <string name="option_manage_dlc">Manage DLC</string>
     <string name="option_manage_workshop">Manage Workshop</string>
     <!-- Recommendations -->

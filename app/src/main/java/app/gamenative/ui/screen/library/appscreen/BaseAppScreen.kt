@@ -435,6 +435,18 @@ abstract class BaseAppScreen {
     }
 
     @Composable
+    protected open fun getAutoTuneOption(
+        context: Context,
+        libraryItem: LibraryItem,
+        onAutoTune: () -> Unit,
+    ): AppMenuOption? {
+        return AppMenuOption(
+            optionType = AppOptionMenuType.AutoTune,
+            onClick = onAutoTune,
+        )
+    }
+
+    @Composable
     protected abstract fun getResetContainerOption(
         context: Context,
         libraryItem: LibraryItem,
@@ -844,6 +856,7 @@ abstract class BaseAppScreen {
         onBack: () -> Unit,
         onClickPlay: (Boolean) -> Unit,
         onTestGraphics: () -> Unit,
+        onAutoTune: () -> Unit = {},
         exportFrontendLauncher: ActivityResultLauncher<String>,
     ): List<AppMenuOption> {
         val isInstalled = isInstalled(context, libraryItem)
@@ -856,6 +869,7 @@ abstract class BaseAppScreen {
             // Options only available when game is installed
             getRunContainerOption(context, libraryItem, onClickPlay)?.let { menuOptions.add(it) }
             getTestGraphicsOption(context, libraryItem, onTestGraphics)?.let { menuOptions.add(it) }
+            getAutoTuneOption(context, libraryItem, onAutoTune)?.let { menuOptions.add(it) }
             getResetContainerOption(context, libraryItem)?.let { menuOptions.add(it) }
             getCreateShortcutOption(context, libraryItem)?.let { menuOptions.add(it) }
             getExportContainerOption(context, libraryItem, exportFrontendLauncher)?.let { menuOptions.add(it) }
@@ -897,6 +911,7 @@ abstract class BaseAppScreen {
         libraryItem: LibraryItem,
         onClickPlay: (Boolean) -> Unit,
         onTestGraphics: () -> Unit,
+        onAutoTune: () -> Unit = {},
         onBack: () -> Unit,
     ) {
         val context = LocalContext.current
@@ -1157,7 +1172,7 @@ abstract class BaseAppScreen {
             }
         }
 
-        val optionsMenu = getOptionsMenu(context, libraryItem, onEditContainer, onBack, onClickPlay, onTestGraphics, exportFrontendLauncher)
+        val optionsMenu = getOptionsMenu(context, libraryItem, onEditContainer, onBack, onClickPlay, onTestGraphics, onAutoTune, exportFrontendLauncher)
 
         // Get download info based on game source for progress tracking
         val downloadInfo = when (libraryItem.gameSource) {

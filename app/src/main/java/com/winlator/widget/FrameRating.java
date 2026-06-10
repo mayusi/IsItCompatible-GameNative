@@ -37,6 +37,10 @@ public class FrameRating extends FrameLayout implements Runnable {
     private long lastReadingTime = 0;
     private long fpsSum = 0; // Sum of all FPS readings for average calculation
 
+    // Welford's online algorithm state for running variance (used by getFpsStdDev)
+    private double wMean = 0.0;   // running mean
+    private double wM2 = 0.0;    // running sum of squared deviations
+
     public FrameRating(Context context) {
         this(context, null);
     }
@@ -77,6 +81,12 @@ public class FrameRating extends FrameLayout implements Runnable {
                 }
 
                 lastReadingTime = time;
+
+                // Welford online variance update
+                double delta = currentFPS - wMean;
+                wMean += delta / readingCount;
+                double delta2 = currentFPS - wMean;
+                wM2 += delta * delta2;
             }
 
             post(this);
@@ -97,6 +107,8 @@ public class FrameRating extends FrameLayout implements Runnable {
         minFPS = Integer.MAX_VALUE;
         lastReadingTime = 0;
         fpsSum = 0;
+        wMean = 0.0;
+        wM2 = 0.0;
         post(() -> textView.setText(String.format(Locale.ENGLISH, "%.1f", 0f)));
     }
 
@@ -108,6 +120,21 @@ public class FrameRating extends FrameLayout implements Runnable {
     public float getAvgFPS() {
         if (readingCount == 0) return 0;
         return (float) fpsSum / readingCount;
+    }
+
+    /**
+     * Returns the population standard deviation of per-second FPS readings collected
+     * since the last {@link #reset()} call, using Welford's online algorithm.
+     *
+     * Returns 0 if fewer than 2 readings have been taken (variance is undefined for n < 2).
+     * A higher value means more variable (less stable) frame times.
+     *
+     * Added for AutoTunerEngine stability scoring; does not affect existing behaviour.
+     */
+    public float getFpsStdDev() {
+        if (readingCount < 2) return 0f;
+        double variance = wM2 / readingCount; // population variance
+        return (float) Math.sqrt(variance);
     }
 
     public float getSessionLengthSec() {

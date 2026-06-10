@@ -116,6 +116,7 @@ fun HomeLibraryScreen(
     viewModel: LibraryViewModel = hiltViewModel(),
     onClickPlay: (String, Boolean) -> Unit,
     onTestGraphics: (String) -> Unit,
+    onAutoTune: (String) -> Unit = {},
     onNavigateRoute: (String) -> Unit,
     onLogout: () -> Unit,
     onGoOnline: () -> Unit,
@@ -137,6 +138,7 @@ fun HomeLibraryScreen(
         onRefresh = viewModel::onRefresh,
         onClickPlay = onClickPlay,
         onTestGraphics = onTestGraphics,
+        onAutoTune = onAutoTune,
         onNavigateRoute = onNavigateRoute,
         onLogout = onLogout,
         onGoOnline = onGoOnline,
@@ -165,6 +167,7 @@ private fun LibraryScreenContent(
     onSearchQuery: (String) -> Unit,
     onClickPlay: (String, Boolean) -> Unit,
     onTestGraphics: (String) -> Unit,
+    onAutoTune: (String) -> Unit = {},
     onRefresh: () -> Unit,
     onNavigateRoute: (String) -> Unit,
     onLogout: () -> Unit,
@@ -1007,6 +1010,11 @@ private fun LibraryScreenContent(
                 onTestGraphics = {
                     selectedLibraryItem?.let { libraryItem ->
                         onTestGraphics(libraryItem.appId)
+                    }
+                },
+                onAutoTune = {
+                    selectedLibraryItem?.let { libraryItem ->
+                        onAutoTune(libraryItem.appId)
                     }
                 },
             )
