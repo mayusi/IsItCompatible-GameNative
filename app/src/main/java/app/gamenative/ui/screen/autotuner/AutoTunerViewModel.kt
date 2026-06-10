@@ -162,7 +162,7 @@ class AutoTunerViewModel : ViewModel() {
             appId = appId,
         )
 
-        sweepJob = viewModelScope.launch {
+        sweepJob = viewModelScope.launch(Dispatchers.IO) {
             eng.progressFlow.collect { progress ->
                 handleProgress(progress)
             }
@@ -191,9 +191,11 @@ class AutoTunerViewModel : ViewModel() {
      * Safe to call from any thread; wrapped in try/catch by BatteryReader internally.
      */
     fun refreshBatteryState() {
-        val discharging = BatteryReader.isDischarging()
-        Timber.tag(TAG).d("refreshBatteryState: isDischarging=$discharging")
-        _uiState.value = _uiState.value.copy(batteryAvailable = discharging)
+        viewModelScope.launch(Dispatchers.IO) {
+            val discharging = BatteryReader.isDischarging()
+            Timber.tag(TAG).d("refreshBatteryState: isDischarging=$discharging")
+            _uiState.value = _uiState.value.copy(batteryAvailable = discharging)
+        }
     }
 
     /**

@@ -1167,7 +1167,10 @@ fun PluviaMain(
                 withDismissAction = msg.persistent,
             )
             if (result == SnackbarResult.ActionPerformed) {
-                msg.onAction?.invoke()
+                // onAction may perform disk I/O (DllOverrideFix, VideoFileAutoFixer) — run on IO.
+                withContext(Dispatchers.IO) {
+                    msg.onAction?.invoke()
+                }
             }
         }
     }
