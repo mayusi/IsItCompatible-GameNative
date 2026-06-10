@@ -12,6 +12,7 @@ import app.gamenative.service.ActiveGameRegistry
 import app.gamenative.service.DownloadService
 import app.gamenative.service.SteamService
 import app.gamenative.sync.FrontendSyncManager
+import app.gamenative.gamefixes.GameFixesRegistry
 import app.gamenative.utils.ContainerMigrator
 import app.gamenative.utils.DeviceProfileDetector
 import app.gamenative.utils.FuseExternalMigrator
@@ -78,6 +79,12 @@ class PluviaApp : SplitCompatApplication() {
         // Init our datastore preferences.
         PrefManager.init(this)
         FrontendSyncManager.init(this)
+
+        // Feature 2: load the JSON gamefixes registry (bundled + cached) and schedule
+        // a background OTA sync of the registry.json from the CDN.
+        appScope.launch {
+            GameFixesRegistry.init(applicationContext)
+        }
 
         // IIC: The upstream Ko-fi "Thank you" nag dialog points at the original project's Ko-fi
         // and is inappropriate for this fork. Suppress it permanently by marking as tipped on

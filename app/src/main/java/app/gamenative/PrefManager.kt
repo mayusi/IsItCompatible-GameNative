@@ -1280,6 +1280,12 @@ object PrefManager {
         get() = getPref(AUTO_APPLY_KNOWN_CONFIG, true)
         set(value) = setPref(AUTO_APPLY_KNOWN_CONFIG, value)
 
+    // auto-apply best config from BestConfigService on every game launch (Feature 1)
+    private val AUTO_APPLY_BEST_CONFIG = booleanPreferencesKey("auto_apply_best_config")
+    var autoApplyBestConfig: Boolean
+        get() = getPref(AUTO_APPLY_BEST_CONFIG, true)
+        set(value) = setPref(AUTO_APPLY_BEST_CONFIG, value)
+
     // Game compatibility cache (JSON string)
     private val GAME_COMPATIBILITY_CACHE = stringPreferencesKey("game_compatibility_cache")
     var gameCompatibilityCache: String

@@ -4,12 +4,14 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.hardware.input.InputManager;
+import android.os.Build;
 import android.preference.PreferenceManager;
 import android.util.SparseArray;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 
 import app.gamenative.PrefManager;
+import app.gamenative.ui.util.SnackbarManager;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -39,6 +41,10 @@ public class ControllerManager {
     // This list will hold all physical game controllers detected by Android.
     private final List<InputDevice> detectedDevices = new ArrayList<>();
 
+    // IIC: set to true when a controller has been announced this session so
+    // we only show the "Controller detected" snackbar once per game launch.
+    private boolean controllerAnnouncedThisSession = false;
+
     // This maps a player slot (0-3) to the unique identifier of the physical device.
     // e.g., key=0, value="vendor_123_product_456"
     private final SparseArray<String> slotAssignments = new SparseArray<>();
@@ -61,6 +67,8 @@ public class ControllerManager {
 
         // On startup, we load saved settings and scan for connected devices.
         loadAssignments();
+        // Reset announcement so a fresh app launch can fire the controller snackbar.
+        resetAnnouncementState();
         scanForDevices();
     }
 
@@ -69,17 +77,59 @@ public class ControllerManager {
 
     /**
      * Scans for all physically connected game controllers and updates the internal list.
+     * On the first scan that finds at least one controller, emits a one-time
+     * "Controller detected: <name>" snackbar so the user knows their gamepad was recognised.
+     * Requires {@link #resetAnnouncementState()} to be called before each game launch
+     * so the message can fire again if the user starts a new game.
      */
     public void scanForDevices() {
         detectedDevices.clear();
+        if (inputManager == null) return;
         int[] deviceIds = inputManager.getInputDeviceIds();
         for (int deviceId : deviceIds) {
             InputDevice device = inputManager.getInputDevice(deviceId);
-            // We only want physical gamepads/joysticks, not virtual ones or touchscreens.
+            // Accept physical gamepads and also virtual devices that carry gamepad/joystick
+            // sources (e.g. AYN Odin virtual controller — matches the ExternalController fix).
             if (device != null && isGameController(device)) {
                 detectedDevices.add(device);
             }
         }
+
+        // IIC: announce the first detected controller once per game session.
+        if (!controllerAnnouncedThisSession && !detectedDevices.isEmpty()) {
+            controllerAnnouncedThisSession = true;
+            InputDevice first = detectedDevices.get(0);
+            String msg = buildControllerMessage(first);
+            SnackbarManager.INSTANCE.show(msg);
+        }
+    }
+
+    /**
+     * Call this before launching a game (e.g. from XServerScreen setup) so the
+     * "Controller detected" snackbar can fire again for the new game session.
+     */
+    public void resetAnnouncementState() {
+        controllerAnnouncedThisSession = false;
+    }
+
+    /**
+     * Builds the user-visible controller detection message.
+     * Produces "AYN Odin controller detected — gamepad mode active." for AYN Odin devices,
+     * or "Controller detected: <name>" for all other controllers.
+     */
+    private static String buildControllerMessage(InputDevice device) {
+        String manufacturer = Build.MANUFACTURER != null ? Build.MANUFACTURER : "";
+        String model = Build.MODEL != null ? Build.MODEL : "";
+        boolean isOdin = manufacturer.toLowerCase().contains("ayn")
+                || model.toLowerCase().contains("odin");
+        if (isOdin) {
+            return "AYN Odin controller detected — gamepad mode active.";
+        }
+        String name = device.getName();
+        if (name == null || name.trim().isEmpty()) {
+            name = "Unknown Controller";
+        }
+        return "Controller detected: " + name;
     }
 
     /**

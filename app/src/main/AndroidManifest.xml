@@ -25,6 +25,12 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:mimeType="application/vnd.android.package-archive" />
         </intent>
+        <!-- IIC round-trip: visibility for the Is It Compatible companion app
+             so PackageManager.getPackageInfo can confirm it's installed before
+             we fire the GAME_SESSION_ENDED broadcast (Android 11+ requirement).
+             Support both release and debug build variants. -->
+        <package android:name="io.github.mayusi.isitcompatible" />
+        <package android:name="io.github.mayusi.isitcompatible.debug" />
     </queries>
 
     <application

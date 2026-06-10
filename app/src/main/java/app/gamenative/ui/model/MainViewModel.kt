@@ -15,6 +15,7 @@ import app.gamenative.enums.LoginResult
 import app.gamenative.enums.PathType
 import app.gamenative.events.AndroidEvent
 import app.gamenative.events.SteamEvent
+import app.gamenative.iic.SessionFeedbackBroadcaster
 import app.gamenative.ui.enums.Orientation
 import java.util.EnumSet
 import app.gamenative.service.ActiveGameRegistry
@@ -215,6 +216,13 @@ class MainViewModel @Inject constructor(
 
     private var bootingSplashTimeoutJob: Job? = null
     private var connectionTimeoutJob: Job? = null
+
+    /**
+     * IIC round-trip: wall-clock ms captured at game-launch start.
+     * Used by [exitSteamApp] to compute approximate session duration in minutes.
+     * 0 means "not set / launch not recorded" — broadcaster degrades gracefully.
+     */
+    private var iicSessionStartMs: Long = 0L
 
     init {
         // Restore persisted screen from SavedStateHandle if available
@@ -447,6 +455,8 @@ class MainViewModel @Inject constructor(
     }
 
     fun launchApp(context: Context, appId: String) {
+        // IIC round-trip: record session start time.
+        iicSessionStartMs = System.currentTimeMillis()
         // Show booting splash before launching the app
         viewModelScope.launch {
             setShowBootingSplash(true)
@@ -485,8 +495,14 @@ class MainViewModel @Inject constructor(
                 bootingSplashTimeoutJob?.cancel()
                 bootingSplashTimeoutJob = null
                 setShowBootingSplash(false)
-                // Check if we have a temporary override before doing anything
-                val hadTemporaryOverride = IntentLaunchManager.hasTemporaryOverride(appId)
+                // Check if we have an intent-supplied temporary override before doing anything.
+                // Auto-applied best-config overrides (Feature 1) are "silent" and should NOT
+                // prompt the user to save — hasIntentSuppliedOverride excludes those.
+                val hadIntentOverride = IntentLaunchManager.hasIntentSuppliedOverride(appId)
+                // Silent (auto-applied) overrides are simply discarded on exit.
+                if (IntentLaunchManager.hasTemporaryOverride(appId) && !hadIntentOverride) {
+                    IntentLaunchManager.clearTemporaryOverride(appId)
+                }
 
                 val gameId = ContainerUtils.extractGameIdFromContainerId(appId)
                 Timber.tag("Exit").i("Got game id: $gameId")
@@ -495,7 +511,8 @@ class MainViewModel @Inject constructor(
                 handleExitCloudSync(context, appId, gameId)
 
                 // Prompt user to save temporary container configuration if one was applied
-                if (hadTemporaryOverride) {
+                // by an external intent (not by the auto-apply feature).
+                if (hadIntentOverride) {
                     PluviaApp.events.emit(AndroidEvent.PromptSaveContainerConfig(appId))
                     // Dialog handler in PluviaMain manages the save/discard logic
                 }
@@ -529,6 +546,25 @@ class MainViewModel @Inject constructor(
                     }
                 } catch (e: Exception) {
                     Timber.w(e, "Failed to check/update feedback dialog state for $appId")
+                }
+
+                // IIC round-trip: best-effort broadcast to the IIC companion app.
+                // Wrapping try/catch ensures this never crashes the fork regardless
+                // of whether the app is installed or the broadcast fails.
+                try {
+                    val gameSource = ContainerUtils.extractGameSourceFromContainerId(appId)
+                    val numericId = runCatching {
+                        ContainerUtils.extractGameIdFromContainerId(appId)
+                    }.getOrDefault(0)
+                    SessionFeedbackBroadcaster.send(
+                        context = context,
+                        appId = numericId,
+                        gameSource = gameSource.name,
+                        sessionStartMs = iicSessionStartMs,
+                        showedFps = PrefManager.showFps,
+                    )
+                } catch (e: Exception) {
+                    Timber.w(e, "[IIC] Unexpected error preparing session feedback broadcast (non-fatal)")
                 }
             } finally {
                 onComplete?.invoke()

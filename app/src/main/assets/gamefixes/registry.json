@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "fixes": [
+    {
+      "source": "STEAM",
+      "gameId": "631510",
+      "type": "delete_files",
+      "globs": [
+        "data/dmc3/Video/*.wmv",
+        "data/dmc1/Video/*.wmv",
+        "data/dmc2/Video/*.wmv",
+        "data/dmc1/movie/*.wmv",
+        "data/dmc2/movie/*.wmv"
+      ],
+      "_comment": "Devil May Cry HD Collection — renames intro .wmv files to .bak to prevent crash on launch"
+    },
+    {
+      "source": "STEAM",
+      "gameId": "208650",
+      "type": "wine_env",
+      "envVars": {
+        "WINEDLLOVERRIDES": "PhysXDevice=n"
+      },
+      "_comment": "Batman: Arkham Knight — prevents crash when Nvidia PhysX bridge DLL is loaded as native"
+    },
+    {
+      "source": "STEAM",
+      "gameId": "489830",
+      "type": "registry_key",
+      "registryKey": "Software\\Wow6432Node\\Bethesda Softworks\\Skyrim Special Edition",
+      "values": {
+        "Installed Path": "<InstallPath>"
+      },
+      "_comment": "Skyrim Special Edition — writes install path registry key required by game launcher"
+    },
+    {
+      "source": "STEAM",
+      "gameId": "413420",
+      "type": "wine_env",
+      "envVars": {
+        "WINEDLLOVERRIDES": "d3dx9_43=native,builtin d3dcompiler_43=native,builtin"
+      },
+      "_comment": "Danganronpa 2 — forces native d3dx9/d3dcompiler DLLs to avoid vkd3d E5017 shader crash"
+    }
+  ]
+}

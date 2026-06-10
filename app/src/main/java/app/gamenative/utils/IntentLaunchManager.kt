@@ -145,6 +145,26 @@ object IntentLaunchManager {
         return TemporaryConfigStore.hasOverride(appId)
     }
 
+    /**
+     * Returns true only for overrides that were supplied by an external LAUNCH_GAME intent.
+     * Auto-applied best-config overrides (Feature 1) are "silent" and should NOT prompt
+     * the user to save — so this returns false for those.
+     */
+    fun hasIntentSuppliedOverride(appId: String): Boolean {
+        return TemporaryConfigStore.hasOverride(appId) &&
+            !TemporaryConfigStore.isSilentOverride(appId)
+    }
+
+    /**
+     * Applies a temporary config override that was auto-computed (not supplied by an
+     * external intent). The override is non-persisted and will NOT prompt the user to
+     * save when the game session ends.
+     */
+    fun applyAutoConfigOverride(context: Context, appId: String, configOverride: ContainerData) {
+        applyTemporaryConfigOverride(context, appId, configOverride)
+        TemporaryConfigStore.markSilent(appId)
+    }
+
     fun getTemporaryOverride(appId: String): ContainerData? {
         return TemporaryConfigStore.getOverride(appId)
     }
@@ -333,10 +353,14 @@ object IntentLaunchManager {
 private object TemporaryConfigStore {
     private val overrides = mutableMapOf<String, ContainerData>()
     private val originalConfigs = mutableMapOf<String, ContainerData>()
+    // Tracks overrides that were auto-applied (not intent-supplied) and should not prompt save.
+    private val silentOverrides = mutableSetOf<String>()
     private val lock = Any()
 
     fun setOverride(appId: String, config: ContainerData) = synchronized(lock) {
         overrides[appId] = config
+        // Clear silent flag when an intent-supplied config is explicitly set.
+        silentOverrides.remove(appId)
     }
 
     fun getOverride(appId: String): ContainerData? = synchronized(lock) {
@@ -346,10 +370,19 @@ private object TemporaryConfigStore {
     fun clearOverride(appId: String) = synchronized(lock) {
         overrides.remove(appId)
         originalConfigs.remove(appId)
+        silentOverrides.remove(appId)
     }
 
     fun hasOverride(appId: String): Boolean = synchronized(lock) {
         overrides.containsKey(appId)
+    }
+
+    fun markSilent(appId: String) = synchronized(lock) {
+        silentOverrides.add(appId)
+    }
+
+    fun isSilentOverride(appId: String): Boolean = synchronized(lock) {
+        silentOverrides.contains(appId)
     }
 
     fun setOriginalConfig(appId: String, config: ContainerData) = synchronized(lock) {
@@ -363,5 +396,6 @@ private object TemporaryConfigStore {
     fun clearAll() = synchronized(lock) {
         overrides.clear()
         originalConfigs.clear()
+        silentOverrides.clear()
     }
 }

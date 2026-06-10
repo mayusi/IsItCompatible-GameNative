@@ -103,6 +103,7 @@ import app.gamenative.ui.data.PerformanceHudSize
 import app.gamenative.ui.data.XServerState
 import app.gamenative.ui.widget.PerformanceHudView
 import app.gamenative.utils.AssetUtils
+import app.gamenative.utils.BestConfigApplier
 import app.gamenative.utils.ContainerUtils
 import app.gamenative.utils.downloader.CoreDriverDownloader
 import app.gamenative.utils.CustomGameScanner
@@ -3168,6 +3169,16 @@ private fun setupXEnvironment(
     var gameExecutable = ""
 
     if (container != null) {
+        // Feature 1: auto-apply best config as a temporary (non-persisted) override before Wine
+        // starts. This is a no-op when an intent-supplied config is already active or when the
+        // feature flag is off. Any API failure silently falls through.
+        try {
+            runBlocking {
+                BestConfigApplier.maybeApply(context, appId, container)
+            }
+        } catch (e: Exception) {
+            Timber.tag("BestConfigApplier").w(e, "Auto-apply best config failed for $appId")
+        }
         try {
             GameFixesRegistry.applyFor(context, appId, container)
         } catch (e: Exception) {

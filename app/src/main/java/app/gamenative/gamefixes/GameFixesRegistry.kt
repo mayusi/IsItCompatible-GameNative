@@ -2,6 +2,7 @@ package app.gamenative.gamefixes
 
 import android.content.Context
 import app.gamenative.data.GameSource
+import app.gamenative.ui.util.SnackbarManager
 import app.gamenative.utils.ContainerUtils
 import app.gamenative.service.gog.GOGConstants
 import app.gamenative.service.gog.GOGService
@@ -66,7 +67,60 @@ object GameFixesRegistry {
         EPIC_Fix_864c7bc2c2394f7dbd1b534aa068ff56,
     ).associateBy { it.gameSource to it.gameId }
 
-    private var fixesProvider: () -> Map<Pair<GameSource, String>, GameFix> = { fixes }
+    /**
+     * Merged map of compiled-in + JSON-loaded fixes.
+     * Compiled-in fixes take priority: the JSON set only fills gaps for game IDs not
+     * already covered by the compiled set, so there is zero regression for existing fixes.
+     */
+    private val allFixes: Map<Pair<GameSource, String>, GameFix>
+        get() {
+            val jsonFixes = JsonGameFixLoader.loadedFixes
+            // Compiled-in wins: put compiled-in after JSON so it overwrites on collision.
+            return jsonFixes + fixes
+        }
+
+    private var fixesProvider: () -> Map<Pair<GameSource, String>, GameFix> = { allFixes }
+
+    /**
+     * Initialises the JSON fix loader. Call once from Application.onCreate()
+     * (or lazily on first launch). Safe to call multiple times.
+     */
+    fun init(context: Context) {
+        JsonGameFixLoader.init(context)
+        GameFixesSyncWorker.scheduleIfNeeded(context)
+    }
+
+    /**
+     * Returns true if a fix is registered for the given (gameSource, gameId) pair.
+     * The gameId must be the canonical ID used as the registry key
+     * (for Epic this is the catalogId, not the numeric appId).
+     */
+    fun hasFixFor(gameSource: GameSource, gameId: String): Boolean {
+        return fixesProvider()[gameSource to gameId] != null
+    }
+
+    /**
+     * Applies the fix for the given appId immediately.
+     * This is the same logic as applyFor() but returns the Boolean result
+     * so callers (e.g. a Quick Menu "re-apply" action) can check success.
+     *
+     * Returns null if no fix is registered for this game.
+     * Returns true if the fix was applied successfully, false on partial failure.
+     */
+    fun applyForNow(context: Context, appId: String, container: Container): Boolean? {
+        val source = ContainerUtils.extractGameSourceFromContainerId(appId)
+        val gameId = ContainerUtils.extractGameIdFromContainerId(appId)?.toString() ?: return null
+        val catalogId = when (source) {
+            GameSource.EPIC -> {
+                val game = EpicService.getEpicGameOf(gameId.toInt()) ?: return null
+                game.catalogId
+            }
+            else -> gameId
+        }
+        val fix = fixesProvider()[source to catalogId] ?: return null
+        val (installPath, installPathWindows) = resolvePaths(context, source, gameId) ?: return null
+        return fix.apply(context, catalogId, installPath, installPathWindows, container)
+    }
 
     fun applyFor(context: Context, appId: String, container: Container) {
         val source = ContainerUtils.extractGameSourceFromContainerId(appId)
@@ -82,7 +136,25 @@ object GameFixesRegistry {
         Timber.i("GameFixesRegistry: Applying fixes for game: $source $catalogId if available")
         val fix = fixesProvider()[source to catalogId] ?: return
         val (installPath, installPathWindows) = resolvePaths(context, source, gameId) ?: return
-        fix.apply(context, catalogId, installPath, installPathWindows, container)
+        val succeeded = fix.apply(context, catalogId, installPath, installPathWindows, container)
+        if (succeeded) {
+            val gameName = resolveGameDisplayName(source, gameId, catalogId)
+            Timber.i("GameFixesRegistry: Fix applied successfully for $gameName ($source $catalogId)")
+            SnackbarManager.show("Applied known fix for $gameName")
+        } else {
+            Timber.w("GameFixesRegistry: Fix for $source $catalogId returned false (partial failure)")
+        }
+    }
+
+    private fun resolveGameDisplayName(source: GameSource, gameId: String, catalogId: String): String {
+        return when (source) {
+            GameSource.STEAM -> SteamService.getAppInfoOf(gameId.toIntOrNull() ?: 0)?.name ?: catalogId
+            GameSource.GOG -> runBlocking(Dispatchers.IO) {
+                GOGService.getGOGGameOf(gameId)?.title
+            } ?: catalogId
+            GameSource.EPIC -> EpicService.getEpicGameOf(gameId.toIntOrNull() ?: 0)?.title ?: catalogId
+            else -> catalogId
+        }
     }
 
     private fun resolvePaths(context: Context, source: GameSource, gameId: String): Pair<String, String>? {
@@ -115,6 +187,6 @@ object GameFixesRegistry {
      * @param provider Fixes provider for tests; pass null to restore the default provider.
      */
     internal fun setFixesProviderForTests(provider: (() -> Map<Pair<GameSource, String>, GameFix>)?) {
-        fixesProvider = provider ?: { fixes }
+        fixesProvider = provider ?: { allFixes }
     }
 }

@@ -188,6 +188,23 @@ public abstract class GPUInformation {
         return r.contains("adreno") && r.matches(".*\\b740\\b.*");
     }
 
+    /** Adreno 750 — Snapdragon 8 Gen 3 (SM8650). */
+    public static boolean isAdreno750(Context context) {
+        String r = getRenderer(context).toLowerCase(Locale.ENGLISH);
+        return r.contains("adreno") && r.matches(".*\\b750\\b.*");
+    }
+
+    /** Mali-G715 class (Dimensity 9300 / 9200 / 9000 series). */
+    public static boolean isMaliG7xx(Context context) {
+        String r = getRenderer(context).toLowerCase(Locale.ENGLISH);
+        return r.contains("mali") && r.matches(".*\\bg7[0-9]{2}\\b.*");
+    }
+
+    /** Helio / lower-end Mali (non-G7xx). Renderer contains "mali" but not G7xx. */
+    public static boolean isMaliLower(Context context) {
+        String r = getRenderer(context).toLowerCase(Locale.ENGLISH);
+        return r.contains("mali") && !r.matches(".*\\bg7[0-9]{2}\\b.*");
+    }
 
     public static boolean isAdrenoGPU(Context context) {
         return getRenderer(null, context).toLowerCase().contains("adreno");
