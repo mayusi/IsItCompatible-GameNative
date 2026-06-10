@@ -6,7 +6,6 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -76,6 +75,21 @@ private fun goalEstTime(goal: TunerGoal, mode: SweepMode): String = when {
 }
 
 /**
+ * Bundles the four CUSTOM goal weight sliders and their callbacks into a single
+ * object so [GoalCard] stays well under the Compose dex-verifier register limit.
+ */
+private data class GoalCardCustomWeights(
+    val fpsW: Float,
+    val stabW: Float,
+    val battW: Float,
+    val tempW: Float,
+    val onFpsW: (Float) -> Unit,
+    val onStabW: (Float) -> Unit,
+    val onBattW: (Float) -> Unit,
+    val onTempW: (Float) -> Unit,
+)
+
+/**
  * Redesigned intent-picker dialog.
  *
  * Each of the 7 goals is shown as a selectable card: icon + bold title +
@@ -141,6 +155,16 @@ fun AutoTunerSetupDialog(
                     color = MaterialTheme.colorScheme.primary,
                 )
 
+                val customWeights = GoalCardCustomWeights(
+                    fpsW = customFpsW,
+                    stabW = customStabW,
+                    battW = customBattW,
+                    tempW = customTempW,
+                    onFpsW = { customFpsW = it },
+                    onStabW = { customStabW = it },
+                    onBattW = { customBattW = it },
+                    onTempW = { customTempW = it },
+                )
                 TunerGoal.entries.forEach { goal ->
                     val isSelected = selectedGoal == goal
                     GoalCard(
@@ -153,14 +177,7 @@ fun AutoTunerSetupDialog(
                         onModeSelected = { selectedMode = it },
                         selectedMeasurement = selectedMeasurement,
                         onMeasurementSelected = { selectedMeasurement = it },
-                        customFpsW = customFpsW,
-                        customStabW = customStabW,
-                        customBattW = customBattW,
-                        customTempW = customTempW,
-                        onCustomFpsW = { customFpsW = it },
-                        onCustomStabW = { customStabW = it },
-                        onCustomBattW = { customBattW = it },
-                        onCustomTempW = { customTempW = it },
+                        customWeights = customWeights,
                         onStart = {
                             val weights = if (goal == TunerGoal.CUSTOM) {
                                 val total = customFpsW + customStabW + customBattW + customTempW
@@ -193,14 +210,7 @@ private fun GoalCard(
     onModeSelected: (SweepMode) -> Unit,
     selectedMeasurement: MeasurementMode,
     onMeasurementSelected: (MeasurementMode) -> Unit,
-    customFpsW: Float,
-    customStabW: Float,
-    customBattW: Float,
-    customTempW: Float,
-    onCustomFpsW: (Float) -> Unit,
-    onCustomStabW: (Float) -> Unit,
-    onCustomBattW: (Float) -> Unit,
-    onCustomTempW: (Float) -> Unit,
+    customWeights: GoalCardCustomWeights,
     onStart: () -> Unit,
 ) {
     val estTime = goalEstTime(goal, selectedMode)
@@ -390,9 +400,9 @@ private fun GoalCard(
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.primary,
                             )
-                            WeightSliderRow("FPS", customFpsW, onCustomFpsW, enabled = true)
-                            WeightSliderRow("Stability", customStabW, onCustomStabW, enabled = true)
-                            WeightSliderRow("Battery", customBattW, onCustomBattW, enabled = batteryAvailable)
+                            WeightSliderRow("FPS", customWeights.fpsW, customWeights.onFpsW, enabled = true)
+                            WeightSliderRow("Stability", customWeights.stabW, customWeights.onStabW, enabled = true)
+                            WeightSliderRow("Battery", customWeights.battW, customWeights.onBattW, enabled = batteryAvailable)
                             if (!batteryAvailable) {
                                 Text(
                                     text = "Battery weight disabled — device is charging.",
@@ -400,7 +410,7 @@ private fun GoalCard(
                                     color = MaterialTheme.colorScheme.error,
                                 )
                             }
-                            WeightSliderRow("Temperature", customTempW, onCustomTempW, enabled = true)
+                            WeightSliderRow("Temperature", customWeights.tempW, customWeights.onTempW, enabled = true)
                         }
 
                         Button(
