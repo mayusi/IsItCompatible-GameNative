@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "collections": [
+    {
+      "appId": "631510",
+      "collectionName": "Devil May Cry HD Collection",
+      "_comment": "Three separate games, each launched by its own exe at the root of the A: drive. dmcLauncher.exe is excluded because picking a game from it crashes the Wine child process.",
+      "subGames": [
+        {
+          "name": "Devil May Cry 1",
+          "exePath": "dmc1.exe",
+          "execArgs": "",
+          "fixHints": []
+        },
+        {
+          "name": "Devil May Cry 2",
+          "exePath": "dmc2.exe",
+          "execArgs": "",
+          "fixHints": []
+        },
+        {
+          "name": "Devil May Cry 3: Dante's Awakening",
+          "exePath": "dmc3.exe",
+          "execArgs": "",
+          "fixHints": []
+        }
+      ],
+      "excludedExes": [
+        "dmcLauncher.exe",
+        "dmclauncher.exe"
+      ]
+    }
+  ]
+}

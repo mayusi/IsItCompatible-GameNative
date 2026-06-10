@@ -4,6 +4,9 @@ package app.gamenative.ui.screen.library
 
 import android.content.Intent
 import android.content.res.Configuration
+import app.gamenative.gamefixes.CollectionRegistry
+import app.gamenative.gamefixes.CollectionSubGame
+import app.gamenative.gamefixes.GameCollection
 import app.gamenative.ui.screen.library.components.ambient.AmbientDownloadOverlay
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
@@ -511,6 +514,10 @@ internal fun AppScreenContent(
     onDeleteDownloadClick: () -> Unit,
     onUpdateClick: () -> Unit,
     onBack: () -> Unit = {},
+    /** If non-null, a "Games in this collection" section is rendered above the Play button. */
+    gameCollection: GameCollection? = null,
+    /** Called when the user taps Play on a specific sub-game row. */
+    onPlaySubGame: ((CollectionSubGame) -> Unit)? = null,
     vararg optionsMenu: AppMenuOption,
 ) {
     val context = LocalContext.current
@@ -804,6 +811,16 @@ internal fun AppScreenContent(
                     )
 
                     Spacer(modifier = Modifier.height(16.dp))
+
+                    // "Games in this collection" section — shown above action bar when installed
+                    if (isInstalled && gameCollection != null && onPlaySubGame != null) {
+                        CollectionSubGamesSection(
+                            collection = gameCollection,
+                            lastPlayedExePath = PrefManager.getLastPlayedSubGame(displayInfo.appId),
+                            onPlaySubGame = onPlaySubGame,
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
 
                     // Integrated action bar - overlaid on hero
                     val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
@@ -1212,6 +1229,95 @@ fun GameMigrationDialog(
         },
         confirmButton = {},
     )
+}
+
+// ---------------------------------------------------------------------------
+// CollectionSubGamesSection — "Games in this collection" UX
+// ---------------------------------------------------------------------------
+
+/**
+ * Renders a "Games in this collection" card with a Play button for each sub-game.
+ * The last-played sub-game gets a filled Play button; others get outlined buttons.
+ *
+ * @param collection        The [GameCollection] whose sub-games to list.
+ * @param lastPlayedExePath The exe path that was last played (from PrefManager), or null.
+ * @param onPlaySubGame     Callback when the user taps Play for a specific sub-game.
+ */
+@Composable
+internal fun CollectionSubGamesSection(
+    collection: GameCollection,
+    lastPlayedExePath: String?,
+    onPlaySubGame: (CollectionSubGame) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = Color.Black.copy(alpha = 0.5f),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = "Games in this collection",
+                style = MaterialTheme.typography.titleSmall,
+                color = Color.White.copy(alpha = 0.9f),
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+            collection.subGames.forEach { subGame ->
+                val isLastPlayed = !lastPlayedExePath.isNullOrEmpty() &&
+                    subGame.exePath.equals(lastPlayedExePath, ignoreCase = true)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = subGame.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (isLastPlayed) Color.White else Color.White.copy(alpha = 0.75f),
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (isLastPlayed) {
+                        Button(
+                            onClick = { onPlaySubGame(subGame) },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                            ),
+                            modifier = Modifier.padding(start = 8.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = null,
+                                modifier = androidx.compose.ui.Modifier.size(16.dp),
+                            )
+                        }
+                    } else {
+                        androidx.compose.material3.OutlinedButton(
+                            onClick = { onPlaySubGame(subGame) },
+                            shape = RoundedCornerShape(8.dp),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                Color.White.copy(alpha = 0.5f),
+                            ),
+                            colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                                contentColor = Color.White.copy(alpha = 0.8f),
+                            ),
+                            modifier = Modifier.padding(start = 8.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = null,
+                                modifier = androidx.compose.ui.Modifier.size(16.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /***********

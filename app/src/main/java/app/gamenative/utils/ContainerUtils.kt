@@ -1220,9 +1220,17 @@ object ContainerUtils {
     }
 
     /**
-     * Scans the container's A: drive for all .exe files
+     * Scans the container's A: drive for all .exe files.
+     *
+     * @param drives         Container drives string (passed to [getADrivePath]).
+     * @param excludedExes   Optional set of filenames to exclude from the result
+     *                       (case-insensitive). Used by multi-game collections to hide
+     *                       crashing launchers from the dropdown.
      */
-    fun scanExecutablesInADrive(drives: String): List<String> {
+    fun scanExecutablesInADrive(
+        drives: String,
+        excludedExes: Set<String> = emptySet(),
+    ): List<String> {
         val executables = mutableListOf<String>()
 
         try {
@@ -1251,6 +1259,11 @@ object ContainerUtils {
                         if (FileUtils.isSymlink(file)) return@forEach
                         scanRecursive(file, baseDir, depth + 1, maxDepth)
                     } else if (file.isFile && file.name.lowercase().endsWith(".exe")) {
+                        // Exclude collection launcher or other explicitly excluded exes.
+                        val lowerName = file.name.lowercase()
+                        if (excludedExes.isNotEmpty() && excludedExes.any { it.lowercase() == lowerName }) {
+                            return@forEach
+                        }
                         // Convert to relative Windows path format
                         val relativePath = baseDir.toURI().relativize(file.toURI()).path
                         executables.add(relativePath)

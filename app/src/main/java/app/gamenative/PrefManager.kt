@@ -1329,4 +1329,15 @@ object PrefManager {
     var usageAnalyticsEnabled: Boolean
         get() = getPref(USAGE_ANALYTICS_ENABLED, true)
         set(value) { setPref(USAGE_ANALYTICS_ENABLED, value) }
+
+    /* Multi-game collection: last-played sub-game exe per appId.
+     * Key: "collection_last_exe_<appId>", Value: relative exe path (e.g. "dmc1.exe"). */
+    fun getLastPlayedSubGame(appId: String): String? {
+        val raw = getPref(stringPreferencesKey("collection_last_exe_$appId"), "")
+        return raw.ifEmpty { null }
+    }
+
+    fun setLastPlayedSubGame(appId: String, exePath: String) {
+        setPref(stringPreferencesKey("collection_last_exe_$appId"), exePath)
+    }
 }

@@ -105,6 +105,9 @@ import app.gamenative.ui.widget.PerformanceHudView
 import app.gamenative.utils.AssetUtils
 import app.gamenative.utils.BestConfigApplier
 import app.gamenative.utils.ContainerUtils
+import app.gamenative.utils.CrashClassifier
+import app.gamenative.utils.VideoFileAutoFixer
+import app.gamenative.ui.util.SnackbarMessage
 import app.gamenative.utils.downloader.CoreDriverDownloader
 import app.gamenative.utils.CustomGameScanner
 import app.gamenative.utils.ExecutableSelectionUtils
@@ -3106,6 +3109,8 @@ private fun setupXEnvironment(
     offline: Boolean = false
 ): XEnvironment {
     ProcessHelper.hardKillStaleWineProcesses()
+    // Reset crash-classifier ring buffer for this new session.
+    CrashClassifier.reset()
 
     val gameSource = ContainerUtils.extractGameSourceFromContainerId(appId)
     val lc_all = container!!.lC_ALL
@@ -3171,6 +3176,8 @@ private fun setupXEnvironment(
         if (captureLogs) {
             logFile?.appendText(line + "\n")
         }
+        // Always feed the crash-classifier ring buffer regardless of debug settings.
+        CrashClassifier.appendLine(line)
     }
 
     val rootPath = imageFs.getRootDir().getPath()
@@ -3363,6 +3370,37 @@ private fun setupXEnvironment(
         if (status != 0) {
             Timber.e("Guest program terminated with status: $status")
             onGameLaunchError?.invoke("Game terminated with error status: $status")
+            // Crash classifier: attempt to surface a fix suggestion via rich snackbar.
+            try {
+                val logLines = CrashClassifier.snapshot()
+                val gameSource = ContainerUtils.extractGameSourceFromContainerId(appId)
+                val gameId = ContainerUtils.extractGameIdFromContainerId(appId)?.toString() ?: ""
+                val installPath = when (gameSource) {
+                    app.gamenative.data.GameSource.STEAM ->
+                        app.gamenative.service.SteamService.getAppDirPath(gameId.toIntOrNull() ?: 0)
+                    else -> ""
+                }
+                val suggestion = CrashClassifier.classify(
+                    logLines = logLines,
+                    context = context,
+                    appId = appId,
+                    container = container,
+                    installPath = installPath,
+                )
+                if (suggestion != null) {
+                    Timber.tag("CrashClassifier").i("Crash suggestion for $appId: ${suggestion.message}")
+                    app.gamenative.ui.util.SnackbarManager.showRich(
+                        SnackbarMessage(
+                            message = suggestion.message,
+                            actionLabel = suggestion.actionLabel,
+                            onAction = suggestion.action,
+                            persistent = true,
+                        ),
+                    )
+                }
+            } catch (e: Exception) {
+                Timber.tag("CrashClassifier").e(e, "Post-crash classify failed — suppressed")
+            }
         }
         PluviaApp.events.emit(AndroidEvent.GuestProgramTerminated)
     }

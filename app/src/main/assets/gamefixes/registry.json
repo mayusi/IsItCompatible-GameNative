@@ -41,6 +41,33 @@
         "WINEDLLOVERRIDES": "d3dx9_43=native,builtin d3dcompiler_43=native,builtin"
       },
       "_comment": "Danganronpa 2 — forces native d3dx9/d3dcompiler DLLs to avoid vkd3d E5017 shader crash"
+    },
+    {
+      "source": "STEAM",
+      "gameId": "1097150",
+      "type": "dll_override",
+      "overrides": {
+        "GameOverlayRenderer64": "n,b"
+      },
+      "_comment": "Baldur's Gate 3 — Steam overlay renderer crashes Wine on some GPU configurations; disable it"
+    },
+    {
+      "source": "STEAM",
+      "gameId": "892970",
+      "type": "dll_override",
+      "overrides": {
+        "d3dcompiler_47": "n,b"
+      },
+      "_comment": "Valheim — game bundles its own d3dcompiler_47; force native load to prevent shader compile crash"
+    },
+    {
+      "source": "STEAM",
+      "gameId": "1172620",
+      "type": "dll_override",
+      "overrides": {
+        "EOSSDK-Win64-Shipping": "n,b"
+      },
+      "_comment": "Battlefield 2042 — EOS SDK crashes on exit under Wine; disable native load to prevent hang/crash"
     }
   ]
 }

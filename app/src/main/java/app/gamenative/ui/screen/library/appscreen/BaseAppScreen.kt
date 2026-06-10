@@ -23,10 +23,13 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.core.net.toUri
+import app.gamenative.PrefManager
 import app.gamenative.PluviaApp
 import app.gamenative.R
 import app.gamenative.data.GameSource
 import app.gamenative.data.LibraryItem
+import app.gamenative.gamefixes.CollectionRegistry
+import app.gamenative.gamefixes.CollectionSubGame
 import app.gamenative.events.AndroidEvent
 import app.gamenative.ui.component.dialog.ContainerConfigDialog
 import app.gamenative.ui.data.AppMenuOption
@@ -1202,6 +1205,12 @@ abstract class BaseAppScreen {
             }
         }
 
+        // Look up the collection for this game (null for non-collection games)
+        val gameCollection = remember(appId) {
+            val rawId = appId.substringAfterLast('_')
+            CollectionRegistry.getCollection(rawId)
+        }
+
         // Render the common UI
         app.gamenative.ui.screen.library.AppScreenContent(
             displayInfo = displayInfo,
@@ -1213,6 +1222,21 @@ abstract class BaseAppScreen {
             isUpdatePending = isUpdatePendingState,
             downloadInfo = downloadInfo,
             onDownloadInstallClick = {
+                // For collections, launch the last-played (or first) sub-game
+                if (gameCollection != null && isInstalledState) {
+                    val lastExe = PrefManager.getLastPlayedSubGame(appId)
+                    val subGame = gameCollection.subGames.firstOrNull { it.exePath.equals(lastExe, ignoreCase = true) }
+                        ?: gameCollection.subGames.firstOrNull()
+                    if (subGame != null) {
+                        uiScope.launch(Dispatchers.IO) {
+                            val container = ContainerUtils.getOrCreateContainer(context, appId)
+                            container.executablePath = subGame.exePath
+                            if (subGame.execArgs.isNotEmpty()) container.execArgs = subGame.execArgs
+                            container.saveData()
+                        }
+                        PrefManager.setLastPlayedSubGame(appId, subGame.exePath)
+                    }
+                }
                 onDownloadInstallClick(context, libraryItem, onClickPlay)
                 uiScope.launch {
                     delay(100)
@@ -1233,6 +1257,17 @@ abstract class BaseAppScreen {
                 }
             },
             onBack = onBack,
+            gameCollection = if (isInstalledState) gameCollection else null,
+            onPlaySubGame = if (isInstalledState && gameCollection != null) { subGame: CollectionSubGame ->
+                uiScope.launch(Dispatchers.IO) {
+                    val container = ContainerUtils.getOrCreateContainer(context, appId)
+                    container.executablePath = subGame.exePath
+                    if (subGame.execArgs.isNotEmpty()) container.execArgs = subGame.execArgs
+                    container.saveData()
+                }
+                PrefManager.setLastPlayedSubGame(appId, subGame.exePath)
+                onDownloadInstallClick(context, libraryItem, onClickPlay)
+            } else null,
             optionsMenu = optionsMenu.toTypedArray(),
         )
 
@@ -1246,6 +1281,7 @@ abstract class BaseAppScreen {
                     saveContainerConfig(context, libraryItem, it)
                     showConfigDialog = false
                 },
+                appId = appId,
             )
         }
 

@@ -86,6 +86,11 @@ class PluviaApp : SplitCompatApplication() {
             GameFixesRegistry.init(applicationContext)
         }
 
+        // Feature 3: load the multi-game collections registry (bundled + cached OTA).
+        appScope.launch {
+            app.gamenative.gamefixes.CollectionRegistry.init(applicationContext)
+        }
+
         // IIC: The upstream Ko-fi "Thank you" nag dialog points at the original project's Ko-fi
         // and is inappropriate for this fork. Suppress it permanently by marking as tipped on
         // every launch (the flag is a boolean pref; setting it here is idempotent and safe).

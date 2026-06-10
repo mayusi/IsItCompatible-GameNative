@@ -84,6 +84,7 @@ import app.gamenative.ui.theme.PluviaTheme
 import app.gamenative.ui.theme.settingsTileColors
 import app.gamenative.ui.theme.settingsTileColorsAlt
 import app.gamenative.utils.CustomGameScanner
+import app.gamenative.gamefixes.CollectionRegistry
 import app.gamenative.utils.ContainerUtils
 import app.gamenative.utils.ManifestComponentHelper
 import app.gamenative.utils.ManifestContentTypes
@@ -261,6 +262,8 @@ fun ContainerConfigDialog(
     initialConfig: ContainerData = ContainerData(),
     onDismissRequest: () -> Unit,
     onSave: (ContainerData) -> Unit,
+    /** Optional Steam appId used to look up collection-excluded exes (e.g. "631510"). */
+    appId: String = "",
 ) {
     if (visible) {
         val context = LocalContext.current
@@ -1250,7 +1253,23 @@ fun ContainerConfigDialog(
                                 .verticalScroll(scrollState)
                                 .weight(1f),
                         ) {
-                            if (selectedTab == 0) GeneralTabContent(state, nonzeroResolutionError, aspectResolutionError)
+                            if (selectedTab == 0) {
+                                // Derive the numeric/raw game id from the full appId (e.g. "STEAM_631510" -> "631510")
+                                val collectionExcludedExes = remember(appId) {
+                                    if (appId.isEmpty()) emptySet()
+                                    else {
+                                        val rawId = appId.substringAfterLast('_')
+                                        CollectionRegistry.getCollection(rawId)
+                                            ?.excludedExes?.toSet() ?: emptySet()
+                                    }
+                                }
+                                GeneralTabContent(
+                                    state = state,
+                                    nonzeroResolutionError = nonzeroResolutionError,
+                                    aspectResolutionError = aspectResolutionError,
+                                    collectionExcludedExes = collectionExcludedExes,
+                                )
+                            }
                             if (selectedTab == 1) GraphicsTabContent(state, default)
                             if (selectedTab == 2) EmulationTabContent(state)
                             if (selectedTab == 3) ControllerTabContent(state, default)
@@ -1330,6 +1349,7 @@ internal fun ExecutablePathDropdown(
     value: String,
     onValueChange: (String) -> Unit,
     containerData: ContainerData,
+    excludedExes: Set<String> = emptySet(),
 ) {
     var expanded by remember { mutableStateOf(false) }
     var executables by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -1337,10 +1357,10 @@ internal fun ExecutablePathDropdown(
     val context = LocalContext.current
 
     // Load executables from A: drive when component is first created
-    LaunchedEffect(containerData.drives) {
+    LaunchedEffect(containerData.drives, excludedExes) {
         isLoading = true
         executables = withContext(Dispatchers.IO) {
-            ContainerUtils.scanExecutablesInADrive(containerData.drives)
+            ContainerUtils.scanExecutablesInADrive(containerData.drives, excludedExes)
         }
         isLoading = false
     }

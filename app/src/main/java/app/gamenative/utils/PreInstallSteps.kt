@@ -25,6 +25,7 @@ object PreInstallSteps {
 
     private val steps: List<PreInstallStep> = listOf(
         VcRedistStep,
+        DotNetBundleStep,
         PhysXStep,
         OpenALStep,
         XnaFrameworkStep,

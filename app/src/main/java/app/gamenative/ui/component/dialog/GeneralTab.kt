@@ -49,6 +49,7 @@ fun GeneralTabContent(
     state: ContainerConfigState,
     nonzeroResolutionError: String,
     aspectResolutionError: String,
+    collectionExcludedExes: Set<String> = emptySet(),
 ) {
     val config = state.config.value
     val graphicsDrivers = state.graphicsDrivers.value
@@ -262,6 +263,7 @@ fun GeneralTabContent(
             value = config.executablePath,
             onValueChange = { state.config.value = config.copy(executablePath = it) },
             containerData = config,
+            excludedExes = collectionExcludedExes,
         )
         NoExtractOutlinedTextField(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),

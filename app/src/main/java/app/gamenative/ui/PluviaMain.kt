@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.SnackbarHostState
@@ -93,6 +95,7 @@ import app.gamenative.ui.screen.settings.SettingsScreen
 import app.gamenative.ui.screen.xserver.XServerScreen
 import app.gamenative.ui.theme.PluviaTheme
 import app.gamenative.ui.util.SnackbarManager
+import app.gamenative.ui.util.SnackbarMessage
 import app.gamenative.utils.BestConfigService
 import app.gamenative.utils.ContainerUtils
 import app.gamenative.utils.PlatformAuthUtils
@@ -1153,6 +1156,22 @@ fun PluviaMain(
         }
     }
 
+    // Rich snackbar host for crash-classifier suggestions (action buttons, persistent)
+    val richSnackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(Unit) {
+        SnackbarManager.richMessages.collect { msg ->
+            val result = richSnackbarHostState.showSnackbar(
+                message = msg.message,
+                actionLabel = msg.actionLabel,
+                duration = if (msg.persistent) SnackbarDuration.Indefinite else SnackbarDuration.Long,
+                withDismissAction = msg.persistent,
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                msg.onAction?.invoke()
+            }
+        }
+    }
+
     BackHandler(enabled = state.loadingDialogVisible && !SteamService.keepAlive) {
         // TODO: Make prelaunch/loading operations cancellable so Back can exit safely.
     }
@@ -1656,6 +1675,15 @@ fun PluviaMain(
                     }
                 }
             }
+
+            // Rich snackbar for crash-classifier action suggestions
+            SnackbarHost(
+                hostState = richSnackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .windowInsetsPadding(WindowInsets.navigationBarsIgnoringVisibility)
+                    .padding(bottom = 72.dp),
+            )
 
             AchievementOverlay()
         }

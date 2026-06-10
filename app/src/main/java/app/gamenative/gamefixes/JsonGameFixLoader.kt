@@ -2,6 +2,8 @@ package app.gamenative.gamefixes
 
 import android.content.Context
 import app.gamenative.data.GameSource
+import app.gamenative.gamefixes.types.ConditionalExeFix
+import app.gamenative.gamefixes.types.KeyedDllOverrideFix
 import org.json.JSONArray
 import org.json.JSONObject
 import timber.log.Timber
@@ -225,6 +227,47 @@ object JsonGameFixLoader {
                     gameId = gameId,
                     launchArgs = launchArgs,
                 )
+            }
+            "dll_override" -> {
+                // Merges new DLL overrides into WINEDLLOVERRIDES without clobbering existing entries.
+                // JSON format: { "overrides": { "dllname": "mode", ... } }
+                val overridesObj = entry.optJSONObject("overrides") ?: return null
+                val overrides = mutableMapOf<String, String>()
+                for (k in overridesObj.keys()) {
+                    overrides[k] = overridesObj.getString(k)
+                }
+                if (overrides.isEmpty()) return null
+                KeyedDllOverrideFix(
+                    gameSource = source,
+                    gameId = gameId,
+                    overrides = overrides,
+                )
+            }
+            "conditional_exe" -> {
+                // Applies an inner fix only when container.executablePath contains exePattern.
+                // JSON format: { "exePattern": "dmc1.exe", "inner": { ...nested fix object... } }
+                val exePattern = entry.optString("exePattern", "").trim()
+                if (exePattern.isEmpty()) {
+                    Timber.tag(TAG).w("conditional_exe missing exePattern — skipping $source/$gameId")
+                    return null
+                }
+                val innerObj = entry.optJSONObject("inner") ?: run {
+                    Timber.tag(TAG).w("conditional_exe missing inner object — skipping $source/$gameId")
+                    return null
+                }
+                // Synthesise a full entry JSON for the inner fix by inheriting source/gameId.
+                if (!innerObj.has("source")) innerObj.put("source", source.name)
+                if (!innerObj.has("gameId")) innerObj.put("gameId", gameId)
+                val innerKeyed = parseEntry(innerObj) ?: run {
+                    Timber.tag(TAG).w("conditional_exe inner fix failed to parse — skipping $source/$gameId")
+                    return null
+                }
+                // Wrap in a KeyedGameFix adapter so the registry can store it.
+                object : app.gamenative.gamefixes.KeyedGameFix,
+                    app.gamenative.gamefixes.GameFix by ConditionalExeFix(exePattern, innerKeyed) {
+                    override val gameSource = source
+                    override val gameId = gameId
+                }
             }
             else -> {
                 Timber.tag(TAG).w("Unknown fix type '$type' — skipping $source/$gameId")
