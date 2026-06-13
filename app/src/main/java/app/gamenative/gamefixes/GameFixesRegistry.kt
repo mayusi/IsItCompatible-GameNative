@@ -68,18 +68,25 @@ object GameFixesRegistry {
     ).associateBy { it.gameSource to it.gameId }
 
     /**
-     * Merged map of compiled-in + JSON-loaded fixes.
+     * Merged map of compiled-in + JSON-loaded fixes, cached after the first call.
+     * Rebuilt only when [JsonGameFixLoader.saveAndReload] atomically swaps in a new
+     * JSON set (called by [GameFixesSyncWorker] after a successful OTA fetch), which
+     * sets [cachedAllFixes] to null so the next access recomputes and re-caches.
+     *
      * Compiled-in fixes take priority: the JSON set only fills gaps for game IDs not
      * already covered by the compiled set, so there is zero regression for existing fixes.
      */
-    private val allFixes: Map<Pair<GameSource, String>, GameFix>
-        get() {
-            val jsonFixes = JsonGameFixLoader.loadedFixes
-            // Compiled-in wins: put compiled-in after JSON so it overwrites on collision.
-            return jsonFixes + fixes
-        }
+    @Volatile
+    private var cachedAllFixes: Map<Pair<GameSource, String>, GameFix>? = null
 
-    private var fixesProvider: () -> Map<Pair<GameSource, String>, GameFix> = { allFixes }
+    private fun buildAllFixes(): Map<Pair<GameSource, String>, GameFix> {
+        cachedAllFixes?.let { return it }
+        val merged = JsonGameFixLoader.loadedFixes + fixes
+        cachedAllFixes = merged
+        return merged
+    }
+
+    private var fixesProvider: () -> Map<Pair<GameSource, String>, GameFix> = { buildAllFixes() }
 
     /**
      * Initialises the JSON fix loader. Call once from Application.onCreate()
@@ -87,7 +94,20 @@ object GameFixesRegistry {
      */
     fun init(context: Context) {
         JsonGameFixLoader.init(context)
+        // Invalidate the merged-map cache so the next lookup picks up the
+        // freshly loaded JSON fixes from init().
+        cachedAllFixes = null
         GameFixesSyncWorker.scheduleIfNeeded(context)
+    }
+
+    /**
+     * Invalidates the cached merged-map of all fixes.
+     * Must be called after [JsonGameFixLoader.loadedFixes] is updated (i.e. after
+     * a successful OTA reload via [JsonGameFixLoader.saveAndReload]) so the next
+     * [hasFixFor]/[applyFor]/[applyForNow] call rebuilds the merged map.
+     */
+    fun invalidateCache() {
+        cachedAllFixes = null
     }
 
     /**
@@ -205,6 +225,6 @@ object GameFixesRegistry {
      * @param provider Fixes provider for tests; pass null to restore the default provider.
      */
     internal fun setFixesProviderForTests(provider: (() -> Map<Pair<GameSource, String>, GameFix>)?) {
-        fixesProvider = provider ?: { allFixes }
+        fixesProvider = provider ?: { buildAllFixes() }
     }
 }

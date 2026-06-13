@@ -108,6 +108,9 @@ object GameFixesSyncWorker {
 
                 val saved = JsonGameFixLoader.saveAndReload(context, rawJson)
                 if (saved) {
+                    // Invalidate the merged-map cache in GameFixesRegistry so the
+                    // next hasFixFor/applyFor call rebuilds it with the new JSON fixes.
+                    GameFixesRegistry.invalidateCache()
                     markSynced(context)
                     Timber.tag(TAG).i("Gamefixes registry synced successfully")
                 } else {
