@@ -29,6 +29,21 @@ class IniFileFix(
         container: Container,
     ): Boolean {
         val iniFile = File(installPath, relativePath)
+
+        // Runtime canonical-path guard: ensure the resolved path stays within installPath.
+        // This catches any edge-cases that the parse-time requireNoPathTraversal missed,
+        // e.g. symlink-based escapes or platform-specific path weirdness.
+        val baseDirCanonical = File(installPath).canonicalPath
+        val iniFileCanonical = iniFile.canonicalPath
+        if (!iniFileCanonical.startsWith(baseDirCanonical + File.separator) &&
+            iniFileCanonical != baseDirCanonical
+        ) {
+            Timber.tag("GameFixes").w(
+                "IniFileFix: canonical path '$iniFileCanonical' escapes installPath '$baseDirCanonical' — aborting fix for game $gameId"
+            )
+            return false
+        }
+
         if (!iniFile.isFile) {
             return false
         }

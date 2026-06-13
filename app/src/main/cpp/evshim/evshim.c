@@ -135,7 +135,9 @@ static int mkdir_gameshm(const char *path)
         return -1;
     }
 
-    if (mkdir(path, 0777) < 0 && errno != EEXIST) {
+    /* SEC-5: restrict directory to owner-only (0700) — world-readable directories
+     * allow other processes to enumerate the gamepad_shm directory entries. */
+    if (mkdir(path, 0700) < 0 && errno != EEXIST) {
         return -1;
     }
 
@@ -165,7 +167,10 @@ static void setup_shm(int players)
                  gamepad_dir,
                  (i == 0) ? "" : (char[2]){'0' + i, '\0'});
 
-        int fd = open(path, O_RDWR | O_CREAT, 0666);
+        /* SEC-5: 0666 would allow any process on the device to read/write the
+         * gamepad shared-memory file.  Restrict to owner-only (0600) so only
+         * the app process itself can access controller state and rumble data. */
+        int fd = open(path, O_RDWR | O_CREAT, 0600);
         if (fd < 0) {
             LOGE("evshim: P%d open '%s' failed: %s\n", i, path, strerror(errno));
             continue;

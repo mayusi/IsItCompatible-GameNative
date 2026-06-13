@@ -11,6 +11,7 @@ import com.winlator.widget.FrameRating
 import com.winlator.xenvironment.ImageFs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -493,11 +494,24 @@ class AutoTunerEngine(
     // -------------------------------------------------------------------------
     // Trial controller (UI wires into this)
     // -------------------------------------------------------------------------
-    private val windowMappedChannel = Channel<Unit>(capacity = Channel.CONFLATED)
-    private val guestTerminatedChannel = Channel<Unit>(capacity = Channel.CONFLATED)
-    private val exitCompleteChannel = Channel<Unit>(capacity = Channel.CONFLATED)
-    private val frameRatingChannel = Channel<FrameRating>(capacity = Channel.CONFLATED)
-    private val manualStopChannel = Channel<Unit>(capacity = Channel.CONFLATED)
+    //
+    // BUG-1 fix: replace CONFLATED with capacity=1 / DROP_OLDEST so that a
+    // previous trial's late callback (e.g. onWindowMapped arriving after the
+    // next trial has already started) can NEVER bleed into the new trial.
+    // We drain each channel fully with a while-loop before every trial launch
+    // (see runTrial below) so that any residual signal from the prior trial is
+    // discarded before we start waiting on the next one.
+    //
+    // CONFLATED channels silently discard signals when the buffer is full, which
+    // makes them appear empty even if a stale value is sitting there — the drain
+    // tryReceive() call then returns isFailure, fooling the engine into thinking
+    // no stale signal exists.  capacity=1/DROP_OLDEST has the same single-slot
+    // behaviour but gives a honest empty-after-drain guarantee.
+    private val windowMappedChannel = Channel<Unit>(capacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private val guestTerminatedChannel = Channel<Unit>(capacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private val exitCompleteChannel = Channel<Unit>(capacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private val frameRatingChannel = Channel<FrameRating>(capacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private val manualStopChannel = Channel<Unit>(capacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
     /**
      * The [TunerTrialController] that the UI/XServerScreen host must call into.
@@ -1114,12 +1128,21 @@ class AutoTunerEngine(
             // Delete any stale fps_session.json from a previous trial
             withContext(Dispatchers.IO) { FpsSessionReader.delete(context) }
 
-            // Clear stale channel state before this trial
-            windowMappedChannel.tryReceive()
-            guestTerminatedChannel.tryReceive()
-            exitCompleteChannel.tryReceive()
-            manualStopChannel.tryReceive()
-            var frameRating: FrameRating? = frameRatingChannel.tryReceive().getOrNull()
+            // Drain all lifecycle channels before this trial so that any stale
+            // signal from the previous trial (e.g. a late onWindowMapped) cannot
+            // bleed through and produce a false STABLE/HUNG result.
+            // The while-loop is necessary for correctness: a single tryReceive()
+            // only removes one element and would silently leave a second one behind
+            // if, for example, both onWindowMapped and onGuestTerminated fired late.
+            while (windowMappedChannel.tryReceive().isSuccess) { /* drain */ }
+            while (guestTerminatedChannel.tryReceive().isSuccess) { /* drain */ }
+            while (exitCompleteChannel.tryReceive().isSuccess) { /* drain */ }
+            while (manualStopChannel.tryReceive().isSuccess) { /* drain */ }
+            var frameRating: FrameRating? = null
+            while (true) {
+                val r = frameRatingChannel.tryReceive()
+                if (r.isSuccess) frameRating = r.getOrNull() else break
+            }
 
             // 3. Signal UI to launch
             emit(TunerProgress.ReadyToLaunch(trialIndex, total, trialDef.description, trialDef.config, runIndex, runsPerConfig))

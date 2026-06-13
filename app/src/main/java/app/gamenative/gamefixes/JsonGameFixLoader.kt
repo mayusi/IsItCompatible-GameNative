@@ -178,6 +178,14 @@ object JsonGameFixLoader {
             "registry_key" -> {
                 val registryKey = entry.optString("registryKey", "")
                 if (registryKey.isEmpty()) return null
+                // SEC-4: whitelist the registry key to safe namespaces.
+                // Certain keys enable code execution if written to from an OTA fix
+                // (AppInit_DLLs, Image File Execution Options, Session Manager).
+                // Only allow writes under Software\... (per-game app settings).
+                if (!isRegistryKeySafe(registryKey)) {
+                    Timber.tag(TAG).w("registry_key for $source/$gameId rejected — key '$registryKey' is not in an allowed namespace")
+                    return null
+                }
                 val valuesObj = entry.optJSONObject("values") ?: return null
                 val values = mutableMapOf<String, String>()
                 for (k in valuesObj.keys()) {
@@ -222,6 +230,12 @@ object JsonGameFixLoader {
             "launch_arg" -> {
                 val launchArgs = entry.optString("launchArgs", "")
                 if (launchArgs.isEmpty()) return null
+                // SEC-8: reject at parse-time to prevent the entry from reaching
+                // LaunchArgFix.apply() at all.
+                if (LaunchArgFix.containsDangerousMetacharacters(launchArgs)) {
+                    Timber.tag(TAG).w("launch_arg for $source/$gameId contains dangerous metacharacter — skipping: '$launchArgs'")
+                    return null
+                }
                 KeyedLaunchArgFix(
                     gameSource = source,
                     gameId = gameId,
@@ -282,13 +296,79 @@ object JsonGameFixLoader {
     }
 
     /**
+     * SEC-4: Whitelists registry keys to safe per-application namespaces.
+     *
+     * Blocked dangerous key paths (enable code execution if OTA-written):
+     *   - ...\Windows NT\CurrentVersion\Windows   (AppInit_DLLs value lives here)
+     *   - ...\Image File Execution Options         (debugger hijacking)
+     *   - ...\Session Manager                      (AppCertDlls, KnownDLLs)
+     *   - ...\Winlogon                             (shell/userinit hooks)
+     *
+     * Allowed: any key starting with "Software\" (case-insensitive) EXCEPT
+     * those matching the blocked subpath list above.  Fully-qualified variants
+     * (HKEY_CURRENT_USER\Software\, HKLM\Software\, etc.) are also accepted.
+     */
+    private fun isRegistryKeySafe(registryKey: String): Boolean {
+        val key = registryKey.trim()
+        val keyLower = key.lowercase()
+
+        // Block-list: dangerous key sub-paths that enable code execution.
+        // These are matched as substrings so partial paths are also caught.
+        val blockedSubpaths = listOf(
+            "\\windows nt\\currentversion\\windows",   // AppInit_DLLs container key
+            "\\image file execution options",           // debugger hijack
+            "\\session manager",                        // AppCertDlls / KnownDLLs
+            "\\winlogon",                               // shell/userinit hooks
+            "\\appcertdlls",                            // direct sub-key reference
+            "\\knowndlls",                              // direct sub-key reference
+        )
+        for (blocked in blockedSubpaths) {
+            if (keyLower.contains(blocked)) {
+                return false
+            }
+        }
+
+        // Allow-list: must begin with a recognised Software hive prefix.
+        val allowedPrefixes = listOf(
+            "software\\",
+            "hkey_current_user\\software\\",
+            "hkey_local_machine\\software\\",
+            "hkcu\\software\\",
+            "hklm\\software\\",
+        )
+        return allowedPrefixes.any { keyLower.startsWith(it) }
+    }
+
+    /**
      * Guards against path-traversal in any path-bearing string coming from JSON.
-     * Mirrors the runtime guard in [DeleteGameFilesFix] (the installed-path startsWith check)
-     * but rejects at parse-time so traversal entries never reach the filesystem at all.
+     * Rejects:
+     *   - ".." segments (classic traversal)
+     *   - absolute POSIX paths (start with "/")
+     *   - absolute Windows/UNC paths (start with "\\", or match "[A-Za-z]:\\")
+     *   - backslash separators (not valid in relative Linux paths; also a traversal vector)
+     *
+     * Only clearly-relative forward-slash paths are accepted, matching how installPath
+     * sub-paths are used throughout the codebase (e.g. "config/settings.ini").
+     *
+     * Mirrors the runtime canonical-path guard in [IniFileFix] and [DeleteGameFilesFix].
      */
     private fun requireNoPathTraversal(path: String, context: String) {
         require(!path.contains("..")) {
-            "Path traversal detected in $context: '$path'"
+            "Path traversal detected (.. segment) in $context: '$path'"
+        }
+        require(!path.startsWith("/")) {
+            "Absolute path rejected in $context: '$path'"
+        }
+        require(!path.startsWith("\\")) {
+            "Absolute/UNC path rejected in $context: '$path'"
+        }
+        // Reject Windows drive-letter absolute paths: "C:\..." or "c:/"
+        require(!path.matches(Regex("^[A-Za-z]:[/\\\\].*"))) {
+            "Windows absolute path rejected in $context: '$path'"
+        }
+        // Reject any backslash (not valid in relative Linux paths and is a traversal vector)
+        require(!path.contains("\\")) {
+            "Backslash separator rejected in $context: '$path'"
         }
     }
 }

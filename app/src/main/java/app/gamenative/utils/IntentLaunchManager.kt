@@ -56,7 +56,14 @@ object IntentLaunchManager {
         val containerConfigJson = intent.getStringExtra(EXTRA_CONTAINER_CONFIG)
         val containerConfig = if (containerConfigJson != null) {
             try {
-                parseContainerConfig(containerConfigJson)
+                val parsed = parseContainerConfig(containerConfigJson)
+                // SEC-1: validate dangerous fields before trusting the intent-supplied config.
+                // validateIntentSuppliedConfig throws on abuse; we catch and discard the config.
+                validateIntentSuppliedConfig(parsed)
+                parsed
+            } catch (e: IllegalArgumentException) {
+                Timber.e(e, "[IntentLaunchManager]: Intent-supplied container config rejected by security validation — ignoring config")
+                null
             } catch (e: Exception) {
                 Timber.e(e, "[IntentLaunchManager]: Failed to parse container configuration JSON")
                 null
@@ -197,6 +204,101 @@ object IntentLaunchManager {
         }
 
         return issues
+    }
+
+    /**
+     * Validates fields from an external LAUNCH_GAME intent that could be abused by a
+     * malicious caller to make Wine load attacker-controlled DLLs or execute from
+     * arbitrary paths.
+     *
+     * - execArgs: reject shell metacharacters that enable Wine-cmd injection
+     * - installPath: reject paths outside expected game-install roots (no absolute paths
+     *   to system directories, /data/data/<other-pkg>, etc.)
+     * - executablePath: must be relative (no absolute paths pointing outside the install dir)
+     * - envVars: reject LD_PRELOAD / WINE_LOADER overrides that could force Wine to load
+     *   an attacker-supplied shared library
+     *
+     * Throws [IllegalArgumentException] if a dangerous field is detected so the caller
+     * can drop the entire config and fall back to the container's stored config.
+     *
+     * Legitimate IIC-supplied configs (e.g. graphicsDriver, videoMemorySize tweaks) use
+     * none of these dangerous fields and will pass without issue.
+     */
+    internal fun validateIntentSuppliedConfig(config: ContainerData) {
+        // --- execArgs: shell metacharacter injection guard ---
+        // Wine passes execArgs directly to the Windows command interpreter; &, |, ;, ` and $
+        // are the primary injection vectors for cmd/bash command chaining.
+        val dangerousArgChars = Regex("[&|;`\$<>]")
+        if (config.execArgs.isNotEmpty() && dangerousArgChars.containsMatchIn(config.execArgs)) {
+            throw IllegalArgumentException(
+                "[IntentLaunchManager] Rejected execArgs with shell metacharacter: '${config.execArgs}'"
+            )
+        }
+
+        // --- installPath: must be empty (use the stored container path) or point to a
+        //     recognised game-install root.  A blank value is fine — the merge step will
+        //     keep the container's stored installPath.  A non-empty value must NOT be an
+        //     absolute path to /data/data, /system, /proc, or other sensitive locations. ---
+        if (config.installPath.isNotEmpty()) {
+            val ip = config.installPath
+            // Sensitive prefixes a malicious intent might supply
+            val sensitiveRoots = listOf(
+                "/data/data",
+                "/data/user",
+                "/system",
+                "/proc",
+                "/sys",
+                "/dev",
+                "/vendor",
+                "/apex",
+                "/sdcard/Android/data",  // other apps' external dirs
+            )
+            for (root in sensitiveRoots) {
+                if (ip.startsWith(root)) {
+                    throw IllegalArgumentException(
+                        "[IntentLaunchManager] Rejected installPath pointing to sensitive root '$root': '$ip'"
+                    )
+                }
+            }
+            // Also reject paths containing traversal sequences
+            if (ip.contains("..")) {
+                throw IllegalArgumentException(
+                    "[IntentLaunchManager] Rejected installPath with traversal sequence: '$ip'"
+                )
+            }
+        }
+
+        // --- executablePath: must be empty or a relative path (no absolute paths) ---
+        // An empty executablePath lets the container use its stored value.
+        if (config.executablePath.isNotEmpty()) {
+            val ep = config.executablePath
+            if (ep.startsWith("/") || ep.startsWith("\\") || ep.matches(Regex("^[A-Za-z]:[/\\\\].*"))) {
+                throw IllegalArgumentException(
+                    "[IntentLaunchManager] Rejected absolute executablePath from intent: '$ep'"
+                )
+            }
+            if (ep.contains("..")) {
+                throw IllegalArgumentException(
+                    "[IntentLaunchManager] Rejected executablePath with traversal sequence: '$ep'"
+                )
+            }
+        }
+
+        // --- envVars: reject LD_PRELOAD and WINE_LOADER overrides ---
+        // These two variables allow loading arbitrary native libraries into Wine.
+        // A blank envVars is fine.  Any envVars supplied by the intent must not set
+        // LD_PRELOAD or WINE_LOADER (case-insensitive, with optional surrounding spaces).
+        if (config.envVars.isNotEmpty() && config.envVars != Container.DEFAULT_ENV_VARS) {
+            val dangerousEnvKeys = Regex(
+                "(?m)^\\s*(LD_PRELOAD|LD_LIBRARY_PATH|WINE_LOADER|DYLD_INSERT_LIBRARIES)\\s*=",
+                RegexOption.IGNORE_CASE,
+            )
+            if (dangerousEnvKeys.containsMatchIn(config.envVars)) {
+                throw IllegalArgumentException(
+                    "[IntentLaunchManager] Rejected envVars containing a dangerous key (LD_PRELOAD/WINE_LOADER)"
+                )
+            }
+        }
     }
 
     private fun parseContainerConfig(jsonString: String): ContainerData {
