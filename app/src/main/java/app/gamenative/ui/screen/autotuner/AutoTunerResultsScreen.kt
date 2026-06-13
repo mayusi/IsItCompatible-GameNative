@@ -360,6 +360,23 @@ private fun WinnerCard(
                 }
             }
 
+            // Applied fixes banner (v1.12.0)
+            if (winner.appliedFixes.isNotEmpty()) {
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = MaterialTheme.shapes.small,
+                ) {
+                    Text(
+                        text = "Runs with: ${winner.appliedFixes.joinToString(" + ")}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
+                }
+            }
+
             // Apply button
             if (!appliedDone) {
                 Button(onClick = onApply, modifier = Modifier.fillMaxWidth()) {
@@ -666,9 +683,10 @@ private fun sortResults(results: List<TunerResult>, col: SortColumn): List<Tuner
 private fun statusSortKey(s: TunerResult.TrialStatus): Int = when (s) {
     TunerResult.TrialStatus.STABLE -> 0
     TunerResult.TrialStatus.UNSTABLE -> 1
-    TunerResult.TrialStatus.CRASHED -> 2
-    TunerResult.TrialStatus.HUNG -> 3
-    TunerResult.TrialStatus.SKIPPED -> 4
+    TunerResult.TrialStatus.BLACK_SCREEN -> 2
+    TunerResult.TrialStatus.CRASHED -> 3
+    TunerResult.TrialStatus.HUNG -> 4
+    TunerResult.TrialStatus.SKIPPED -> 5
 }
 
 @Composable
@@ -686,6 +704,7 @@ private fun FullTableRow(
     val rowColor = when (result.status) {
         TunerResult.TrialStatus.STABLE -> MaterialTheme.colorScheme.surfaceVariant
         TunerResult.TrialStatus.UNSTABLE -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.6f)
+        TunerResult.TrialStatus.BLACK_SCREEN -> Color(0xFF6A1B9A).copy(alpha = 0.10f)
         else -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
     }
 
@@ -810,6 +829,22 @@ private fun FullTableRow(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    // Applied fixes (v1.12.0)
+                    if (result.appliedFixes.isNotEmpty()) {
+                        Text(
+                            text = "Fixes applied: ${result.appliedFixes.joinToString(", ")}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                    }
+                    // Black-screen note
+                    if (result.status == TunerResult.TrialStatus.BLACK_SCREEN) {
+                        Text(
+                            text = "Boots but black-screens (window mapped, GPU idle)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF6A1B9A),
+                        )
+                    }
                     if (!isApplied) {
                         OutlinedButton(
                             onClick = { onApply(result) },
@@ -966,5 +1001,6 @@ private fun tempColor(tempC: Int): Color = when {
 private fun statusColor(status: TunerResult.TrialStatus): Color = when (status) {
     TunerResult.TrialStatus.STABLE -> Color(0xFF43A047)
     TunerResult.TrialStatus.UNSTABLE -> Color(0xFFF9A825)
+    TunerResult.TrialStatus.BLACK_SCREEN -> Color(0xFF6A1B9A)
     else -> MaterialTheme.colorScheme.error
 }

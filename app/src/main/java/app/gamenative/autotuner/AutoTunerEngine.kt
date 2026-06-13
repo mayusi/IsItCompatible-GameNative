@@ -1,6 +1,8 @@
 package app.gamenative.autotuner
 
 import android.content.Context
+import app.gamenative.gamefixes.GameFixesRegistry
+import app.gamenative.utils.CrashClassifier
 import app.gamenative.utils.ContainerUtils
 import app.gamenative.utils.IntentLaunchManager
 import com.winlator.container.ContainerData
@@ -8,7 +10,6 @@ import com.winlator.core.ProcessHelper
 import com.winlator.widget.FrameRating
 import com.winlator.xenvironment.ImageFs
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -176,6 +177,15 @@ sealed class TunerProgress {
 
     /** Unrecoverable error (sweep aborted). */
     data class Error(val message: String, val cause: Throwable? = null) : TunerProgress()
+
+    /** A fix is being applied and the trial will be retried. */
+    data class FixRetrying(
+        val trialIndex: Int,
+        val retryNum: Int,
+        val maxRetries: Int,
+        val fixDescription: String,
+        val baseFailure: TunerResult.TrialStatus,
+    ) : TunerProgress()
 }
 
 /** Final outcome returned once the sweep is complete. */
@@ -252,6 +262,36 @@ private object GpuTemp {
             val raw = File(KGSL_TEMP_PATH).readText().trim().toLongOrNull() ?: return -1
             val degrees = if (raw >= 1000L) (raw / 1000L).toInt() else raw.toInt()
             if (degrees in 0..120) degrees else -1
+        } catch (_: Exception) {
+            -1
+        }
+    }
+}
+
+// =============================================================================
+//  GPU BUSY HELPER
+// =============================================================================
+
+/**
+ * Reads the GPU busy percentage from the kgsl sysfs node.
+ *
+ * Confirmed readable on Adreno 830 (Snapdragon 8 Elite) at:
+ *   /sys/class/kgsl/kgsl-3d0/gpu_busy_percentage
+ * Format: "N %" — parse leading int, coerce to 0..100.
+ * Returns -1 on error or when the file is absent.
+ *
+ * Needs device verification on non-Adreno boards — see DEVICE-VERIFICATION section.
+ */
+private object GpuBusy {
+    private const val KGSL_BUSY_PATH = "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage"
+
+    /** Returns GPU busy percent 0..100, or -1 if unreadable. */
+    fun readPercent(): Int {
+        return try {
+            val raw = File(KGSL_BUSY_PATH).readText().trim()
+            // Format "N %" — grab leading digits
+            val n = raw.trimEnd().substringBefore(' ').toIntOrNull() ?: return -1
+            n.coerceIn(0, 100)
         } catch (_: Exception) {
             -1
         }
@@ -385,6 +425,9 @@ private data class FpsSessionData(
  * @param mode            Sweep depth (Probe / Quick / Standard / Thorough).
  * @param measurementMode AUTO (hands-off FPS read) or MANUAL (user plays + stops).
  * @param customWeights   Optional GoalWeights for TunerGoal.CUSTOM; ignored for other goals.
+ * @param executablePath  Optional sub-game executable path (e.g. for DMC1/DMC2/DMC3 in a
+ *                        collection). When set, each trial config is stamped with this path
+ *                        and the winner is saved under a per-exe extraData key.
  *
  * DEVICE VERIFICATION NEEDED:
  * ─────────────────────────────────────────────────────────────────────────────
@@ -427,6 +470,12 @@ class AutoTunerEngine(
     private val measurementMode: MeasurementMode = MeasurementMode.AUTO,
     /** Optional user-supplied weights for TunerGoal.CUSTOM. Ignored for other goals. */
     private val customWeights: GoalWeights? = null,
+    /**
+     * Optional sub-game executable path for collection games (e.g. DMC1/DMC2/DMC3).
+     * When set, each trial config is stamped with this executablePath so the correct
+     * sub-game is launched, and the winner is saved under a per-exe extraData key.
+     */
+    val executablePath: String? = null,
 ) {
     private val TAG = "AutoTunerEngine"
 
@@ -538,7 +587,12 @@ class AutoTunerEngine(
 
     /**
      * Applies the winning config to the container (saveToDisk=true) and stores
-     * the result summary in the container's extraData under key "autotuner_result_v1".
+     * the result summary in the container's extraData.
+     *
+     * Storage key:
+     *   - If [executablePath] is set: "autotuner_result_v1:<exe-basename-lowercase>"
+     *     so collections (DMC1/DMC2/DMC3) each get an independent result.
+     *   - Otherwise: "autotuner_result_v1" (single-game behaviour, unchanged).
      *
      * Call this only after the user confirms — from the UI, after [progressFlow] completes.
      * Must be called on a background thread (performs disk I/O).
@@ -551,7 +605,10 @@ class AutoTunerEngine(
                 val container = ContainerUtils.getContainer(context, appId)
                 ContainerUtils.applyToContainer(context, container, winner.config, saveToDisk = true)
 
-                // Persist summary in extraData["autotuner_result_v1"]
+                // Determine the extraData key: per-exe if executablePath is set
+                val extraDataKey = buildExtraDataKey(executablePath)
+
+                // Persist summary
                 val summary = JSONObject().apply {
                     put("goal", outcome.goal.name)
                     put("mode", mode.name)
@@ -573,14 +630,30 @@ class AutoTunerEngine(
                     winner.battNormScore?.let { put("battNormScore", it.toDouble()) }
                     put("tempNormScore", winner.tempNormScore.toDouble())
                     put("batteryAvailable", outcome.batteryAvailable)
+                    // v1.12.0 additions
+                    if (winner.appliedFixes.isNotEmpty()) {
+                        put("appliedFixes", org.json.JSONArray(winner.appliedFixes))
+                    }
+                    executablePath?.let { put("executablePath", it) }
                 }
-                container.putExtra("autotuner_result_v1", summary.toString())
+                container.putExtra(extraDataKey, summary.toString())
                 container.saveData()
-                Timber.tag(TAG).i("Winner applied and stored in extraData for $appId")
+                Timber.tag(TAG).i("Winner applied and stored in extraData[$extraDataKey] for $appId")
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Failed to apply winner for $appId")
                 throw e
             }
+        }
+    }
+
+    companion object {
+        const val EXTRA_DATA_KEY_BASE = "autotuner_result_v1"
+
+        /** Returns the extraData key to use for saving/loading auto-tune results. */
+        fun buildExtraDataKey(executablePath: String?): String {
+            if (executablePath.isNullOrBlank()) return EXTRA_DATA_KEY_BASE
+            val exeBasename = java.io.File(executablePath).name.lowercase()
+            return "$EXTRA_DATA_KEY_BASE:$exeBasename"
         }
     }
 
@@ -716,14 +789,20 @@ class AutoTunerEngine(
         for ((idx, trial) in probeTrials.withIndex()) {
             checkCancelled()
 
-            val result = runTrial(
-                trialDef = trial,
+            // Stamp executablePath into the probe trial config if set
+            val stampedTrial = if (executablePath != null) {
+                trial.copy(config = trial.config.copy(executablePath = executablePath))
+            } else trial
+
+            val result = runTrialWithFixRetry(
+                trialDef = stampedTrial,
                 trialIndex = idx,
                 total = total,
                 runIndex = 1,
                 runsPerConfig = 1,
                 emit = emit,
                 batteryAvailable = batteryAvailable,
+                maxRetries = 2, // PROBE: up to 2 fix retries
             )
             allResults.add(result)
 
@@ -805,14 +884,18 @@ class AutoTunerEngine(
             var localBest = currentBestResult
             dimTrials.forEachIndexed { i, trial ->
                 checkCancelled()
-                val result = runTrial(
-                    trialDef = trial,
+                val stampedTrial = if (executablePath != null) {
+                    trial.copy(config = trial.config.copy(executablePath = executablePath))
+                } else trial
+                val result = runTrialWithFixRetry(
+                    trialDef = stampedTrial,
                     trialIndex = globalTrialIndex + i,
                     total = total,
                     runIndex = 1,
                     runsPerConfig = 1,
                     emit = emit,
                     batteryAvailable = batteryAvailable,
+                    maxRetries = 1, // non-PROBE: 1 fix retry
                 )
                 results.add(result)
                 if (result.isUsable) {
@@ -836,14 +919,18 @@ class AutoTunerEngine(
         for (runPass in 1..runsPerConfig) {
             dimTrials.forEachIndexed { configIdx, trial ->
                 checkCancelled()
-                val rawResult = runTrial(
-                    trialDef = trial,
+                val stampedTrial = if (executablePath != null) {
+                    trial.copy(config = trial.config.copy(executablePath = executablePath))
+                } else trial
+                val rawResult = runTrialWithFixRetry(
+                    trialDef = stampedTrial,
                     trialIndex = launchIndex,
                     total = total,
                     runIndex = runPass,
                     runsPerConfig = runsPerConfig,
                     emit = emit,
                     batteryAvailable = batteryAvailable,
+                    maxRetries = 1, // non-PROBE: 1 fix retry
                 )
                 rawRuns[configIdx].add(rawResult)
                 launchIndex++
@@ -907,6 +994,7 @@ class AutoTunerEngine(
 
         val statusPriority = listOf(
             TunerResult.TrialStatus.CRASHED,
+            TunerResult.TrialStatus.BLACK_SCREEN,
             TunerResult.TrialStatus.HUNG,
             TunerResult.TrialStatus.UNSTABLE,
             TunerResult.TrialStatus.STABLE,
@@ -946,7 +1034,9 @@ class AutoTunerEngine(
         val chargeDeltas = measuredRuns.mapNotNull { it.chargeCounterDeltaUAh }
         val aggChargeCounterDeltaUAh = if (chargeDeltas.isEmpty()) null else chargeDeltas.sum()
 
-        val bootSucceeded = runs.any { it.bootSucceeded }
+        // bootSucceeded only if at least one run genuinely succeeded (no black-screen)
+        val bootSucceeded = runs.any { it.bootSucceeded && !it.blackScreenDetected }
+        val blackScreenDetected = runs.any { it.blackScreenDetected }
 
         val outlierSuffix = if (outlierFlagged) " [outlier flagged]" else ""
 
@@ -975,6 +1065,9 @@ class AutoTunerEngine(
             bootSucceeded = bootSucceeded,
             avgPowerW = aggAvgPowerW,
             chargeCounterDeltaUAh = aggChargeCounterDeltaUAh,
+            blackScreenDetected = blackScreenDetected,
+            windowMapped = runs.any { it.windowMapped },
+            appliedFixes = runs.flatMap { it.appliedFixes }.distinct(),
         )
     }
 
@@ -983,8 +1076,9 @@ class AutoTunerEngine(
      *   PREPARING → config applied (auto override) → READY_TO_LAUNCH emitted
      *   → wait for window → WARMUP → MEASURING → teardown → COOLDOWN
      *
-     * New in v1.11.0: during MEASURING, samples GpuTemp + BatteryReader every tick.
-     * Sets bootSucceeded in the returned TunerResult for PROBE mode.
+     * v1.11.0: during MEASURING, samples GpuTemp + BatteryReader every tick.
+     * v1.12.0: black-screen detection via FPS + GpuBusy sustain counter;
+     *          bootSucceeded redefined to require sustained render, not just window-map.
      */
     private suspend fun runTrial(
         trialDef: TrialDefinition,
@@ -1066,17 +1160,18 @@ class AutoTunerEngine(
                     trialIndex = trialIndex,
                     runsCompleted = 0,
                     bootSucceeded = false,
+                    windowMapped = false,
                 )
             }
 
-            // For PROBE mode: window appearing IS the success signal — set bootSucceeded=true
-            // and track it; we then continue measuring briefly to check for immediate crash.
-            val windowAppearedTime = System.currentTimeMillis()
+            // Window appeared — track it.
+            val windowMapped = true
 
             // Try to get FrameRating if not already provided
             frameRating = frameRatingChannel.tryReceive().getOrNull() ?: frameRating
 
-            // 5. WARMUP
+            // 5. WARMUP — also run black-screen detection during warmup
+            var blackScreenSustainCounter = 0
             for (s in WARMUP_SEC downTo 1) {
                 checkCancelled()
                 if (guestTerminatedChannel.tryReceive().isSuccess) {
@@ -1091,9 +1186,39 @@ class AutoTunerEngine(
                         gpuTempEndC = GpuTemp.readTempC(),
                         trialIndex = trialIndex,
                         runsCompleted = 0,
-                        bootSucceeded = false, // crashed during warmup = boot failure in probe
+                        bootSucceeded = false,
+                        windowMapped = windowMapped,
                     )
                 }
+                val currentFps = frameRating?.getCurrentFPS() ?: 0f
+                val gpuBusy = GpuBusy.readPercent()
+                val isBlackScreenTick = currentFps <= TunerResult.BLACK_SCREEN_FPS_THRESHOLD &&
+                    (gpuBusy < 0 || gpuBusy <= TunerResult.BLACK_SCREEN_GPU_BUSY_THRESHOLD)
+                if (isBlackScreenTick) blackScreenSustainCounter++ else blackScreenSustainCounter = 0
+
+                if (blackScreenSustainCounter >= TunerResult.BLACK_SCREEN_SUSTAIN_SEC) {
+                    Timber.tag(TAG).w(
+                        "Trial $trialIndex BLACK_SCREEN detected during WARMUP: " +
+                            "fps=$currentFps gpuBusy=$gpuBusy sustain=$blackScreenSustainCounter",
+                    )
+                    triggerTrialExit()
+                    emit(TunerProgress.TrialAborted(trialIndex, TunerResult.TrialStatus.BLACK_SCREEN, runIndex))
+                    teardown(emit, trialIndex, total, gpuTempStart)
+                    return TunerResult(
+                        config = trialDef.config,
+                        description = trialDef.description,
+                        shortLabel = TunerResult.buildShortLabel(trialDef.description),
+                        status = TunerResult.TrialStatus.BLACK_SCREEN,
+                        gpuTempStartC = gpuTempStart,
+                        gpuTempEndC = GpuTemp.readTempC(),
+                        trialIndex = trialIndex,
+                        runsCompleted = 0,
+                        bootSucceeded = false,
+                        blackScreenDetected = true,
+                        windowMapped = windowMapped,
+                    )
+                }
+
                 emit(TunerProgress.Warmup(trialIndex, total, s, runIndex, runsPerConfig))
                 delay(1_000)
             }
@@ -1102,28 +1227,44 @@ class AutoTunerEngine(
             withContext(Dispatchers.Main.immediate) {
                 frameRating?.reset()
             }
+            blackScreenSustainCounter = 0
 
-            // 6. MEASUREMENT WINDOW — sample GPU temp + battery every tick
+            // 6. MEASUREMENT WINDOW — sample GPU temp + battery + black-screen detection every tick
             var crashed = false
-            val powerSamples = mutableListOf<Float>()  // discharging-only samples in watts
-            var bootSucceeded = true  // window appeared; will flip to false if crashes during measure
+            var blackScreen = false
+            val powerSamples = mutableListOf<Float>()
+            // Track sustained FPS for genuine bootSucceeded check
+            var sustainedRenderSec = 0
 
             if (measurementMode == MeasurementMode.AUTO) {
                 for (s in AUTO_MEASURE_SEC downTo 1) {
                     checkCancelled()
                     if (guestTerminatedChannel.tryReceive().isSuccess) {
                         crashed = true
-                        // In PROBE mode a crash during the measure window invalidates boot success
-                        bootSucceeded = false
                         break
                     }
                     val currentFps = frameRating?.getCurrentFPS() ?: 0f
+                    val gpuBusy = GpuBusy.readPercent()
                     val currentTempC = GpuTemp.readTempC()
                     val currentPowerW = if (batteryAvailable) BatteryReader.readPowerW() else null
                     currentPowerW?.let { powerSamples.add(it) }
 
-                    // For PROBE mode: early success on stable fps reading
-                    // (bootSucceeded already true; no early-abort here — engine handles it post-trial)
+                    // Black-screen detection
+                    val isBlackScreenTick = currentFps <= TunerResult.BLACK_SCREEN_FPS_THRESHOLD &&
+                        (gpuBusy < 0 || gpuBusy <= TunerResult.BLACK_SCREEN_GPU_BUSY_THRESHOLD)
+                    if (isBlackScreenTick) blackScreenSustainCounter++ else blackScreenSustainCounter = 0
+
+                    // Sustained render tracking
+                    if (currentFps >= TunerResult.SUSTAINED_RENDER_FPS_THRESHOLD) sustainedRenderSec++
+
+                    if (blackScreenSustainCounter >= TunerResult.BLACK_SCREEN_SUSTAIN_SEC) {
+                        Timber.tag(TAG).w(
+                            "Trial $trialIndex BLACK_SCREEN detected during MEASURE: " +
+                                "fps=$currentFps gpuBusy=$gpuBusy sustain=$blackScreenSustainCounter",
+                        )
+                        blackScreen = true
+                        break
+                    }
 
                     emit(
                         TunerProgress.Measuring(
@@ -1142,20 +1283,30 @@ class AutoTunerEngine(
             } else {
                 // MANUAL: wait until user taps stop or game crashes
                 var measuring = true
-                var measureSec = 0
                 while (measuring && !cancelled) {
                     when {
                         manualStopChannel.tryReceive().isSuccess -> measuring = false
                         guestTerminatedChannel.tryReceive().isSuccess -> {
                             crashed = true
-                            bootSucceeded = false
                             measuring = false
                         }
                         else -> {
                             val currentFps = frameRating?.getCurrentFPS() ?: 0f
+                            val gpuBusy = GpuBusy.readPercent()
                             val currentTempC = GpuTemp.readTempC()
                             val currentPowerW = if (batteryAvailable) BatteryReader.readPowerW() else null
                             currentPowerW?.let { powerSamples.add(it) }
+
+                            // Black-screen detection in MANUAL mode too
+                            val isBlackScreenTick = currentFps <= TunerResult.BLACK_SCREEN_FPS_THRESHOLD &&
+                                (gpuBusy < 0 || gpuBusy <= TunerResult.BLACK_SCREEN_GPU_BUSY_THRESHOLD)
+                            if (isBlackScreenTick) blackScreenSustainCounter++ else blackScreenSustainCounter = 0
+                            if (currentFps >= TunerResult.SUSTAINED_RENDER_FPS_THRESHOLD) sustainedRenderSec++
+                            if (blackScreenSustainCounter >= TunerResult.BLACK_SCREEN_SUSTAIN_SEC) {
+                                blackScreen = true
+                                measuring = false
+                            }
+
                             emit(
                                 TunerProgress.Measuring(
                                     trialIndex = trialIndex,
@@ -1169,7 +1320,6 @@ class AutoTunerEngine(
                                 ),
                             )
                             delay(1_000)
-                            measureSec++
                         }
                     }
                 }
@@ -1200,17 +1350,21 @@ class AutoTunerEngine(
             val gpuTempEnd = GpuTemp.readTempC()
             val chargeCounterEnd = if (batteryAvailable) BatteryReader.readChargeCounterUAh() else null
             val chargeCounterDelta = if (chargeCounterStart != null && chargeCounterEnd != null) {
-                // charge counter decreases as charge is consumed
                 chargeCounterStart - chargeCounterEnd
             } else null
 
             val throttleSuspect = gpuTempStart >= 0 && gpuTempEnd >= 0 &&
                 (gpuTempEnd - gpuTempStart) >= TunerResult.THROTTLE_DELTA_C
 
-            // Average power from discharging samples
             val avgPowerW = if (powerSamples.isNotEmpty()) powerSamples.average().toFloat() else null
 
+            // bootSucceeded: window mapped AND not black-screen AND not crashed AND
+            // sustained render (>= SUSTAINED_RENDER_FPS_THRESHOLD) for ~5 seconds.
+            val bootSucceeded = windowMapped && !blackScreen && !crashed &&
+                sustainedRenderSec >= 5
+
             val status = when {
+                blackScreen -> TunerResult.TrialStatus.BLACK_SCREEN
                 crashed -> TunerResult.TrialStatus.CRASHED
                 avgFps < TunerResult.PLAYABLE_FPS_THRESHOLD -> TunerResult.TrialStatus.UNSTABLE
                 else -> TunerResult.TrialStatus.STABLE
@@ -1219,6 +1373,7 @@ class AutoTunerEngine(
             Timber.tag(TAG).i(
                 "Trial $trialIndex complete: status=$status avgFps=$avgFps " +
                     "stdDev=$stdDev throttle=$throttleSuspect bootSucceeded=$bootSucceeded " +
+                    "blackScreen=$blackScreen sustainedRenderSec=$sustainedRenderSec " +
                     "avgPowerW=$avgPowerW chargeCounterDelta=$chargeCounterDelta " +
                     "desc=${trialDef.description}",
             )
@@ -1242,6 +1397,8 @@ class AutoTunerEngine(
                 bootSucceeded = bootSucceeded,
                 avgPowerW = avgPowerW,
                 chargeCounterDeltaUAh = chargeCounterDelta,
+                blackScreenDetected = blackScreen,
+                windowMapped = windowMapped,
             )
         } catch (ce: CancellationException) {
             throw ce
@@ -1255,8 +1412,158 @@ class AutoTunerEngine(
                 status = TunerResult.TrialStatus.CRASHED,
                 trialIndex = trialIndex,
                 runsCompleted = 0,
+                windowMapped = false,
             )
         }
+    }
+
+    /**
+     * Wraps [runTrial] with fix-retry logic.
+     *
+     * After a base trial that results in CRASHED or BLACK_SCREEN:
+     * 1. Snapshot the Wine log ring buffer via [CrashClassifier.snapshot].
+     * 2. Classify the failure via [FixLadder.classifyFailure].
+     * 3. Walk the fix ladder, picking the first un-tried applicable rung.
+     * 4. Apply the fix (DLL overrides → patched ContainerData; WMV rename → filesystem).
+     * 5. Emit [TunerProgress.FixRetrying] and re-run the trial with the patched config.
+     * 6. If the retry succeeds (STABLE or bootSucceeded), return it with appliedFixes recorded.
+     * 7. Cap total retries at [maxRetries].
+     *
+     * The user's persistent container is NEVER mutated here — DLL overrides are applied
+     * only to the ContainerData copy passed to [IntentLaunchManager.applyAutoConfigOverride].
+     * WMV renames touch the filesystem but are idempotent and reversible (.bak suffix).
+     */
+    private suspend fun runTrialWithFixRetry(
+        trialDef: TrialDefinition,
+        trialIndex: Int,
+        total: Int,
+        runIndex: Int = 1,
+        runsPerConfig: Int = 1,
+        emit: suspend (TunerProgress) -> Unit,
+        batteryAvailable: Boolean,
+        maxRetries: Int,
+    ): TunerResult {
+        // Run the base trial
+        CrashClassifier.reset()
+        var result = runTrial(
+            trialDef = trialDef,
+            trialIndex = trialIndex,
+            total = total,
+            runIndex = runIndex,
+            runsPerConfig = runsPerConfig,
+            emit = emit,
+            batteryAvailable = batteryAvailable,
+        )
+
+        val accumulatedFixes = mutableListOf<String>()
+        val triedRungIds = mutableSetOf<String>()
+        var retryNum = 0
+
+        while (retryNum < maxRetries &&
+            (result.status == TunerResult.TrialStatus.CRASHED ||
+                result.status == TunerResult.TrialStatus.BLACK_SCREEN)
+        ) {
+            // Classify the failure
+            val logLines = CrashClassifier.snapshot()
+            val failureClass = if (result.status == TunerResult.TrialStatus.BLACK_SCREEN) {
+                // If it's a pure black-screen with no log pattern match, use BLACK_SCREEN_NOFIX
+                val classified = FixLadder.classifyFailure(logLines)
+                if (classified == FixLadder.FailureClass.UNKNOWN_CRASH) {
+                    FixLadder.FailureClass.BLACK_SCREEN_NOFIX
+                } else classified
+            } else {
+                FixLadder.classifyFailure(logLines)
+            }
+
+            // Find the next applicable rung
+            val installPath = try {
+                withContext(Dispatchers.IO) {
+                    GameFixesRegistry.resolveInstallPathFor(context, appId) ?: ""
+                }
+            } catch (_: Exception) { "" }
+
+            val rung = FixLadder.nextRung(
+                context = context,
+                appId = appId,
+                baseConfig = result.config,
+                failureClass = failureClass,
+                triedRungIds = triedRungIds,
+            ) ?: break // no more applicable rungs
+
+            triedRungIds.add(rung.id)
+
+            // Apply the fix
+            val fixResult = try {
+                withContext(Dispatchers.IO) {
+                    rung.apply(context, appId, result.config, installPath, failureClass)
+                }
+            } catch (e: Exception) {
+                Timber.tag(TAG).e(e, "Fix rung ${rung.id} threw during apply — skipping")
+                null
+            }
+
+            if (fixResult == null) {
+                Timber.tag(TAG).d("Fix rung ${rung.id} returned null — skipping to next rung")
+                continue
+            }
+
+            retryNum++
+            accumulatedFixes.add(fixResult.appliedFix.label())
+            Timber.tag(TAG).i(
+                "Trial $trialIndex fix-retry $retryNum/$maxRetries: " +
+                    "failureClass=$failureClass rung=${rung.id} fix=${fixResult.appliedFix.label()}",
+            )
+
+            emit(
+                TunerProgress.FixRetrying(
+                    trialIndex = trialIndex,
+                    retryNum = retryNum,
+                    maxRetries = maxRetries,
+                    fixDescription = fixResult.appliedFix.label(),
+                    baseFailure = result.status,
+                ),
+            )
+
+            // Build the patched trial definition with the fixed config
+            val patchedTrialDef = trialDef.copy(
+                config = fixResult.patchedConfig,
+                description = "${trialDef.description} [fix: ${fixResult.appliedFix.label()}]",
+            )
+
+            // Reset crash classifier for the retry
+            CrashClassifier.reset()
+
+            val retryResult = runTrial(
+                trialDef = patchedTrialDef,
+                trialIndex = trialIndex,
+                total = total,
+                runIndex = runIndex,
+                runsPerConfig = runsPerConfig,
+                emit = emit,
+                batteryAvailable = batteryAvailable,
+            )
+
+            result = retryResult.copy(
+                appliedFixes = (accumulatedFixes + retryResult.appliedFixes).distinct(),
+                fixRetryOf = trialIndex,
+            )
+
+            // If retry succeeded, stop trying more fixes
+            if (result.status == TunerResult.TrialStatus.STABLE ||
+                (result.status != TunerResult.TrialStatus.CRASHED && result.bootSucceeded)
+            ) {
+                Timber.tag(TAG).i(
+                    "Trial $trialIndex fix-retry $retryNum SUCCEEDED: status=${result.status} " +
+                        "bootSucceeded=${result.bootSucceeded} fixes=${accumulatedFixes}",
+                )
+                break
+            }
+        }
+
+        // Stamp accumulated fixes even if all retries failed
+        return if (accumulatedFixes.isNotEmpty() && result.appliedFixes.isEmpty()) {
+            result.copy(appliedFixes = accumulatedFixes)
+        } else result
     }
 
     /**

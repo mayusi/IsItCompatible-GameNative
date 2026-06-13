@@ -68,6 +68,8 @@ data class AutoTunerUiState(
     val batteryAvailable: Boolean = false,
     /** Live-ranked results (sorted by goal) updated after each TrialComplete. */
     val rankedResults: List<TunerResult> = emptyList(),
+    /** Non-null when a fix is being applied and a retry is about to launch. */
+    val fixRetryMessage: String? = null,
 )
 
 /**
@@ -351,6 +353,7 @@ class AutoTunerViewModel : ViewModel() {
                     totalTrials = progress.total,
                     currentDescription = progress.description,
                     trialIsRunning = false,
+                    fixRetryMessage = null,
                 )
             }
 
@@ -433,6 +436,12 @@ class AutoTunerViewModel : ViewModel() {
                     trialIsRunning = false,
                 )
                 _pendingLaunch.value = null
+            }
+
+            is TunerProgress.FixRetrying -> {
+                _uiState.value = _uiState.value.copy(
+                    fixRetryMessage = "Retrying with fix: ${progress.fixDescription} (${progress.retryNum}/${progress.maxRetries})",
+                )
             }
         }
     }

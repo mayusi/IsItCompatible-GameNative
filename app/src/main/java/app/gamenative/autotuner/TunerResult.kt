@@ -82,6 +82,16 @@ data class TunerResult(
     val battNormScore: Float? = null,
     /** Normalised temperature score in [0..1] (computed post-sweep by composite ranker). */
     val tempNormScore: Float = 0f,
+
+    // --- v1.12.0 IIC additions -----------------------------------------------
+    /** True if a game window mapped but sustained FPS + GPU were near zero (black screen). */
+    val blackScreenDetected: Boolean = false,
+    /** True if the game window appeared at any point during the trial. */
+    val windowMapped: Boolean = false,
+    /** Fixes applied during fix-retry attempts that produced this result. */
+    val appliedFixes: List<String> = emptyList(),
+    /** trialIndex of the base (non-retry) trial this result was a retry of; null if not a retry. */
+    val fixRetryOf: Int? = null,
 ) {
     enum class TrialStatus {
         /** Completed measurement; avgFps >= playable threshold */
@@ -92,6 +102,8 @@ data class TunerResult(
         HUNG,
         /** GuestProgramTerminated fired during or before measurement */
         CRASHED,
+        /** Game window appeared but FPS and GPU activity stayed near zero — black screen */
+        BLACK_SCREEN,
         /** Skipped (e.g. identical to previously tested config, or sweep cancelled) */
         SKIPPED,
     }
@@ -105,6 +117,18 @@ data class TunerResult(
 
         /** FPS floor below which a completed run is UNSTABLE rather than STABLE. */
         const val PLAYABLE_FPS_THRESHOLD = 25f
+
+        /** FPS at or below which a frame is considered black-screen / stalled. */
+        const val BLACK_SCREEN_FPS_THRESHOLD = 5.0f
+
+        /** GPU busy percentage at or below which the GPU is considered idle (black screen). */
+        const val BLACK_SCREEN_GPU_BUSY_THRESHOLD = 8
+
+        /** Consecutive seconds at black-screen FPS+GPU levels before we declare BLACK_SCREEN. */
+        const val BLACK_SCREEN_SUSTAIN_SEC = 10
+
+        /** Minimum sustained avgFps across ~5s required for a genuine boot success. */
+        const val SUSTAINED_RENDER_FPS_THRESHOLD = 12.0f
 
         /**
          * Strips the "Pass N · DimName:" prefix from a trial description to produce a

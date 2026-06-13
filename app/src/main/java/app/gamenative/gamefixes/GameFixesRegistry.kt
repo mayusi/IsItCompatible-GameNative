@@ -181,6 +181,24 @@ object GameFixesRegistry {
     }
 
     /**
+     * Resolves the host-filesystem install path for [appId] without requiring a full
+     * GameFix lookup.  Used by the auto-tuner's fix ladder to obtain the install path
+     * for VideoFileAutoFixer without going through the full applyForNow flow.
+     *
+     * Returns null if the game is not installed, the path is empty, or the source
+     * is not supported.
+     */
+    fun resolveInstallPathFor(context: Context, appId: String): String? {
+        val source = ContainerUtils.extractGameSourceFromContainerId(appId)
+        val gameId = ContainerUtils.extractGameIdFromContainerId(appId)?.toString() ?: return null
+        return try {
+            resolvePaths(context, source, gameId)?.first
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
      * Test-only hook to override the game-fixes provider.
      * Not intended for production code paths.
      *

@@ -9,10 +9,11 @@ import timber.log.Timber
 /**
  * Sweep mode controls how many dimensions, trials, and runs-per-config are used.
  *
- * [PROBE]    ~5-6 config slots × 1 run = ~6 launches — ~5-8 min
+ * [PROBE]    ~8 config slots × 1 run = ~8 launches — ~7-12 min
  *            Flat archetype list (no coordinate descent).
  *            Scoring: boot-render only (bootSucceeded flag). Used by COMPAT_PROBE goal.
  *            warmupSec=8, measureSec=20, early-abort-on-boot.
+ *            Includes 2 D3D9-path archetypes (Turnip+wined3d, System+wined3d+COMPAT).
  *
  * [QUICK]    ~8 config slots  × 1 run = ~8 launches  — ~10–15 min
  *            Dimensions A + B + C (driver, dxwrapper, box64preset).
@@ -33,8 +34,8 @@ import timber.log.Timber
  */
 enum class SweepMode(val label: String, val description: String, val runsPerConfig: Int) {
     PROBE(
-        "Probe (~6 runs, ~5–8 min)",
-        "Fast boot check: 6 curated archetypes, boot-render scoring only. No coord-descent.",
+        "Probe (~8 runs, ~7–12 min)",
+        "Fast boot check: 8 curated archetypes (incl. D3D9 paths), boot-render scoring only. No coord-descent.",
         runsPerConfig = 1,
     ),
     QUICK(
@@ -241,6 +242,26 @@ class SweepPlan private constructor(
                     dxwrapper = "dxvk",
                     box64Preset = Box86_64Preset.INTERMEDIATE,
                 ),
+                // Archetype 7: Turnip + wined3d (older D3D9 games — DMC1-class)
+                // wined3d avoids Vulkan translation entirely; useful for games that
+                // break with dxvk/vkd3d but work under the D3D9 software path.
+                Archetype(
+                    label = "Turnip v26.2.0 R4 + wined3d",
+                    driver = "Wrapper",
+                    driverVersion = "Turnip_v26.2.0_R4",
+                    dxwrapper = "wined3d",
+                    box64Preset = Box86_64Preset.INTERMEDIATE,
+                ),
+                // Archetype 8: System + wined3d + COMPATIBILITY box64 preset
+                // Maximum compatibility posture for D3D9 games: no Turnip overhead,
+                // software DX path, and the most conservative Box64 JIT settings.
+                Archetype(
+                    label = "System + wined3d + Box64 COMPAT",
+                    driver = "System",
+                    driverVersion = "",
+                    dxwrapper = "wined3d",
+                    box64Preset = Box86_64Preset.COMPATIBILITY,
+                ),
             )
 
             return archetypes.mapIndexed { idx, arch ->
@@ -293,10 +314,10 @@ class SweepPlan private constructor(
          * display). THOROUGH adds one extra dimension-A pass. Multiplied by runsPerConfig
          * so the progress bar reflects the true number of launches.
          *
-         * PROBE mode returns the fixed probe archetype count (6 launches).
+         * PROBE mode returns the fixed probe archetype count (8 launches).
          */
         fun estimatedTrialCount(mode: SweepMode): Int {
-            if (mode == SweepMode.PROBE) return 6  // fixed archetype count
+            if (mode == SweepMode.PROBE) return 8  // 6 original + 2 D3D9 archetypes
             val dims = dimensionsForMode(mode)
             val configSlots = dims.sumOf { it.values.size } +
                 if (mode == SweepMode.THOROUGH) TunerDimension.GRAPHICS_DRIVER.values.size else 0

@@ -317,6 +317,29 @@ private fun CurrentTrialPanel(state: AutoTunerUiState, gameName: String) {
             }
         }
 
+        // Fix-retry banner
+        if (!state.fixRetryMessage.isNullOrBlank()) {
+            Surface(
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                shape = MaterialTheme.shapes.small,
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                    Text(
+                        text = state.fixRetryMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                }
+            }
+        }
+
         // Error / aborted surface
         if (state.phase == AutoTunerPhase.ERROR || state.phase == AutoTunerPhase.TRIAL_ABORTED) {
             Surface(
@@ -428,6 +451,7 @@ private fun LeaderboardRow(
         result.status == TunerResult.TrialStatus.UNSTABLE -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.6f)
         result.status == TunerResult.TrialStatus.CRASHED ||
             result.status == TunerResult.TrialStatus.HUNG -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+        result.status == TunerResult.TrialStatus.BLACK_SCREEN -> Color(0xFF6A1B9A).copy(alpha = 0.12f)
         else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
     }
 
@@ -598,6 +622,7 @@ private fun StatusBadge(status: TunerResult.TrialStatus, isMeasuringNow: Boolean
         TunerResult.TrialStatus.UNSTABLE -> "UNSTABLE" to Color(0xFFF9A825)
         TunerResult.TrialStatus.CRASHED -> "CRASHED" to Color(0xFFE53935)
         TunerResult.TrialStatus.HUNG -> "HUNG" to Color(0xFFE53935)
+        TunerResult.TrialStatus.BLACK_SCREEN -> "BLACK SCREEN" to Color(0xFF6A1B9A)
         TunerResult.TrialStatus.SKIPPED -> "SKIPPED" to Color(0xFF9E9E9E)
     }
     Surface(
