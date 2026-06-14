@@ -41,6 +41,7 @@
 #include <sys/syscall.h>
 #include <linux/futex.h>
 #include <limits.h>
+#include <ctype.h>
 #include <android/log.h>
 
 #include "trainer_protocol.h"
@@ -303,6 +304,30 @@ static int parse_maps(maps_region_t **out_regions, int *out_count)
         /* Skip the trainer's own shm mapping to avoid scanning our control block */
         if (start < shm_end && end > shm_start) continue;
 
+        /* FIX 2: Skip file-backed library/code regions (default ON via
+         * TRAINER_SCAN_ANON_ONLY).  These are .so/.dll/.exe mappings that
+         * hold code/rodata, not the game's mutable heap.  We only keep:
+         *   - anonymous rw-p regions (inode==0, no backing file)
+         *   - [heap] and [stack] pseudo-regions (inode==0 with bracket names)
+         * File-backed regions with an actual inode (library mmaps, Wine PE
+         * sections mapped into the Wine process as files) are skipped.
+         * Set TRAINER_SCAN_ANON_ONLY=0 to disable this filter for debugging. */
+        {
+            static int scan_anon_only = -1;  /* -1 = not yet read */
+            if (scan_anon_only < 0) {
+                const char *env = getenv("TRAINER_SCAN_ANON_ONLY");
+                /* Default ON (treat unset or "1" or anything other than "0" as on) */
+                scan_anon_only = (!env || env[0] != '0') ? 1 : 0;
+                LOGI("trainer: TRAINER_SCAN_ANON_ONLY=%d", scan_anon_only);
+            }
+            if (scan_anon_only) {
+                /* Skip any region backed by a real file (inode != 0 with a path name
+                 * containing '/' — i.e. a mapped .so, .dll, .exe, or data file). */
+                bool has_path = (name[0] == '/' || (name[0] != '\0' && name[0] != '['));
+                if (inode != 0 && has_path) continue;
+            }
+        }
+
         /* Grow array if needed */
         if (count >= cap) {
             int new_cap = cap * 2;
@@ -412,8 +437,19 @@ static void cmd_scan_new(uint32_t vtype, uint64_t target_value)
 
     maps_region_t *regions = NULL;
     int nregions = 0;
-    if (parse_maps(&regions, &nregions) < 0 || nregions == 0) {
-        LOGE("trainer: SCAN_NEW parse_maps failed");
+    int pm = parse_maps(&regions, &nregions);
+    /* [DIAG] Log what the scanner sees in THIS process — the key to the in-game
+     * "SCAN ERROR". In the app process the self-test passes; in the Box64 game
+     * process this tells us nregions, the mem fd, and the process identity. */
+    {
+        char dbgcmd[128]; dbgcmd[0] = '\0';
+        int cfd = open("/proc/self/cmdline", O_RDONLY);
+        if (cfd >= 0) { ssize_t cn = read(cfd, dbgcmd, sizeof(dbgcmd)-1); if (cn > 0) dbgcmd[cn] = '\0'; close(cfd); }
+        LOGI("trainer: [DIAG] SCAN_NEW in pid=%d cmdline='%s' parse_maps=%d nregions=%d mem_fd=%d vtype=%u",
+             getpid(), dbgcmd, pm, nregions, g_mem_fd, vtype);
+    }
+    if (pm < 0 || nregions == 0) {
+        LOGE("trainer: SCAN_NEW parse_maps failed (pm=%d nregions=%d errno=%d:%s)", pm, nregions, errno, strerror(errno));
         free(regions);
         resp_set_status(TST_ERROR); resp_set_error(ENODATA); resp_bump();
         return;
@@ -443,6 +479,8 @@ static void cmd_scan_new(uint32_t vtype, uint64_t target_value)
     }
 
     int last_progress = -1;
+    uint64_t dbg_unreadable = 0;   /* [DIAG] count chunks pread couldn't read */
+    uint64_t dbg_bytes_scanned = 0;
 
     for (int ri = 0; ri < nregions; ri++) {
         uintptr_t start = regions[ri].start;
@@ -467,9 +505,11 @@ static void cmd_scan_new(uint32_t vtype, uint64_t target_value)
             ssize_t got = pread(g_mem_fd, buf, to_read, (off_t)pos);
             if (got <= 0) {
                 /* Unreadable chunk — skip it */
+                dbg_unreadable++;
                 pos += CHUNK;
                 continue;
             }
+            dbg_bytes_scanned += (uint64_t)got;
 
             /* Walk the chunk, stepping by vsz */
             size_t g = (size_t)got;
@@ -508,7 +548,9 @@ static void cmd_scan_new(uint32_t vtype, uint64_t target_value)
     resp_set_progress(100);
     resp_bump();
 
-    LOGI("trainer: SCAN_NEW vtype=%u found %u matches (too_many=%d)", vtype, total, too_many);
+    LOGI("trainer: SCAN_NEW vtype=%u found %u matches (too_many=%d) [DIAG bytes_scanned=%llu unreadable_chunks=%llu]",
+         vtype, total, too_many,
+         (unsigned long long)dbg_bytes_scanned, (unsigned long long)dbg_unreadable);
 }
 
 /*
@@ -975,12 +1017,154 @@ static bool setup_trainer(void)
  *     game continues running normally.
  *   - We never crash the host: setup_trainer() checks every syscall return.
  */
+/* ---- process-identity gate (FIX 1) -------------------------------------- */
+
+/*
+ * Determine whether THIS process should activate the trainer.
+ *
+ * LD_PRELOAD is inherited by every child in the Wine/Box64 process tree:
+ * wineserver, explorer.exe, services.exe, plugplay.exe, rpcss.exe, etc.
+ * Without this gate EVERY one of those processes would spawn a worker thread
+ * and race to answer scan commands — each scanning their own /proc/self/mem
+ * instead of the game's.  The gate admits only the actual game process.
+ *
+ * Strategy:
+ *  1. Read /proc/self/cmdline.  Replace embedded NUL bytes with spaces and
+ *     lowercase the result to get a single string to match against.
+ *  2. DENY if the cmdline contains any well-known Wine helper exe name.
+ *  3. If TRAINER_TARGET_EXE is set, REQUIRE the cmdline to contain that string.
+ *     If unset, fall back: require ".exe" to appear (any Windows guest exe) and
+ *     not be in the deny list.
+ *  4. If cmdline cannot be read, DENY (conservative: the game always has a
+ *     readable cmdline, helper processes sometimes don't — don't activate blindly).
+ *
+ * Returns true if this process should activate, false if it should skip.
+ */
+static bool should_activate_trainer(void)
+{
+    /* Read /proc/self/cmdline */
+    char raw[512];
+    raw[0] = '\0';
+    int cfd = open("/proc/self/cmdline", O_RDONLY);
+    if (cfd < 0) {
+        LOGI("trainer: [DIAG] cannot open /proc/self/cmdline (errno=%d) — DENY", errno);
+        return false;
+    }
+    ssize_t n = read(cfd, raw, sizeof(raw) - 1);
+    close(cfd);
+    if (n <= 0) {
+        LOGI("trainer: [DIAG] /proc/self/cmdline read returned %zd — DENY", n);
+        return false;
+    }
+    raw[n] = '\0';
+
+    /* Replace NUL separators with spaces so we can do simple substring searches */
+    for (ssize_t i = 0; i < n; i++) {
+        if (raw[i] == '\0') raw[i] = ' ';
+    }
+
+    /* Lowercase the whole thing */
+    char cmd[512];
+    for (ssize_t i = 0; i <= n; i++) {
+        cmd[i] = (char)tolower((unsigned char)raw[i]);
+    }
+
+    /* --- Deny-list: known Wine helper / infrastructure processes --- */
+    static const char * const deny_list[] = {
+        "wineserver",
+        "services.exe",
+        "explorer.exe",
+        "winedevice.exe",
+        "plugplay.exe",
+        "rpcss.exe",
+        "svchost.exe",
+        "conhost.exe",
+        "winemenubuilder.exe",
+        "start.exe",
+        "rundll32.exe",
+        "wineboot",
+        "winhandler",
+        NULL,
+    };
+
+    int denied = 0;
+    for (int i = 0; deny_list[i]; i++) {
+        if (strstr(cmd, deny_list[i])) {
+            denied = 1;
+            break;
+        }
+    }
+
+    /* --- Target match --- */
+    const char *target_env = getenv("TRAINER_TARGET_EXE");
+    int is_target = 0;
+
+    if (target_env && target_env[0] != '\0') {
+        /* TRAINER_TARGET_EXE is set: require an exact (lowercased) substring match */
+        char target_lower[256];
+        size_t tlen = strlen(target_env);
+        if (tlen >= sizeof(target_lower)) tlen = sizeof(target_lower) - 1;
+        for (size_t i = 0; i < tlen; i++)
+            target_lower[i] = (char)tolower((unsigned char)target_env[i]);
+        target_lower[tlen] = '\0';
+
+        if (strstr(cmd, target_lower)) {
+            is_target = 1;
+        }
+
+        LOGI("trainer: [DIAG] skip-gate pid=%d cmdline='%s' TRAINER_TARGET_EXE='%s' target_lower='%s' denied=%d is_target=%d",
+             getpid(), cmd, target_env, target_lower, denied, is_target);
+
+        if (denied || !is_target) {
+            LOGI("trainer: [DIAG] skip activation pid=%d cmdline='%s' (denied=%d is_target=%d)",
+                 getpid(), cmd, denied, is_target);
+            return false;
+        }
+    } else {
+        /* TRAINER_TARGET_EXE is unset: fall back to heuristic —
+         * activate only if cmdline contains ".exe" (some Windows guest process)
+         * AND is not in the deny list. */
+        int has_exe = (strstr(cmd, ".exe") != NULL);
+
+        LOGI("trainer: [DIAG] skip-gate pid=%d cmdline='%s' (no TRAINER_TARGET_EXE) denied=%d has_exe=%d",
+             getpid(), cmd, denied, has_exe);
+
+        if (denied || !has_exe) {
+            LOGI("trainer: [DIAG] skip activation pid=%d cmdline='%s' (denied=%d has_exe=%d)",
+                 getpid(), cmd, denied, has_exe);
+            return false;
+        }
+        is_target = 1;
+    }
+
+    return true;
+}
+
 __attribute__((constructor))
 static void trainer_init(void)
 {
     const char *enabled = getenv("TRAINER_ENABLED");
     if (!enabled || enabled[0] != '1') {
-        /* Not enabled — complete no-op.  Don't even log (game might not have logcat). */
+        /* [DIAG] Log the no-op case so we can see when the trainer was NOT enabled
+         * at game-launch time (the #1 cause of in-game "SCAN ERROR": the user
+         * enabled the trainer AFTER launching, so this .so is a dead no-op and the
+         * Android side talks to a shm no worker is listening on). */
+        char dbgcmd[128]; dbgcmd[0] = '\0';
+        int cfd = open("/proc/self/cmdline", O_RDONLY);
+        if (cfd >= 0) { ssize_t cn = read(cfd, dbgcmd, sizeof(dbgcmd)-1); if (cn > 0) dbgcmd[cn] = '\0'; close(cfd); }
+        LOGI("trainer: [DIAG] NOT enabled (TRAINER_ENABLED=%s) in pid=%d cmdline='%s' — no-op",
+             enabled ? enabled : "(null)", (int)getpid(), dbgcmd);
+        return;
+    }
+
+    /* FIX 1: Gate activation to the actual game process only.
+     * Every process in the Wine/Box64 tree inherits LD_PRELOAD, so this
+     * constructor runs in wineserver, explorer, services, etc.  We must
+     * only activate the worker in the one process that holds the game's
+     * address space.  should_activate_trainer() encodes the deny-list +
+     * target-exe logic; if it returns false we are NOT the game. */
+    if (!should_activate_trainer()) {
+        /* Already logged inside should_activate_trainer() */
         return;
     }
 

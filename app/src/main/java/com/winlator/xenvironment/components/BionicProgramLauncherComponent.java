@@ -308,11 +308,16 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         ld_preload += ":" + replacePath;
 
         // ---- Trainer LD_PRELOAD injection ----
-        // libtrainer.so is a no-op unless TRAINER_ENABLED=1, so we always
-        // append it when the .so exists — the activation guard is the env var.
-        // This avoids re-building the ld_preload string on every launch toggle.
+        // libtrainer.so is LD_PRELOAD'd into the whole Wine/Box64 process tree. Even
+        // though its constructor no-ops when not the game process, loading ANY extra
+        // .so into every game launch is a launch-path risk (the speed-hack lib taught
+        // us this the hard way). A nice-to-have feature must NEVER be able to break the
+        // core "launch the game" function. So we ONLY preload libtrainer when the
+        // trainer feature is actually ENABLED. When off (the default), the lib is never
+        // loaded and CANNOT affect game launches at all. (Same gating as libspeedhack.)
+        boolean trainerEnabledForPreload = app.gamenative.PrefManager.INSTANCE.getTrainerEnabled();
         String trainerLibPath = context.getApplicationInfo().nativeLibraryDir + "/libtrainer.so";
-        if (new File(trainerLibPath).exists()) {
+        if (trainerEnabledForPreload && new File(trainerLibPath).exists()) {
             ld_preload += ":" + trainerLibPath;
         }
 
@@ -348,6 +353,50 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         boolean trainerEnabled = app.gamenative.PrefManager.INSTANCE.getTrainerEnabled();
         envVars.put("TRAINER_BASE_PATH", context.getFilesDir().getAbsolutePath());
         envVars.put("TRAINER_ENABLED", trainerEnabled ? "1" : "0");
+
+        // FIX 1b: Tell libtrainer which process is the actual game so it activates
+        // ONLY there, not in wineserver/explorer/services that also inherit LD_PRELOAD.
+        //
+        // guestExecutable is the raw command string set by the caller (e.g.
+        // "wine explorer /desktop=shell,... \"C:\\Games\\dmc3.exe\"").  We try to
+        // extract the last Windows .exe leaf from it so the native gate can match
+        // the actual game process by name.
+        //
+        // If this is a Steam/loader launch (guestExecutable contains "steamclient"
+        // or "steam_loader" but not a direct game .exe), we leave TRAINER_TARGET_EXE
+        // empty so libtrainer uses its deny-list + ".exe" heuristic instead.
+        {
+            String trainerTargetExe = "";
+            if (guestExecutable != null && !guestExecutable.isEmpty()) {
+                // Find the rightmost Windows .exe (case-insensitive) in the command.
+                // E.g. from: wine explorer /desktop=... "C:\Games\dmc3.exe"
+                // we want:  dmc3.exe
+                String lower = guestExecutable.toLowerCase();
+                int lastExe = lower.lastIndexOf(".exe");
+                if (lastExe >= 0) {
+                    // Walk backward from the '.exe' to find the start of the filename
+                    int nameStart = lastExe;
+                    while (nameStart > 0) {
+                        char c = guestExecutable.charAt(nameStart - 1);
+                        if (c == '/' || c == '\\' || c == '"' || c == ' ') break;
+                        nameStart--;
+                    }
+                    String candidate = guestExecutable.substring(nameStart, lastExe + 4).toLowerCase();
+                    // Skip generic Wine infrastructure exes — if the only .exe we
+                    // find is wine/explorer/start/steam, leave target empty and rely
+                    // on the heuristic.
+                    boolean isInfra = candidate.equals("wine") || candidate.equals("wine64")
+                            || candidate.equals("explorer.exe") || candidate.equals("start.exe")
+                            || candidate.startsWith("steam") || candidate.equals("wineboot.exe");
+                    if (!isInfra) {
+                        trainerTargetExe = candidate;
+                    }
+                }
+            }
+            envVars.put("TRAINER_TARGET_EXE", trainerTargetExe);
+            Log.d("BionicProgramLauncherComponent",
+                  "TRAINER_TARGET_EXE='" + trainerTargetExe + "' (guestExecutable='" + guestExecutable + "')");
+        }
 
         // ---- SpeedHack env vars ----
         // SPEEDHACK_BASE_PATH lets libspeedhack find/create <base>/speedhack_shm/speedhack.mem,

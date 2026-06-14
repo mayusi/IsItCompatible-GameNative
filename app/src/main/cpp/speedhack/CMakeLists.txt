@@ -24,12 +24,10 @@ target_link_options(speedhack PRIVATE
 )
 
 target_compile_options(speedhack PRIVATE
-        # -fvisibility=default so clock_gettime is exported as a defined symbol
-        # in the .so's dynsym table — required for LD_PRELOAD interposition.
-        # (If we used -fvisibility=hidden globally and only annotated specific
-        # symbols, the linker would not include them in the dynamic symbol table
-        # and the override would silently not apply.)
-        -fvisibility=default
+        # -fvisibility=hidden: no clock_gettime/gettimeofday symbols are exported.
+        # The .so no longer interposes any libc function, making it impossible
+        # for loading it via LD_PRELOAD to hang the dynamic linker at game launch.
+        -fvisibility=hidden
         -O2
         -Wall
         -Wextra

@@ -1598,7 +1598,7 @@
     <string name="trainer_enable_toggle">Enable trainer engine</string>
     <string name="trainer_enable_note">Takes effect when you next launch a game.</string>
     <string name="trainer_not_loaded_title">Trainer engine not loaded</string>
-    <string name="trainer_not_loaded_body">Relaunch the game with the trainer enabled to use this feature.</string>
+    <string name="trainer_not_loaded_body">Enable the trainer in Settings, then RELAUNCH the game. The trainer engine is injected at launch — enabling it while the game is already running has no effect.</string>
     <string name="trainer_value_type_label">Value type</string>
     <string name="trainer_vtype_int8">Int8</string>
     <string name="trainer_vtype_uint8">UInt8</string>
@@ -1616,7 +1616,7 @@
     <string name="trainer_new_scan">New scan / Reset</string>
     <string name="trainer_scanning">Scanning…</string>
     <string name="trainer_results_count">%1$d matches</string>
-    <string name="trainer_results_count_many">%1$d+ matches — narrow it down</string>
+    <string name="trainer_results_count_many">Too many matches (%1$d+) — narrow with a more specific value</string>
     <string name="trainer_results_empty">No matches found.</string>
     <string name="trainer_results_error">Scan error: %1$s</string>
     <string name="trainer_filter_exact">Exact</string>
@@ -1683,12 +1683,12 @@
     <string name="cheat_disclaimer">Single-player only. Cheats in online games can get you banned.</string>
 
     <!-- Speed hack strings -->
-    <string name="speed_not_enabled_title">Speed hack is disabled</string>
-    <string name="speed_not_enabled_body">Enable the speed-hack engine to control game speed in real time. The engine is injected at game launch via LD_PRELOAD.</string>
+    <string name="speed_not_enabled_title">Speed hack temporarily unavailable</string>
+    <string name="speed_not_enabled_body">Speed hack is being reworked. The previous implementation (LD_PRELOAD clock_gettime override) caused game launches to hang inside the dynamic linker. A Wine-side approach is being built that won\'t affect game launches.</string>
     <string name="speed_enable_toggle">Enable speed hack</string>
-    <string name="speed_enable_note">Takes effect when you next launch a game.</string>
-    <string name="speed_not_loaded_title">Speed engine not loaded</string>
-    <string name="speed_not_loaded_body">Relaunch the game with speed hack enabled to use this feature.</string>
+    <string name="speed_enable_note">Currently has no effect — speed scaling is disabled until the rework is complete.</string>
+    <string name="speed_not_loaded_title">Speed hack temporarily unavailable</string>
+    <string name="speed_not_loaded_body">Speed hack is being reworked and is not active in this version. Game launches are unaffected.</string>
     <string name="speed_multiplier_label">Game speed</string>
     <!-- %1$s is the formatted multiplier, e.g. "2×" -->
     <string name="speed_multiplier_value">%1$s</string>
