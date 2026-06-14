@@ -1,6 +1,7 @@
 package app.gamenative.gamefixes
 
 import android.content.Context
+import android.os.Looper
 import app.gamenative.data.GameSource
 import app.gamenative.ui.util.SnackbarManager
 import app.gamenative.utils.ContainerUtils
@@ -166,20 +167,42 @@ object GameFixesRegistry {
         }
     }
 
+    /**
+     * Returns a human-readable display name for logging/snackbar use.
+     *
+     * DESIGN CHOICE: The GOG path intentionally does NOT perform a blocking DB lookup here.
+     * This function is cosmetic (used only to label the snackbar after a fix applies) and
+     * is called from [applyFor] which can run on any thread. To avoid ANR risk when called
+     * on the main thread, GOG games fall back to the catalogId as the display name.
+     * Steam and Epic use in-memory service calls that are already non-blocking.
+     */
     private fun resolveGameDisplayName(source: GameSource, gameId: String, catalogId: String): String {
         return when (source) {
             GameSource.STEAM -> SteamService.getAppInfoOf(gameId.toIntOrNull() ?: 0)?.name ?: catalogId
-            GameSource.GOG -> runBlocking(Dispatchers.IO) {
-                GOGService.getGOGGameOf(gameId)?.title
-            } ?: catalogId
+            // GOG: skip the DB lookup — catalogId is a safe cosmetic fallback (no ANR risk).
+            GameSource.GOG -> catalogId
             GameSource.EPIC -> EpicService.getEpicGameOf(gameId.toIntOrNull() ?: 0)?.title ?: catalogId
             else -> catalogId
         }
     }
 
+    /**
+     * Resolves the host + Windows-side install path pair for [gameId] given its [source].
+     *
+     * THREAD SAFETY: The GOG branch performs a blocking Room DB lookup (via [GOGService]).
+     * This is safe when called from a background thread (WineSetup-Thread, withContext(IO), etc.)
+     * and both known call sites (XServerScreen's WineSetup-Thread and the FixLadder's
+     * withContext(IO) block) satisfy that constraint.
+     * A main-thread guard returns null immediately rather than risk an ANR if this is ever
+     * called from the wrong thread (the fix simply won't apply — a silent no-op).
+     */
     private fun resolvePaths(context: Context, source: GameSource, gameId: String): Pair<String, String>? {
         return when (source) {
             GameSource.GOG -> {
+                if (Looper.myLooper() == Looper.getMainLooper()) {
+                    Timber.w("GameFixesRegistry.resolvePaths called on main thread for GOG — skipping to avoid ANR")
+                    return null
+                }
                 val game = runBlocking(Dispatchers.IO) { GOGService.getGOGGameOf(gameId) } ?: return null
                 if (!game.isInstalled) return null
                 val path = game.installPath.ifEmpty { GOGConstants.getGameInstallPath(game.title) }

@@ -9,7 +9,6 @@ import app.gamenative.utils.IntentLaunchManager
 import com.winlator.container.ContainerData
 import com.winlator.core.ProcessHelper
 import com.winlator.widget.FrameRating
-import com.winlator.xenvironment.ImageFs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
@@ -21,7 +20,14 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import timber.log.Timber
-import java.io.File
+
+// =============================================================================
+//  TYPES — MeasurementMode, TunerProgress, TunerOutcome, TunerTrialController
+//  are defined in TunerProgressTypes.kt (same package).
+//
+//  SENSORS — GpuTemp, GpuBusy, BatteryReader, FpsSessionReader, FpsSessionData
+//  are defined in TunerSensors.kt (same package).
+// =============================================================================
 
 // =============================================================================
 //  PUBLIC API CONTRACT — READ THIS BEFORE WIRING THE UI
@@ -76,343 +82,6 @@ import java.io.File
 //    → engine asks for teardown → UI pops XServerScreen → call trialController.onExitComplete()
 //    → engine runs teardown, cooldown → emits next READY_TO_LAUNCH
 // =============================================================================
-
-/**
- * Measurement mode: how FPS data is collected during each trial.
- *
- * [AUTO]   : Engine reads fps_session.json after writing by FrameRating.writeSessionSummary().
- *            Hands-off; game runs at menu/early-game.
- * [MANUAL] : Engine records while the user plays; stops when user taps "Stop Recording".
- *            FrameRating must be passed via trialController.provideFrameRating().
- */
-enum class MeasurementMode { AUTO, MANUAL }
-
-/** Progress events emitted by AutoTunerEngine on progressFlow. */
-sealed class TunerProgress {
-    /** Sweep initialised; total trial count known. */
-    data class Started(
-        val total: Int,
-        val estimatedMinutes: Int,
-        /** True if the device is discharging at sweep start (battery signal available). */
-        val batteryAvailable: Boolean = false,
-    ) : TunerProgress()
-
-    /** Engine is preparing configuration for trial [trialIndex]. */
-    data class Preparing(
-        val trialIndex: Int,
-        val total: Int,
-        val description: String,
-        /** Which run of this config (1-based). 1 when runsPerConfig == 1. */
-        val runIndex: Int = 1,
-        /** How many runs this config will be measured. 1 for QUICK. */
-        val runsPerConfig: Int = 1,
-    ) : TunerProgress()
-
-    /**
-     * Config applied; UI MUST launch XServerScreen now, then call
-     * trialController.onWindowMapped() when the game window appears.
-     */
-    data class ReadyToLaunch(
-        val trialIndex: Int,
-        val total: Int,
-        val description: String,
-        val trialConfig: ContainerData,
-        /** Which run of this config (1-based). 1 when runsPerConfig == 1. */
-        val runIndex: Int = 1,
-        /** How many runs this config will be measured. 1 for QUICK. */
-        val runsPerConfig: Int = 1,
-    ) : TunerProgress()
-
-    /** Warmup period (discard initial FPS readings). */
-    data class Warmup(
-        val trialIndex: Int,
-        val total: Int,
-        val remainingSeconds: Int,
-        /** Which run of this config (1-based). 1 when runsPerConfig == 1. */
-        val runIndex: Int = 1,
-        /** How many runs this config will be measured. 1 for QUICK. */
-        val runsPerConfig: Int = 1,
-    ) : TunerProgress()
-
-    /** Active measurement window. */
-    data class Measuring(
-        val trialIndex: Int,
-        val total: Int,
-        val remainingSeconds: Int,
-        val currentFps: Float,
-        /** Which run of this config (1-based). 1 when runsPerConfig == 1. */
-        val runIndex: Int = 1,
-        /** How many runs this config will be measured. 1 for QUICK. */
-        val runsPerConfig: Int = 1,
-        /** Current GPU temperature in °C; -1 if unreadable. */
-        val currentGpuTempC: Int = -1,
-        /** Current power draw in watts; null if unavailable or charging. */
-        val currentPowerW: Float? = null,
-    ) : TunerProgress()
-
-    /** Trial aborted early (crash/hang detected). */
-    data class TrialAborted(
-        val trialIndex: Int,
-        val reason: TunerResult.TrialStatus,
-        /** Which run of this config (1-based). 1 when runsPerConfig == 1. */
-        val runIndex: Int = 1,
-    ) : TunerProgress()
-
-    /** Cooldown between trials; optional GPU temp annotation. */
-    data class Cooldown(
-        val trialIndex: Int,
-        val total: Int,
-        val remainingSeconds: Int,
-        val gpuTempC: Int,
-    ) : TunerProgress()
-
-    /** One trial completed; includes the result. */
-    data class TrialComplete(
-        val result: TunerResult,
-        val bestSoFar: TunerResult?,
-        /** Ranked results so far (all usable results, composite-scored). */
-        val rankedSoFar: List<TunerResult> = emptyList(),
-    ) : TunerProgress()
-
-    /** All trials done; winner elected. */
-    data class SweepComplete(val outcome: TunerOutcome) : TunerProgress()
-
-    /** Unrecoverable error (sweep aborted). */
-    data class Error(val message: String, val cause: Throwable? = null) : TunerProgress()
-
-    /** A fix is being applied and the trial will be retried. */
-    data class FixRetrying(
-        val trialIndex: Int,
-        val retryNum: Int,
-        val maxRetries: Int,
-        val fixDescription: String,
-        val baseFailure: TunerResult.TrialStatus,
-    ) : TunerProgress()
-}
-
-/** Final outcome returned once the sweep is complete. */
-data class TunerOutcome(
-    val goal: TunerGoal,
-    val winner: TunerResult?,
-    val allResults: List<TunerResult>,
-    val rankedResults: List<TunerResult>,
-    val totalTrials: Int,
-    val completedTrials: Int,
-    /** True if battery drain signal was available during the sweep (device was discharging). */
-    val batteryAvailable: Boolean = false,
-)
-
-/**
- * Callback interface that the UI layer (XServerScreen host) implements
- * to feed lifecycle events back to the engine.
- *
- * All methods are safe to call from any thread; the engine channels them
- * to the coroutine that is suspended waiting for each event.
- */
-interface TunerTrialController {
-    /** Call when XServerScreen.onWindowMapped fires (game window appeared). */
-    fun onWindowMapped()
-
-    /** Call when GuestProgramTerminated event fires. */
-    fun onGuestTerminated()
-
-    /**
-     * Call when the game session fully exits and Wine cleanup is complete.
-     * After this the engine will run its own teardown.
-     */
-    fun onExitComplete()
-
-    /**
-     * Provide the FrameRating instance once available.
-     * For AUTO mode: call once per trial; the engine will invoke writeSessionSummary() itself.
-     * For MANUAL mode: call to register the live FrameRating so the engine can poll it.
-     */
-    fun provideFrameRating(fr: FrameRating)
-
-    /**
-     * MANUAL mode only: user tapped "Stop Recording".
-     * Engine will end the measurement window and proceed to teardown.
-     */
-    fun onManualStopRecording()
-
-    /**
-     * Called by the engine when it wants the currently running trial game session to be
-     * closed programmatically.  The UI layer must invoke the same exit path that the
-     * in-game overlay bar's "Exit Game" button uses (forceResumeIfSuspended + exit()),
-     * so Wine teardown is clean and identical to a manual close.
-     *
-     * After the exit completes the UI must call [onExitComplete] as usual.
-     */
-    fun requestTrialExit()
-}
-
-// =============================================================================
-//  GPU TEMPERATURE HELPER
-// =============================================================================
-
-private object GpuTemp {
-    private const val KGSL_TEMP_PATH = "/sys/class/kgsl/kgsl-3d0/temp"
-
-    /**
-     * Reads GPU temperature from the kgsl sysfs node.
-     * Returns -1 if the file is unreadable or the value is out of range.
-     * The raw value is in milli-degrees C on most kernels; divide by 1000.
-     * Guard: if raw < 1000 assume it was already in degrees C.
-     */
-    fun readTempC(): Int {
-        return try {
-            val raw = File(KGSL_TEMP_PATH).readText().trim().toLongOrNull() ?: return -1
-            val degrees = if (raw >= 1000L) (raw / 1000L).toInt() else raw.toInt()
-            if (degrees in 0..120) degrees else -1
-        } catch (_: Exception) {
-            -1
-        }
-    }
-}
-
-// =============================================================================
-//  GPU BUSY HELPER
-// =============================================================================
-
-/**
- * Reads the GPU busy percentage from the kgsl sysfs node.
- *
- * Confirmed readable on Adreno 830 (Snapdragon 8 Elite) at:
- *   /sys/class/kgsl/kgsl-3d0/gpu_busy_percentage
- * Format: "N %" — parse leading int, coerce to 0..100.
- * Returns -1 on error or when the file is absent.
- *
- * Needs device verification on non-Adreno boards — see DEVICE-VERIFICATION section.
- */
-private object GpuBusy {
-    private const val KGSL_BUSY_PATH = "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage"
-
-    /** Returns GPU busy percent 0..100, or -1 if unreadable. */
-    fun readPercent(): Int {
-        return try {
-            val raw = File(KGSL_BUSY_PATH).readText().trim()
-            // Format "N %" — grab leading digits
-            val n = raw.trimEnd().substringBefore(' ').toIntOrNull() ?: return -1
-            n.coerceIn(0, 100)
-        } catch (_: Exception) {
-            -1
-        }
-    }
-}
-
-// =============================================================================
-//  BATTERY / POWER SENSOR HELPER
-// =============================================================================
-
-/**
- * Battery and power-draw sensor reader.
- *
- * All reads are wrapped in try/catch — these sysfs paths are world-readable on
- * standard Android kernels (no root required) but may not exist on all devices.
- * All methods return null / false on any failure.
- *
- * Confirmed readable on the Odin 2 Pro (MediaTek / Adreno 8-series) via adb;
- * standard Linux power-supply class paths.  Needs device verification on other
- * boards — see the DEVICE-VERIFICATION section in the engine notes below.
- *
- * Path reference (Linux kernel power_supply class):
- *   /sys/class/power_supply/battery/status       — "Discharging" | "Charging" | "Full" | …
- *   /sys/class/power_supply/battery/power_now    — instantaneous power in µW
- *   /sys/class/power_supply/battery/charge_counter — battery charge in µAh
- */
-object BatteryReader {
-    private const val BATTERY_PATH = "/sys/class/power_supply/battery"
-    private const val STATUS_PATH = "$BATTERY_PATH/status"
-    private const val POWER_NOW_PATH = "$BATTERY_PATH/power_now"
-    private const val CHARGE_COUNTER_PATH = "$BATTERY_PATH/charge_counter"
-
-    /** Returns true if the battery status file reads "Discharging". */
-    fun isDischarging(): Boolean {
-        return try {
-            File(STATUS_PATH).readText().trim().equals("Discharging", ignoreCase = true)
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    /**
-     * Reads instantaneous power draw in watts.
-     *
-     * Returns null if:
-     *  - device is NOT "Discharging" (while charging, power_now reflects charger draw — unreliable)
-     *  - the sysfs path does not exist or is unreadable
-     *  - the value is outside the plausible range (0..100 W)
-     *
-     * NOTE: Must only be called/used when [isDischarging] is true; the Discharging guard
-     * is also applied inline here for safety.
-     */
-    fun readPowerW(): Float? {
-        return try {
-            if (!isDischarging()) return null
-            val rawUW = File(POWER_NOW_PATH).readText().trim().toLongOrNull() ?: return null
-            val watts = rawUW / 1_000_000f
-            if (watts in 0f..100f) watts else null
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    /**
-     * Reads the battery charge counter in µAh.
-     * Returns null if the path is unreadable.
-     * Use start/end delta to compute energy consumed over a trial.
-     */
-    fun readChargeCounterUAh(): Int? {
-        return try {
-            File(CHARGE_COUNTER_PATH).readText().trim().toIntOrNull()
-        } catch (_: Exception) {
-            null
-        }
-    }
-}
-
-// =============================================================================
-//  FPS SESSION FILE READER
-// =============================================================================
-
-private object FpsSessionReader {
-    /**
-     * Reads fps_session.json written by FrameRating.writeSessionSummary().
-     * Returns null if the file does not exist or is unparseable.
-     */
-    fun read(context: Context): FpsSessionData? {
-        return try {
-            val imageFs = ImageFs.find(context)
-            val file = File(imageFs.getTmpDir(), "fps_session.json")
-            if (!file.exists()) return null
-            val json = JSONObject(file.readText())
-            FpsSessionData(
-                avgFps = json.optDouble("avg_fps", 0.0).toFloat(),
-                maxFps = json.optInt("max_fps", 0).toFloat(),
-                minFps = json.optInt("min_fps", 0).toFloat(),
-                readings = json.optInt("readings", 0),
-                lengthSec = json.optDouble("length_sec", 0.0).toFloat(),
-            )
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    fun delete(context: Context) {
-        try {
-            val imageFs = ImageFs.find(context)
-            File(imageFs.getTmpDir(), "fps_session.json").delete()
-        } catch (_: Exception) { /* best-effort */ }
-    }
-}
-
-private data class FpsSessionData(
-    val avgFps: Float,
-    val maxFps: Float,
-    val minFps: Float,
-    val readings: Int,
-    val lengthSec: Float,
-)
 
 // =============================================================================
 //  ENGINE
@@ -479,8 +148,6 @@ class AutoTunerEngine(
      */
     val executablePath: String? = null,
 ) {
-    private val TAG = "AutoTunerEngine"
-
     // -------------------------------------------------------------------------
     // Timing constants (all in seconds)
     // -------------------------------------------------------------------------
@@ -683,6 +350,7 @@ class AutoTunerEngine(
     }
 
     companion object {
+        private const val TAG = "AutoTunerEngine"
         const val EXTRA_DATA_KEY_BASE = "autotuner_result_v1"
 
         /** Returns the extraData key to use for saving/loading auto-tune results. */

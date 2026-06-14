@@ -6,6 +6,7 @@ import app.gamenative.gamefixes.GameFixesRegistry
 import app.gamenative.gamefixes.types.DllOverrideFix
 import app.gamenative.utils.ContainerUtils
 import app.gamenative.utils.VideoFileAutoFixer
+import app.gamenative.utils.WineLogClassifier
 import com.winlator.container.ContainerData
 import com.winlator.core.envvars.EnvVars
 import timber.log.Timber
@@ -47,41 +48,10 @@ object FixLadder {
 
     /**
      * Classify [logLines] into a [FailureClass] by pattern-matching Wine debug output.
-     * Mirrors the logic in CrashClassifier without the snackbar/action coupling.
+     * Delegates to [WineLogClassifier] — the single source of truth for pattern→class mapping
+     * shared with [app.gamenative.utils.CrashClassifier]. Patterns cannot diverge.
      */
-    fun classifyFailure(logLines: List<String>): FailureClass {
-        if (logLines.isEmpty()) return FailureClass.UNKNOWN_CRASH
-        val joined = logLines.joinToString("\n")
-        return when {
-            joined.contains("Unrecognised format WMV3") ||
-                (joined.contains("WMV3") && joined.contains("err:mfmediatype")) ||
-                joined.contains("err:winegstreamer:wg_parser_connect") ||
-                (joined.contains("err:quartz:") && joined.contains(".wmv")) ||
-                joined.contains("audio/x-wma") ||
-                (joined.contains("videoconv") && joined.contains("MEDIACONV")) ->
-                FailureClass.WMV_CODEC
-
-            joined.contains(Regex("err:module:import_dll Library d3dcompiler")) ->
-                FailureClass.D3D_COMPILER
-
-            joined.contains("GameOverlayRenderer64") ||
-                joined.contains("GameOverlayRenderer.dll") ->
-                FailureClass.STEAM_OVERLAY
-
-            joined.contains("EOS_Platform_Create") ||
-                joined.contains("eossdk-win64-shipping") ||
-                joined.contains("EOSSDK-Win64-Shipping") ->
-                FailureClass.EOS_CRASH
-
-            joined.contains(Regex("err:module:import_dll Library.*(MSVC|vcruntime|VCRUNTIME|msvcp|MSVCP)")) ->
-                FailureClass.MSVC_MISSING
-
-            joined.contains("err:seh:setup_exception") ->
-                FailureClass.SEH_ANTICHEAT
-
-            else -> FailureClass.UNKNOWN_CRASH
-        }
-    }
+    fun classifyFailure(logLines: List<String>): FailureClass = WineLogClassifier.classify(logLines)
 
     // -------------------------------------------------------------------------
     // Fix rung application
@@ -126,7 +96,7 @@ object FixLadder {
         Rung(
             id = "game_registry_fix",
             description = "Apply game-specific fix",
-            appliesToClasses = FailureClass.values().toSet(), // applies to all
+            appliesToClasses = FailureClass.entries.toSet(), // applies to all
             condition = { context, appId, _, _ ->
                 val source = ContainerUtils.extractGameSourceFromContainerId(appId)
                 val gameId = ContainerUtils.extractGameIdFromContainerId(appId)?.toString() ?: return@Rung false

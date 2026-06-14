@@ -1,9 +1,8 @@
 package app.gamenative.utils
 
 import android.content.Context
+import app.gamenative.autotuner.FixLadder
 import app.gamenative.gamefixes.types.DllOverrideFix
-import app.gamenative.service.SteamService
-import app.gamenative.utils.ContainerUtils
 import com.winlator.container.Container
 import timber.log.Timber
 
@@ -94,6 +93,14 @@ object CrashClassifier {
     // Internal classification (allowed to throw; outer classify() wraps it)
     // -------------------------------------------------------------------------
 
+    /**
+     * Delegates pattern detection to [WineLogClassifier] (single source of truth shared with
+     * [app.gamenative.autotuner.FixLadder]), then maps the result to a [CrashSuggestion] with
+     * the appropriate UI message and optional one-tap fix action.
+     *
+     * Pattern 7 (wrong/missing executable) is CrashClassifier-only — it has no corresponding
+     * fix rung in FixLadder, so it remains here and is checked after the shared classification.
+     */
     private fun classifyInternal(
         logLines: List<String>,
         context: Context,
@@ -103,40 +110,31 @@ object CrashClassifier {
     ): CrashSuggestion? {
         if (logLines.isEmpty()) return null
 
-        val joined = logLines.joinToString("\n")
+        val failureClass = WineLogClassifier.classify(logLines)
 
-        // ---- Pattern 1: MSVC / vcruntime import failure ----
-        if (joined.contains(Regex("err:module:import_dll Library.*(MSVC|vcruntime|VCRUNTIME|msvcp|MSVCP)"))) {
-            return CrashSuggestion(
+        val suggestion = when (failureClass) {
+            FixLadder.FailureClass.MSVC_MISSING -> CrashSuggestion(
                 message = "This game needs Visual C++ runtime — re-launching may install it automatically",
                 actionLabel = null,
                 action = null,
             )
-        }
 
-        // ---- Pattern 2: WMV3 / media-format crash ----
-        if (joined.contains("Unrecognised format WMV3") ||
-            joined.contains("WMV3") && joined.contains("err:mfmediatype") ||
-            joined.contains("err:winegstreamer:wg_parser_connect") ||
-            joined.contains("err:quartz:") && joined.contains(".wmv")
-        ) {
-            val action: (() -> Unit)? = if (installPath.isNotEmpty()) {
-                {
-                    val count = VideoFileAutoFixer.renameIntroVideos(installPath)
-                    Timber.tag("CrashClassifier").i("Renamed $count intro WMV file(s) for $appId")
-                }
-            } else null
+            // WMV_CODEC: audio/x-wma is now also caught via WineLogClassifier (was missing here before)
+            FixLadder.FailureClass.WMV_CODEC -> {
+                val action: (() -> Unit)? = if (installPath.isNotEmpty()) {
+                    {
+                        val count = VideoFileAutoFixer.renameIntroVideos(installPath)
+                        Timber.tag("CrashClassifier").i("Renamed $count intro WMV file(s) for $appId")
+                    }
+                } else null
+                CrashSuggestion(
+                    message = "Intro videos are crashing the game — tap to rename them and skip on next launch",
+                    actionLabel = if (action != null) "Rename" else null,
+                    action = action,
+                )
+            }
 
-            return CrashSuggestion(
-                message = "Intro videos are crashing the game — tap to rename them and skip on next launch",
-                actionLabel = if (action != null) "Rename" else null,
-                action = action,
-            )
-        }
-
-        // ---- Pattern 3: d3dcompiler import failure ----
-        if (joined.contains(Regex("err:module:import_dll Library d3dcompiler"))) {
-            return CrashSuggestion(
+            FixLadder.FailureClass.D3D_COMPILER -> CrashSuggestion(
                 message = "Missing D3D shader compiler — tap to add a DLL override",
                 actionLabel = if (container != null) "Fix" else null,
                 action = if (container != null) {
@@ -150,13 +148,8 @@ object CrashClassifier {
                     }
                 } else null,
             )
-        }
 
-        // ---- Pattern 4: Steam overlay crash ----
-        if (joined.contains("GameOverlayRenderer64") ||
-            joined.contains("GameOverlayRenderer.dll")
-        ) {
-            return CrashSuggestion(
+            FixLadder.FailureClass.STEAM_OVERLAY -> CrashSuggestion(
                 message = "Steam overlay is crashing the game — tap to disable it",
                 actionLabel = if (container != null) "Disable" else null,
                 action = if (container != null) {
@@ -170,14 +163,8 @@ object CrashClassifier {
                     }
                 } else null,
             )
-        }
 
-        // ---- Pattern 5: Epic Online Services crash ----
-        if (joined.contains("EOS_Platform_Create") ||
-            joined.contains("eossdk-win64-shipping") ||
-            joined.contains("EOSSDK-Win64-Shipping")
-        ) {
-            return CrashSuggestion(
+            FixLadder.FailureClass.EOS_CRASH -> CrashSuggestion(
                 message = "Epic Online Services is crashing — tap to disable it",
                 actionLabel = if (container != null) "Disable" else null,
                 action = if (container != null) {
@@ -191,19 +178,27 @@ object CrashClassifier {
                     }
                 } else null,
             )
+
+            FixLadder.FailureClass.SEH_ANTICHEAT -> {
+                // Additional CrashClassifier-specific guard: only show this suggestion when
+                // the log is short (near-launch crash), same as the original behaviour.
+                if (logLines.size < 80) {
+                    CrashSuggestion(
+                        message = "This game may use anti-cheat that blocks Wine — try launching in Steam Offline Mode",
+                        actionLabel = null,
+                        action = null,
+                    )
+                } else null
+            }
+
+            // UNKNOWN_CRASH and BLACK_SCREEN_NOFIX: fall through to CrashClassifier-only patterns
+            else -> null
         }
 
-        // ---- Pattern 6: Anti-cheat / SEH exception near launch (informational) ----
-        // We check for seh:setup_exception alongside early log presence (short session = near launch).
-        if (joined.contains("err:seh:setup_exception") && logLines.size < 80) {
-            return CrashSuggestion(
-                message = "This game may use anti-cheat that blocks Wine — try launching in Steam Offline Mode",
-                actionLabel = null,
-                action = null,
-            )
-        }
+        if (suggestion != null) return suggestion
 
-        // ---- Pattern 7: Wrong / missing executable ----
+        // ---- Pattern 7 (CrashClassifier-only): Wrong / missing executable ----
+        val joined = logLines.joinToString("\n")
         if (joined.contains(Regex("wine: cannot find|err:module:load_builtin.*\\.exe"))) {
             return CrashSuggestion(
                 message = "The game executable may be wrong — check Executable Path in Settings",
