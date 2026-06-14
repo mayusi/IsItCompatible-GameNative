@@ -684,6 +684,7 @@ fun QuickMenu(
                                             trainerShm = trainerShm,
                                             speedHackShm = speedHackShm,
                                             macroShm = macroShm,
+                                            appId = container?.id,
                                             focusRequester = trainerItemFocusRequester,
                                             modifier = Modifier.fillMaxSize(),
                                         )

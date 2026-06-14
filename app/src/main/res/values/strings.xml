@@ -1642,6 +1642,36 @@
     <string name="trainer_cap_memory">Memory</string>
     <string name="trainer_cap_speed">Speed</string>
     <string name="trainer_cap_macros">Macros</string>
+    <string name="trainer_cap_cheats">Cheats</string>
+
+    <!-- Cheat tab: empty / not-loaded states -->
+    <string name="cheat_no_table_title">No cheat table for this game</string>
+    <string name="cheat_no_table_body">Cheat tables are community-made and auto-update. Check back later.</string>
+    <string name="cheat_no_appid_body">Launch a game to see available cheats.</string>
+    <string name="cheat_engine_not_loaded_title">Trainer engine not loaded</string>
+    <string name="cheat_engine_not_loaded_body">Enable the trainer engine and relaunch the game to use cheats.</string>
+
+    <!-- Cheat table header / list -->
+    <string name="cheat_table_for">Cheats for %1$s</string>
+    <string name="cheat_category_label">%1$s</string>
+
+    <!-- Guided flow -->
+    <string name="cheat_scan_button">Scan</string>
+    <string name="cheat_narrow_button">Narrow</string>
+    <string name="cheat_activate_button">Activate</string>
+    <string name="cheat_deactivate_button">Deactivate</string>
+    <string name="cheat_start_over_button">Start over</string>
+    <string name="cheat_value_input_hint">Current in-game value</string>
+    <string name="cheat_matches_found">%1$d matches found</string>
+    <string name="cheat_matches_too_many">%1$d+ matches — change the value in-game and narrow again</string>
+    <string name="cheat_matches_none">No matches. Try starting over with a fresh value.</string>
+    <string name="cheat_scanning">Scanning…</string>
+    <string name="cheat_active_label">ACTIVE</string>
+    <string name="cheat_scan_busy">Finish or cancel the current cheat scan first.</string>
+    <string name="cheat_activate_failed">Activation failed. Try starting over.</string>
+
+    <!-- Cheat disclaimer -->
+    <string name="cheat_disclaimer">Single-player only. Cheats in online games can get you banned.</string>
 
     <!-- Speed hack strings -->
     <string name="speed_not_enabled_title">Speed hack is disabled</string>

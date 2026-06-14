@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "_comment": "Cheat-table library for GameNative IIC. Each table is keyed to a game by store source + id (same identity scheme as gamefixes/registry.json). On Box64 memory addresses are NOT stable across runs, so a cheat is a RECIPE that drives the in-process memory engine (scan -> narrow -> freeze), NOT a hardcoded address. The schema is forward-compatible with AOB pattern auto-resolution (the optional 'aob' block on a cheat) so one-tap cheats can be added later without a format change. Ship seed tables here; OTA-update by committing this file (no app release needed) — fetched from https://raw.githubusercontent.com/mayusi/IsItCompatible-GameNative/main/cheattables/registry.json",
+  "tables": [
+    {
+      "source": "STEAM",
+      "gameId": "367520",
+      "title": "Hollow Knight",
+      "_comment": "Seed table — recipe-based. Values are guided scans the user confirms once; addresses resolve at runtime so they survive Box64 relocation.",
+      "cheats": [
+        {
+          "id": "hk_geo",
+          "name": "Lots of Geo (currency)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open your inventory and read your current Geo amount, then enter it below.",
+            "narrowPrompt": "Spend or collect some Geo so the number changes, then enter the new amount.",
+            "freezeValue": 99999,
+            "_comment": "guided_known: user enters the current value -> scanNew(i32). Then narrowPrompt + new value -> scanNext(EXACT). When narrowed to a few, freeze at freezeValue."
+          },
+          "aob": null
+        },
+        {
+          "id": "hk_health",
+          "name": "Infinite Health (Masks)",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Read your current health (number of masks, usually 5-9). Enter it.",
+            "narrowPrompt": "Take damage so you lose a mask, then enter the new (lower) mask count.",
+            "freezeValue": 9,
+            "_comment": "Small-range value -> may need 2-3 narrow passes; the UI loops scanNext until few matches remain."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "413150",
+      "title": "Stardew Valley",
+      "cheats": [
+        {
+          "id": "sv_gold",
+          "name": "Lots of Gold",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Read your current gold (top-right of the screen) and enter it.",
+            "narrowPrompt": "Buy or sell something so your gold changes, then enter the new amount.",
+            "freezeValue": 999999,
+            "_comment": "Stardew gold is a plain i32 in most builds."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "1145360",
+      "title": "Hades",
+      "cheats": [
+        {
+          "id": "hades_health",
+          "name": "Infinite Health",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Read your current HP (the number on the health bar) and enter it.",
+            "narrowPrompt": "Take a hit so HP drops, then enter the new HP value.",
+            "freezeValue": 200,
+            "_comment": "Hades stores HP as a float (f32) — the UI encodes the entered value via floatToRawBits before scanning."
+          },
+          "aob": null
+        }
+      ]
+    }
+  ]
+}

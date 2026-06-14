@@ -122,11 +122,12 @@ private data class AddressEntry(
 // Public entry point
 // ---------------------------------------------------------------------------
 
-// Tab indices for the 3-capability chip switcher
+// Tab indices for the 4-capability chip switcher
 private object TrainerCapTab {
     const val MEMORY = 0
     const val SPEED  = 1
     const val MACROS = 2
+    const val CHEATS = 3
 }
 
 /**
@@ -135,6 +136,8 @@ private object TrainerCapTab {
  * [trainerShm] may be null if the trainer engine couldn't be initialised.
  * [speedHackShm] may be null if speed hack is disabled or not yet loaded.
  * [macroShm] may be null if macros are disabled or not yet loaded.
+ * [appId] is the compound container id (e.g. "STEAM_271590") used by the Cheats tab
+ *          to look up cheat tables.  Null when no game is running.
  * [focusRequester] is the first-item requester used by QuickMenu's LaunchedEffect.
  */
 @OptIn(ExperimentalLayoutApi::class)
@@ -143,6 +146,7 @@ fun TrainerTab(
     trainerShm: TrainerShm?,
     speedHackShm: SpeedHackShm?,
     macroShm: MacroShm?,
+    appId: String? = null,
     focusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -195,6 +199,13 @@ fun TrainerTab(
                 onClick = { selectedCapTab = TrainerCapTab.MACROS },
                 focusRequester = if (selectedCapTab == TrainerCapTab.MACROS) focusRequester else null,
             )
+            TrainerChip(
+                text = stringResource(R.string.trainer_cap_cheats),
+                selected = selectedCapTab == TrainerCapTab.CHEATS,
+                accentColor = accentColor,
+                onClick = { selectedCapTab = TrainerCapTab.CHEATS },
+                focusRequester = if (selectedCapTab == TrainerCapTab.CHEATS) focusRequester else null,
+            )
         }
 
         HorizontalDivider(
@@ -229,6 +240,14 @@ fun TrainerTab(
 
             TrainerCapTab.MACROS -> {
                 MacroSection(macroShm = macroShm)
+            }
+
+            TrainerCapTab.CHEATS -> {
+                CheatTab(
+                    appId = appId,
+                    trainerShm = trainerShm,
+                    focusRequester = null,
+                )
             }
         }
 

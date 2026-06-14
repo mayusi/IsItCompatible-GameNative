@@ -121,6 +121,11 @@ class PluviaApp : SplitCompatApplication() {
             app.gamenative.gamefixes.CollectionRegistry.init(applicationContext)
         }
 
+        // Feature 4: load the cheat-table registry (bundled seed + 24h OTA sync).
+        appScope.launch {
+            app.gamenative.cheats.CheatTableRegistry.init(applicationContext)
+        }
+
         // IIC: The upstream Ko-fi "Thank you" nag dialog points at the original project's Ko-fi
         // and is inappropriate for this fork. Suppress it permanently by marking as tipped on
         // every launch (the flag is a boolean pref; setting it here is idempotent and safe).
