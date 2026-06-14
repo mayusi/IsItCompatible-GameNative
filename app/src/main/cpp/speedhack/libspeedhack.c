@@ -36,6 +36,27 @@
  * becomes a pure passthrough: no shm is opened, no math is done, the only
  * overhead is one strcmp in __constructor and the function-call trampoline.
  *
+ * REAL-FUNCTION RESOLUTION — BULLETPROOF (the critical fix)
+ * ----------------------------------------------------------
+ * On Android/Bionic inside a Box64/Wine LD_PRELOAD context,
+ * dlsym(RTLD_NEXT, "clock_gettime") can return NULL because RTLD_NEXT
+ * walks only the link-map chain after this .so, and Bionic's unusual
+ * loader layout in the Box64 namespace may not expose libc's clock_gettime
+ * through that path.  The OLD code treated this as a fatal early-return,
+ * leaving real_clock_gettime=NULL and g_enabled=0 — but the interposed
+ * symbol was still live, so every clock_gettime call returned EINVAL,
+ * causing libc++abi to throw std::system_error and crash all Wine games.
+ *
+ * THE FIX: multi-stage dlsym fallback chain + direct syscall last resort.
+ * get_real_time() ALWAYS succeeds for any valid clk_id:
+ *   1. Try real_clock_gettime (resolved at constructor time or lazily).
+ *   2. If still NULL: try RTLD_NEXT again (lazy retry).
+ *   3. If still NULL: try RTLD_DEFAULT.
+ *   4. If still NULL: try dlopen("libc.so") + dlsym.
+ *   5. LAST RESORT (cannot fail for valid clk_id): syscall(SYS_clock_gettime).
+ * This guarantees the disabled path (SPEEDHACK_ENABLED!=1) is a pure
+ * passthrough that NEVER returns EINVAL and NEVER crashes any caller.
+ *
  * SHM LAYOUT  →  see speedhack_protocol.h / SpeedHackShm.kt
  *
  * THREAD SAFETY
@@ -66,6 +87,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <dlfcn.h>
+#include <sys/syscall.h>   /* SYS_clock_gettime, SYS_gettimeofday — syscall fallback */
 
 #include <android/log.h>
 
@@ -76,12 +98,21 @@
 #define LOGW(...)  __android_log_print(ANDROID_LOG_WARN,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...)  __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-/* ---- real function pointer ---- */
+/* ---- real function pointers ---- */
 typedef int (*real_clock_gettime_fn)(clockid_t, struct timespec *);
 typedef int (*real_gettimeofday_fn)(struct timeval *, struct timezone *);
 
+/*
+ * These are initialised in the constructor (best-effort) and lazily on first
+ * call.  They may be NULL after construction if all dlsym attempts failed;
+ * get_real_time() / get_real_tod() will retry lazily and ultimately fall back
+ * to the direct syscall — they NEVER leave a caller without a valid time.
+ */
 static real_clock_gettime_fn  real_clock_gettime  = NULL;
 static real_gettimeofday_fn   real_gettimeofday   = NULL;
+
+/* Mutex protecting the lazy-resolution pointers (written once, then stable). */
+static pthread_mutex_t g_resolve_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* ---- shared-memory ---- */
 static volatile struct speedhack_shm *g_shm = NULL;  /* NULL when disabled/failed */
@@ -114,6 +145,180 @@ static pthread_mutex_t g_anchor_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* ---- fast-path: is scaling even active? ---- */
 static int g_enabled = 0;  /* set in constructor, never changed after */
+
+/* =========================================================================
+ * BULLETPROOF real-function resolution
+ *
+ * try_resolve_clock_gettime() builds a chain of dlsym attempts and, crucially,
+ * never marks the function "permanently unavailable" from the constructor —
+ * get_real_time() retries lazily at call time if needed.
+ *
+ * The LAST RESORT is syscall(SYS_clock_gettime, ...) which bypasses the
+ * dynamic linker entirely and speaks directly to the kernel.  On Android
+ * (Linux) this is always available for any valid clockid_t.  This is the
+ * key safety net that means get_real_time() NEVER returns EINVAL.
+ * ========================================================================= */
+
+/*
+ * Attempt to resolve clock_gettime through multiple strategies.
+ * Returns a non-NULL function pointer, or NULL if all dlsym paths failed
+ * (the caller must then use the syscall fallback).
+ *
+ * NOT thread-safe by itself; callers hold g_resolve_mutex.
+ */
+static real_clock_gettime_fn try_resolve_clock_gettime(void)
+{
+    real_clock_gettime_fn fn = NULL;
+
+    /* Strategy 1: RTLD_NEXT — the canonical LD_PRELOAD approach */
+    fn = (real_clock_gettime_fn)dlsym(RTLD_NEXT, "clock_gettime");
+    if (fn) {
+        LOGI("clock_gettime resolved via RTLD_NEXT");
+        return fn;
+    }
+
+    /* Strategy 2: RTLD_DEFAULT — searches the full link map */
+    fn = (real_clock_gettime_fn)dlsym(RTLD_DEFAULT, "clock_gettime");
+    if (fn) {
+        LOGW("clock_gettime resolved via RTLD_DEFAULT (RTLD_NEXT failed)");
+        return fn;
+    }
+
+    /* Strategy 3: explicit libc handle — try Bionic's canonical paths */
+    static const char *libc_names[] = {
+        "libc.so",
+        "/system/lib64/libc.so",
+        "/system/lib/libc.so",
+        NULL
+    };
+    for (int i = 0; libc_names[i]; ++i) {
+        void *h = dlopen(libc_names[i], RTLD_NOW | RTLD_NOLOAD);
+        if (!h) h = dlopen(libc_names[i], RTLD_NOW);
+        if (h) {
+            fn = (real_clock_gettime_fn)dlsym(h, "clock_gettime");
+            /* Do NOT dlclose(h) — we need the handle to stay valid */
+            if (fn) {
+                LOGW("clock_gettime resolved via dlopen(%s)", libc_names[i]);
+                return fn;
+            }
+            dlclose(h);
+        }
+    }
+
+    /* All dlsym strategies exhausted — caller must use syscall fallback */
+    LOGE("all dlsym strategies for clock_gettime failed — will use syscall fallback");
+    return NULL;
+}
+
+/*
+ * Robustly get the real (un-scaled) clock value.
+ *
+ * GUARANTEED: never returns an error for a valid clk_id — even if all
+ * dlsym paths fail, the direct syscall will succeed.  This is the core
+ * property that prevents the EINVAL crash.
+ */
+static inline int get_real_time(clockid_t clk_id, struct timespec *tp)
+{
+    /* Fast path: function pointer already resolved */
+    real_clock_gettime_fn fn = real_clock_gettime;
+
+    if (__builtin_expect(fn == NULL, 0)) {
+        /* Lazy resolution attempt (runs at most once due to the mutex) */
+        pthread_mutex_lock(&g_resolve_mutex);
+        fn = real_clock_gettime;  /* re-read under lock */
+        if (!fn) {
+            fn = try_resolve_clock_gettime();
+            real_clock_gettime = fn;  /* store result (may still be NULL) */
+        }
+        pthread_mutex_unlock(&g_resolve_mutex);
+    }
+
+    if (__builtin_expect(fn != NULL, 1)) {
+        int r = fn(clk_id, tp);
+        if (__builtin_expect(r == 0, 1)) return 0;
+        /* fn returned an error — fall through to syscall for validation */
+        /* (propagate real error if syscall also fails) */
+    }
+
+    /*
+     * SYSCALL LAST RESORT
+     * -------------------
+     * Bypasses the dynamic linker entirely.  On Android/Linux,
+     * SYS_clock_gettime is always available for any valid clockid_t.
+     * If even this fails (invalid clk_id), propagate the real error.
+     */
+    long r = syscall(SYS_clock_gettime, (long)clk_id, (long)tp);
+    if (r == 0) return 0;
+    /* Preserve errno set by the syscall */
+    return (int)r;
+}
+
+/* ---- gettimeofday robust resolution ---- */
+
+static real_gettimeofday_fn try_resolve_gettimeofday(void)
+{
+    real_gettimeofday_fn fn = NULL;
+
+    fn = (real_gettimeofday_fn)dlsym(RTLD_NEXT, "gettimeofday");
+    if (fn) return fn;
+
+    fn = (real_gettimeofday_fn)dlsym(RTLD_DEFAULT, "gettimeofday");
+    if (fn) return fn;
+
+    static const char *libc_names[] = {
+        "libc.so", "/system/lib64/libc.so", "/system/lib/libc.so", NULL
+    };
+    for (int i = 0; libc_names[i]; ++i) {
+        void *h = dlopen(libc_names[i], RTLD_NOW | RTLD_NOLOAD);
+        if (!h) h = dlopen(libc_names[i], RTLD_NOW);
+        if (h) {
+            fn = (real_gettimeofday_fn)dlsym(h, "gettimeofday");
+            if (fn) return fn;
+            dlclose(h);
+        }
+    }
+    return NULL;
+}
+
+/*
+ * Robustly get the real wall time (for gettimeofday passthrough).
+ * Falls back to clock_gettime(CLOCK_REALTIME) or the direct syscall.
+ */
+static inline int get_real_tod(struct timeval *tv, struct timezone *tz)
+{
+    real_gettimeofday_fn fn = real_gettimeofday;
+
+    if (__builtin_expect(fn == NULL, 0)) {
+        pthread_mutex_lock(&g_resolve_mutex);
+        fn = real_gettimeofday;
+        if (!fn) {
+            fn = try_resolve_gettimeofday();
+            real_gettimeofday = fn;
+        }
+        pthread_mutex_unlock(&g_resolve_mutex);
+    }
+
+    if (fn) {
+        int r = fn(tv, tz);
+        if (r == 0) return 0;
+        /* fn failed — fall through */
+    }
+
+    /*
+     * FALLBACK: implement gettimeofday via CLOCK_REALTIME.
+     * get_real_time(CLOCK_REALTIME) is guaranteed to succeed.
+     */
+    if (tv) {
+        struct timespec ts;
+        int r = get_real_time(CLOCK_REALTIME, &ts);
+        if (r == 0) {
+            tv->tv_sec  = ts.tv_sec;
+            tv->tv_usec = (suseconds_t)(ts.tv_nsec / 1000L);
+        }
+        return r;
+    }
+    return 0;
+}
 
 /* ---- helpers ---- */
 
@@ -150,7 +355,7 @@ static float read_multiplier_from_shm(void)
  * Core scaling function.  Called for CLOCK_MONOTONIC and CLOCK_MONOTONIC_RAW.
  *
  * idx  = CLOCK_IDX_MONO or CLOCK_IDX_MONO_RAW
- * real = the value returned by the real clock_gettime (input)
+ * real = the value returned by get_real_time() (input)
  * out  = scaled value to be returned to the caller (output)
  */
 static void apply_speedhack(int idx, const struct timespec *real, struct timespec *out)
@@ -276,19 +481,41 @@ static int open_speedhack_shm(const char *base_path)
 __attribute__((constructor))
 static void speedhack_init(void)
 {
-    /* Resolve real functions first — needed even in passthrough mode */
-    real_clock_gettime = (real_clock_gettime_fn)dlsym(RTLD_NEXT, "clock_gettime");
-    if (!real_clock_gettime) {
-        LOGE("dlsym(clock_gettime) failed: %s — speedhack disabled", dlerror());
-        return;
+    /*
+     * Best-effort resolution at constructor time.  If dlsym(RTLD_NEXT) fails
+     * here (which it can in the Box64/Wine Bionic namespace), we do NOT abort
+     * or return early.  The lazy path in get_real_time() will retry, and the
+     * syscall fallback guarantees correctness regardless.
+     *
+     * CRITICAL: we no longer set real_clock_gettime = NULL and early-return on
+     * failure.  The old code did that, leaving real_clock_gettime=NULL, and then
+     * the interposed clock_gettime returned EINVAL for every call — crashing all
+     * Wine/Box64 games via uncaught std::system_error in libc++abi.
+     */
+    real_clock_gettime_fn fn = (real_clock_gettime_fn)dlsym(RTLD_NEXT, "clock_gettime");
+    if (fn) {
+        real_clock_gettime = fn;
+        LOGI("clock_gettime resolved at constructor time via RTLD_NEXT");
+    } else {
+        /*
+         * RTLD_NEXT failed.  Do NOT early-return.  The lazy resolution in
+         * get_real_time() will try RTLD_DEFAULT and dlopen(libc.so), and the
+         * syscall fallback guarantees we never return EINVAL to callers.
+         */
+        LOGW("dlsym(RTLD_NEXT, clock_gettime) failed at constructor: %s — "
+             "will retry lazily or use syscall fallback", dlerror());
     }
 
     real_gettimeofday = (real_gettimeofday_fn)dlsym(RTLD_NEXT, "gettimeofday");
-    /* gettimeofday failure is non-fatal: we just won't override it */
+    if (!real_gettimeofday) {
+        LOGW("dlsym(RTLD_NEXT, gettimeofday) failed — will retry lazily");
+    }
 
     const char *enabled = getenv("SPEEDHACK_ENABLED");
     if (!enabled || strcmp(enabled, "1") != 0) {
-        /* Not enabled: keep g_enabled=0, clock_gettime is a pure passthrough */
+        /* Not enabled: keep g_enabled=0, clock_gettime is a pure passthrough.
+         * The disabled passthrough path MUST NOT fail — get_real_time() is
+         * guaranteed to always return a valid time. */
         LOGI("SPEEDHACK_ENABLED != 1 — passthrough mode, no shm opened");
         return;
     }
@@ -318,16 +545,25 @@ static void speedhack_init(void)
 
 int clock_gettime(clockid_t clk_id, struct timespec *tp)
 {
-    if (!real_clock_gettime) {
-        /* Should never happen (constructor would have bailed), but be safe */
-        errno = EINVAL;
-        return -1;
-    }
+    /*
+     * DISABLED PATH (SPEEDHACK_ENABLED != 1):
+     * Pure passthrough — call get_real_time() which is guaranteed to never
+     * return EINVAL.  No NULL-check needed here; get_real_time() handles
+     * all resolution internally and falls back to the direct syscall.
+     *
+     * ENABLED PATH:
+     * Get the real time first, then apply scaling for monotonic clocks.
+     * If get_real_time() fails (only for truly invalid clk_id), propagate
+     * the real error — but never synthesize EINVAL ourselves.
+     *
+     * THE OLD BUG was here: `if (!real_clock_gettime) { errno=EINVAL; return -1; }`
+     * That synthesized EINVAL when dlsym failed, crashing Wine/Box64/libc++abi.
+     * Now we NEVER synthesize EINVAL — we always call get_real_time().
+     */
+    int ret = get_real_time(clk_id, tp);
+    if (ret != 0) return ret;  /* propagate real errors (invalid clk_id, etc.) */
 
-    int ret = real_clock_gettime(clk_id, tp);
-    if (ret != 0) return ret;  /* propagate errors from real clock */
-
-    if (!g_enabled) return 0;  /* passthrough when disabled */
+    if (!g_enabled) return 0;  /* passthrough when disabled (fast exit) */
 
     /* Scale only monotonic clocks (Wine QPC / GetTickCount path) */
     if (clk_id == CLOCK_MONOTONIC) {
@@ -355,21 +591,13 @@ int clock_gettime(clockid_t clk_id, struct timespec *tp)
  * DECISION: override gettimeofday using the MONO anchor, so that SDL1-era games
  * (which call gettimeofday for timing) also see the scaled clock.  The risk to
  * wall-clock consumers is minimal since Wine processes don't run system daemons.
+ *
+ * ROBUSTNESS: get_real_tod() uses the same multi-stage resolution + syscall
+ * fallback as get_real_time() — it cannot fail for a valid call.
  */
 int gettimeofday(struct timeval *tv, struct timezone *tz)
 {
-    if (!real_gettimeofday) {
-        /* Fallback: use clock_gettime to implement it */
-        struct timespec ts;
-        int r = clock_gettime(CLOCK_REALTIME, &ts);
-        if (r == 0 && tv) {
-            tv->tv_sec  = ts.tv_sec;
-            tv->tv_usec = (suseconds_t)(ts.tv_nsec / 1000);
-        }
-        return r;
-    }
-
-    int ret = real_gettimeofday(tv, tz);
+    int ret = get_real_tod(tv, tz);
     if (ret != 0 || !tv) return ret;
 
     if (!g_enabled) return 0;
