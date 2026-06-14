@@ -317,11 +317,17 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         }
 
         // ---- SpeedHack LD_PRELOAD injection ----
-        // libspeedhack.so is a pure passthrough unless SPEEDHACK_ENABLED=1, so we
-        // always append it when the .so exists — the activation guard is the env var.
-        // The multiplier is communicated via shared memory (SpeedHackShm.kt) at runtime.
+        // libspeedhack.so interposes clock_gettime — a function the entire Wine/Box64/
+        // libc++ stack (and even early process init, e.g. libnetd_client) calls. An
+        // interposed clock_gettime is inherently high-risk: any flaw breaks EVERY game
+        // launch (it did — see the clock_gettime EINVAL crash). So we ONLY preload it
+        // when the speed-hack feature is actually ENABLED. When off (the default), the
+        // lib is never loaded and CANNOT affect game launches at all — a nice-to-have
+        // feature must never be able to break the core function. The multiplier is
+        // communicated via shared memory (SpeedHackShm.kt) at runtime when enabled.
+        boolean speedHackEnabledForPreload = app.gamenative.PrefManager.INSTANCE.getSpeedHackEnabled();
         String speedHackLibPath = context.getApplicationInfo().nativeLibraryDir + "/libspeedhack.so";
-        if (new File(speedHackLibPath).exists()) {
+        if (speedHackEnabledForPreload && new File(speedHackLibPath).exists()) {
             ld_preload += ":" + speedHackLibPath;
         }
 
