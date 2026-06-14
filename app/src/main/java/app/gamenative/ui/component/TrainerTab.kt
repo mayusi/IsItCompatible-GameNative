@@ -32,6 +32,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Refresh
@@ -402,6 +404,9 @@ private fun TrainerScannerSection(
         }
     }
 
+    // ---- How-to-cheat guide (collapsible, collapsed by default) ----
+    MemoryGuideCard(accentColor = accentColor)
+
     // ---- Value type selector ----
     QuickMenuSectionHeader(title = stringResource(R.string.trainer_value_type_label))
 
@@ -673,6 +678,101 @@ private fun TrainerScannerSection(
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp),
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Collapsible "How to cheat any game" guide card
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun MemoryGuideCard(
+    accentColor: androidx.compose.ui.graphics.Color,
+    modifier: Modifier = Modifier,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(12.dp)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+            .clip(shape)
+            .background(accentColor.copy(alpha = 0.08f))
+            .border(
+                width = 1.dp,
+                color = accentColor.copy(alpha = 0.25f),
+                shape = shape,
+            ),
+    ) {
+        // Header row — tappable to toggle
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = { expanded = !expanded },
+                    role = Role.Button,
+                )
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = stringResource(R.string.trainer_guide_header),
+                style = MaterialTheme.typography.labelLarge,
+                color = accentColor,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                contentDescription = null,
+                tint = accentColor,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+
+        // Expandable steps — plain Column, no nested scroll
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                val stepColor = MaterialTheme.colorScheme.onSurface
+                val tipColor = MaterialTheme.colorScheme.onSurfaceVariant
+
+                listOf(
+                    R.string.trainer_guide_step1,
+                    R.string.trainer_guide_step2,
+                    R.string.trainer_guide_step3,
+                    R.string.trainer_guide_step4,
+                    R.string.trainer_guide_step5,
+                ).forEach { resId ->
+                    Text(
+                        text = stringResource(resId),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = stepColor,
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(2.dp))
+
+                Text(
+                    text = stringResource(R.string.trainer_guide_tip),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = tipColor,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+        }
     }
 }
 

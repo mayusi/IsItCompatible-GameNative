@@ -1644,9 +1644,18 @@
     <string name="trainer_cap_macros">Macros</string>
     <string name="trainer_cap_cheats">Cheats</string>
 
+    <!-- Trainer: how-to-cheat help guide (collapsible card in Memory tab) -->
+    <string name="trainer_guide_header">How to cheat any game (tap to expand)</string>
+    <string name="trainer_guide_step1">1. Find a value you want to change — health, gold, ammo, etc. Read its current number in the game.</string>
+    <string name="trainer_guide_step2">2. Pick the type (Int32 for most counters; Float for health bars that show decimals), enter the value, tap First Scan.</string>
+    <string name="trainer_guide_step3">3. Go change that value in-game (take a hit, spend coins), enter the new value, and tap Exact to narrow results.</string>
+    <string name="trainer_guide_step4">4. Repeat step 3 until only a handful of addresses remain.</string>
+    <string name="trainer_guide_step5">5. Tap an address to Set it to whatever you want, then tap the lock to Freeze it so the game can\'t change it back.</string>
+    <string name="trainer_guide_tip">Tip: If Int32 finds nothing, try Float — many games store health and stats as decimals internally.</string>
+
     <!-- Cheat tab: empty / not-loaded states -->
     <string name="cheat_no_table_title">No cheat table for this game</string>
-    <string name="cheat_no_table_body">Cheat tables are community-made and auto-update. Check back later.</string>
+    <string name="cheat_no_table_body">No one-tap cheats for this game yet — but you can still cheat it manually using the Memory tab (see the guide there).</string>
     <string name="cheat_no_appid_body">Launch a game to see available cheats.</string>
     <string name="cheat_engine_not_loaded_title">Trainer engine not loaded</string>
     <string name="cheat_engine_not_loaded_body">Enable the trainer engine and relaunch the game to use cheats.</string>

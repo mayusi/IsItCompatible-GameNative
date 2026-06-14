@@ -79,6 +79,465 @@
           "aob": null
         }
       ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "631510",
+      "title": "Devil May Cry HD Collection",
+      "_comment": "AppID 631510 covers the entire HD Collection: DMC1, DMC2, and DMC3 Special Edition. The trainer matches by appId so this table applies regardless of which game in the collection is active. Red Orbs and Vitality are integer values in all three games — the original PS2 ports store these as plain 32-bit integers. Style Points (SSS rank meter) scans similarly. DT (Devil Trigger) gauge is also integer.",
+      "cheats": [
+        {
+          "id": "dmc_orbs",
+          "name": "Lots of Red Orbs",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Red Orbs count in the HUD (top-left area). Enter the exact number shown.",
+            "narrowPrompt": "Kill an enemy or break an object to collect some orbs so the number changes, then enter the new total.",
+            "freezeValue": 999999,
+            "_comment": "Red Orbs are stored as a plain i32. Community Cheat Engine tables (fearlessrevolution, Nexus) confirm i32 scan narrows quickly. Applies to DMC1/2/3 in the HD Collection."
+          },
+          "aob": null
+        },
+        {
+          "id": "dmc_health",
+          "name": "Infinite Vitality (Health)",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Note your current Vitality bar value. The maximum is typically 1000 for a full bar. Enter your current HP as shown (look for 'Vitality' in the menu, or count your health bar segments — each full segment is roughly 200 HP out of 1000).",
+            "narrowPrompt": "Take a hit from an enemy so your Vitality drops, then enter the new lower value.",
+            "freezeValue": 1000,
+            "_comment": "DMC HD Collection stores vitality as i32 with a range of 0-1000 (or 0-2000 with max upgrades). The segment display maps to these integer values. Freezing at 1000 keeps one full health bar permanently."
+          },
+          "aob": null
+        },
+        {
+          "id": "dmc_dt",
+          "name": "Infinite Devil Trigger",
+          "category": "combat",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Activate Devil Trigger briefly then cancel it so your DT gauge drops slightly. Count your current DT stars (DMC3) or note the DT meter value. Enter the number of filled stars (1-8) or the gauge value if visible.",
+            "narrowPrompt": "Use DT again so more gauge drains, then enter the new star count or gauge value.",
+            "freezeValue": 8,
+            "_comment": "Devil Trigger gauge is stored as an i32 counter (0-8 stars in DMC3). Freezing at 8 keeps maximum DT available. DMC1 DT gauge is similarly integer-based. May need 2-3 passes due to small range."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "489830",
+      "title": "The Elder Scrolls V: Skyrim Special Edition",
+      "_comment": "Skyrim stores gold as an i32 counter; HP is f32. Gold is reliably scannable as a visible on-screen number. HP is displayed as a float (e.g. 115.0) in the console and stored as f32 internally.",
+      "cheats": [
+        {
+          "id": "tes5_gold",
+          "name": "Lots of Gold",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open your inventory and read your current gold amount (shown at bottom of inventory screen). Enter it exactly.",
+            "narrowPrompt": "Buy or sell something to change your gold count, then enter the new amount.",
+            "freezeValue": 999999,
+            "_comment": "Skyrim gold is stored as a plain 32-bit integer. Confirmed by numerous Cheat Engine community tables."
+          },
+          "aob": null
+        },
+        {
+          "id": "tes5_health",
+          "name": "Infinite Health",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open the console (~ key) or look at your health bar. Your base health is shown on the stats page — enter your current HP as a whole number (e.g. 115 for 115 HP).",
+            "narrowPrompt": "Take damage from an enemy so your HP drops, then enter the new lower HP value. Use whole numbers only.",
+            "freezeValue": 500,
+            "_comment": "Skyrim HP is stored as f32. The scanner encodes the entered integer via floatToRawBits. Freeze at 500 (well above typical max for a new character, safe value)."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "105600",
+      "title": "Terraria",
+      "_comment": "Terraria currency exists in four tiers (Copper/Silver/Gold/Platinum) each stored separately as i32. Platinum coins (1 plat = 100 gold = 10,000 silver = 1,000,000 copper) are the most useful to scan — scan your current platinum count. Health is also i32 (displayed as a whole number).",
+      "cheats": [
+        {
+          "id": "terra_platinum",
+          "name": "Lots of Platinum Coins",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open your inventory and count your Platinum Coins (the gold-coloured large coins). Enter the exact number. If you have zero, earn one first by selling items.",
+            "narrowPrompt": "Spend or pick up a platinum coin so the count changes, then enter the new amount.",
+            "freezeValue": 99,
+            "_comment": "Platinum coin count is a separate i32 field. Scanning for 0 will have too many results — start with at least 1 platinum. Freezing at 99 gives 99 platinum coins (near infinite spending power)."
+          },
+          "aob": null
+        },
+        {
+          "id": "terra_health",
+          "name": "Infinite Health",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your HP display (top-left). Enter your current HP as shown (e.g. 200 for 200/400 HP).",
+            "narrowPrompt": "Take a hit from an enemy so your HP drops, then enter the new value.",
+            "freezeValue": 500,
+            "_comment": "Terraria HP is stored as an i32. Max base HP is 400, max boosted is 500 with accessories. Freezing at 500 is safe."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "268910",
+      "title": "Cuphead",
+      "_comment": "Cuphead stores HP as a very small integer (typically 3 for normal, up to 6 with accessibility assist mode). Small values mean more narrow passes are needed — the scanner will loop until few candidates remain. Coins are also a small i32.",
+      "cheats": [
+        {
+          "id": "cup_health",
+          "name": "Infinite HP",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Note your HP hearts in the top-left (usually 3 hearts = 3 HP). Enter your current HP count as a number.",
+            "narrowPrompt": "Take a hit from an enemy or projectile so you lose one heart, then enter the new lower count. Expect to narrow 3-4 times since the value range is very small.",
+            "freezeValue": 3,
+            "_comment": "HP is a small i32 (typically 1-6). Many candidates will remain after first scan; the UI must loop narrowing. Freezing at 3 keeps you at full standard health."
+          },
+          "aob": null
+        },
+        {
+          "id": "cup_coins",
+          "name": "Max Coins",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Visit the shop and note your coin count (shown at the bottom of the shop screen). Enter it.",
+            "narrowPrompt": "Spend a coin on an item in the shop, then enter the new lower count.",
+            "freezeValue": 99,
+            "_comment": "Coins are a plain i32. Scanning in the shop screen while the value is visible makes narrowing easiest."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "588650",
+      "title": "Dead Cells",
+      "_comment": "Dead Cells uses Cells (the main upgrade currency) and Gold (per-run spending money), both stored as i32. Community Cheat Engine tables confirm 4-byte integer for both. Health is also i32.",
+      "cheats": [
+        {
+          "id": "dc_gold",
+          "name": "Lots of Gold",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your gold counter (shown at top of HUD during a run). Enter the exact amount you currently have.",
+            "narrowPrompt": "Pick up a gold pouch or spend gold at a shop so the value changes, then enter the new amount.",
+            "freezeValue": 999999,
+            "_comment": "Gold is per-run currency stored as i32. Narrows quickly since the initial value is fairly unique."
+          },
+          "aob": null
+        },
+        {
+          "id": "dc_cells",
+          "name": "Lots of Cells",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Kill a few enemies so you have some cells, then look at your Cells counter. Enter the current count.",
+            "narrowPrompt": "Kill another enemy to pick up a cell, then enter the new higher count.",
+            "freezeValue": 9999,
+            "_comment": "Cells are the permanent upgrade currency (carried between runs to the Collector). Stored as i32. Collect at least 1 cell before scanning so you don't start from 0."
+          },
+          "aob": null
+        },
+        {
+          "id": "dc_health",
+          "name": "Infinite Health",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your HP bar and the number shown above it. Enter your current HP value.",
+            "narrowPrompt": "Take a hit so HP drops, then enter the new value.",
+            "freezeValue": 100,
+            "_comment": "Dead Cells HP is i32. Starting HP is 100 for most builds. Freezing at 100 keeps full HP."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "504230",
+      "title": "Celeste",
+      "_comment": "Celeste does not have a traditional currency or HP bar — the player dies in one hit. The most useful scannable values are: Death Count (i32, visible on chapter select screen) and Strawberry Count (i32). Neither provides a gameplay advantage by itself, but strawberry count can be frozen to preserve a target for speedruns. Skipping this table: nothing here is reliably freezable for an 'infinite' gameplay advantage. No cheats authored — one-hit-death game, no currency, no HP. SKIP.",
+      "cheats": []
+    },
+    {
+      "source": "STEAM",
+      "gameId": "391540",
+      "title": "Undertale",
+      "_comment": "Undertale stores HP and Gold as plain integers visible on screen. Gold is shown in the ITEM menu; HP is on the battle HUD.",
+      "cheats": [
+        {
+          "id": "ut_gold",
+          "name": "Lots of Gold",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open your ITEM menu (or check the pause screen) and read your current GOLD amount. Enter it.",
+            "narrowPrompt": "Buy something from a shop or receive gold from a battle to change the amount, then enter the new value.",
+            "freezeValue": 9999,
+            "_comment": "Undertale gold maxes out at 9999 in most contexts. Stored as a plain i32."
+          },
+          "aob": null
+        },
+        {
+          "id": "ut_hp",
+          "name": "Infinite HP",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "During or after a battle, read your HP from the battle menu (e.g. 20/20). Enter your current HP as a number.",
+            "narrowPrompt": "Take damage in a battle so HP drops, then enter the new lower HP value.",
+            "freezeValue": 99,
+            "_comment": "Undertale HP is an integer. Max base HP is 20 but can be raised. Freezing at 99 keeps you at very high HP."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "1794680",
+      "title": "Vampire Survivors",
+      "_comment": "Vampire Survivors stores Gold (permanent upgrade currency) and in-run gold as i32 values. HP is shown as a whole number on the HUD. Note: the game runs under Godot/Electron, so process memory is accessible. Community trainers confirm i32 for coins and HP.",
+      "cheats": [
+        {
+          "id": "vs_coins",
+          "name": "Lots of Gold (Coins)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "After a run ends (or on the main menu), read your total Gold Coins shown on the PowerUp/shop screen. Enter the exact amount.",
+            "narrowPrompt": "Spend coins on a PowerUp upgrade so the amount decreases, then enter the new lower total.",
+            "freezeValue": 999999,
+            "_comment": "Permanent gold (used between runs for PowerUps) is an i32. Best to scan in the PowerUp/main menu where the value is clearly shown."
+          },
+          "aob": null
+        },
+        {
+          "id": "vs_hp",
+          "name": "Infinite HP",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "During a run, look at your HP number displayed below your character or in the HUD. Enter the current HP value as shown (it may be a decimal like 120.5 — just enter the nearest whole number).",
+            "narrowPrompt": "Take damage from an enemy so your HP drops, then enter the new value.",
+            "freezeValue": 500,
+            "_comment": "Vampire Survivors HP is stored as f32 in most versions. Freezing at 500 keeps you well above death regardless of damage scaling."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "646570",
+      "title": "Slay the Spire",
+      "_comment": "CAUTION: Slay the Spire runs on the JVM (Java Virtual Machine) which can relocate object heap memory mid-run. Guided scanning may work at a single save point but the address can become invalid after combat. Gold is 4-byte int; HP is 4-byte int. These cheats may need re-scanning each time you reload. Authored as best-effort — flag this to the user in the prompt.",
+      "cheats": [
+        {
+          "id": "sts_gold",
+          "name": "Lots of Gold (Best-Effort — JVM game)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your gold total (shown in the top-right area of the map/shop screen). Enter the exact amount. NOTE: This game runs on the JVM and memory may shift after combat — you may need to re-scan after each major state change.",
+            "narrowPrompt": "Visit a shop and buy something to change your gold, then enter the new amount.",
+            "freezeValue": 9999,
+            "_comment": "JVM heap can relocate. Works best when scanned immediately at a shop screen and frozen before entering combat. May become stale after combat ends."
+          },
+          "aob": null
+        },
+        {
+          "id": "sts_hp",
+          "name": "Infinite HP (Best-Effort — JVM game)",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your HP (shown at top-left, e.g. 72/80). Enter your CURRENT HP as a whole number. NOTE: JVM memory may shift — re-scan if the cheat stops working after combat.",
+            "narrowPrompt": "Take a hit so HP drops, then enter the new current HP value.",
+            "freezeValue": 999,
+            "_comment": "HP is 4-byte int in STS. Max HP is typically 80-100. Freezing at 999 keeps HP at a very high value that the game may cap to your max — still prevents death."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "250900",
+      "title": "The Binding of Isaac: Rebirth",
+      "_comment": "Rebirth (and Afterbirth+, Repentance) stores HP as a small integer (number of red heart containers * 2 to account for half-hearts, so 6 = 3 full hearts). Coins are a plain i32 (max 99). Keys and bombs are also i32.",
+      "cheats": [
+        {
+          "id": "boi_coins",
+          "name": "Max Coins",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your coin count in the HUD (bottom-left area, small coin icon). Enter the exact number shown.",
+            "narrowPrompt": "Pick up a coin or spend a coin at a shop so the count changes, then enter the new amount.",
+            "freezeValue": 99,
+            "_comment": "Coins are capped at 99 in-game. Stored as i32. Small range — may need 3+ narrowing passes."
+          },
+          "aob": null
+        },
+        {
+          "id": "boi_keys",
+          "name": "Max Keys",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your key count (key icon in HUD). Enter the number of keys you currently have.",
+            "narrowPrompt": "Use a key to open a door or chest, then enter the new lower key count.",
+            "freezeValue": 99,
+            "_comment": "Keys stored as i32. Capped at 99. Small value range — use 3+ passes."
+          },
+          "aob": null
+        },
+        {
+          "id": "boi_bombs",
+          "name": "Max Bombs",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your bomb count (bomb icon in HUD). Enter how many bombs you have.",
+            "narrowPrompt": "Place a bomb so the count drops, then enter the new lower count.",
+            "freezeValue": 99,
+            "_comment": "Bombs stored as i32. Capped at 99. Small value range — use 3+ passes."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "1313140",
+      "title": "Cult of the Lamb",
+      "_comment": "Cult of the Lamb stores Devotion (building resource) and Gold (coin currency) as integers. Fervor (the combat mana/spell gauge) is also integer-based. Community Cheat Engine tables confirm i32 for all these values.",
+      "cheats": [
+        {
+          "id": "cotl_gold",
+          "name": "Lots of Gold",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Gold coin total (shown in the HUD during cult management or combat). Enter the exact amount.",
+            "narrowPrompt": "Spend gold at a shop or gain gold from a run to change the amount, then enter the new value.",
+            "freezeValue": 9999,
+            "_comment": "Gold is i32. Works best scanning while in the cult base or shop where the value is stable."
+          },
+          "aob": null
+        },
+        {
+          "id": "cotl_devotion",
+          "name": "Max Devotion",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Devotion count in the cult management screen. Enter the current amount shown.",
+            "narrowPrompt": "Collect devotion from followers or spend some, then enter the new amount.",
+            "freezeValue": 9999,
+            "_comment": "Devotion is the main cult-building resource. Stored as i32."
+          },
+          "aob": null
+        },
+        {
+          "id": "cotl_health",
+          "name": "Infinite Health (Combat)",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "During a dungeon run, look at your HP hearts in the top-left. Count your full hearts and enter the number (e.g. enter 3 for 3 hearts).",
+            "narrowPrompt": "Take a hit from an enemy so you lose a heart, then enter the new lower heart count.",
+            "freezeValue": 6,
+            "_comment": "Cult of the Lamb HP is stored as f32 in the Unity engine build. Typical max is 3-6 hearts. Freeze at 6 for max HP."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "1942280",
+      "title": "Brotato",
+      "_comment": "Brotato is a Godot engine game. HP (current and max), gold (in-wave pickup currency), and Materials (the between-wave upgrade currency) are stored as integers. Community Cheat Engine analysis confirms i32 for all these. Materials are most useful for buying upgrades between waves.",
+      "cheats": [
+        {
+          "id": "brot_materials",
+          "name": "Lots of Materials (Between-Wave Currency)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Between waves, look at your Materials count (the blue gem/crystal icon in the upgrade shop). Enter the exact amount shown.",
+            "narrowPrompt": "Buy an upgrade in the shop to spend some materials, then enter the new lower amount.",
+            "freezeValue": 9999,
+            "_comment": "Materials are the permanent upgrade currency used between waves. Stored as i32 in Godot's memory layout."
+          },
+          "aob": null
+        },
+        {
+          "id": "brot_hp",
+          "name": "Infinite HP",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "During a wave, look at your current HP shown in the top-left corner. Enter the number exactly.",
+            "narrowPrompt": "Take damage from an enemy so HP drops, then enter the new lower value.",
+            "freezeValue": 150,
+            "_comment": "Brotato HP is i32. Starting HP depends on character (typically 100-150). Freezing at 150 is safe for all characters."
+          },
+          "aob": null
+        }
+      ]
     }
   ]
 }
