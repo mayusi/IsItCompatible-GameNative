@@ -104,9 +104,7 @@ import app.gamenative.utils.ManifestInstaller
 import app.gamenative.utils.GameFeedbackUtils
 import app.gamenative.utils.IntentLaunchManager
 import app.gamenative.utils.SteamUtils
-import app.gamenative.utils.UpdateChecker
-import app.gamenative.utils.UpdateInfo
-import app.gamenative.utils.UpdateInstaller
+// [IIC] UpdateChecker/UpdateInfo/UpdateInstaller imports removed — replaced by AppUpdateViewModel.
 import app.gamenative.utils.LaunchDependencies
 import app.gamenative.workshop.WorkshopManager
 import com.google.android.play.core.splitcompat.SplitCompat
@@ -279,6 +277,7 @@ private fun trackGameLaunched(appId: String) {
 @Composable
 fun PluviaMain(
     viewModel: MainViewModel = hiltViewModel(),
+    appUpdateViewModel: app.gamenative.update.AppUpdateViewModel = hiltViewModel(),
     navController: NavHostController = rememberNavController(),
     lifecycleOwner: LifecycleOwner = LocalLifecycleOwner.current,
 ) {
@@ -287,6 +286,26 @@ fun PluviaMain(
     val scope = rememberCoroutineScope()
 
     val state by viewModel.state.collectAsStateWithLifecycle()
+
+    // ── IIC self-update dialog ────────────────────────────────────────────────
+    // Shown once per session when a pending update exists (written by AppUpdateChecker
+    // in PluviaApp.onCreate). "Later" dismisses the dialog but NOT the pref, so the
+    // Settings banner (in SettingsGroupIIC) remains visible until the user installs.
+    val appUpdateState by appUpdateViewModel.state.collectAsStateWithLifecycle()
+    var updateDialogShown by rememberSaveable { mutableStateOf(false) }
+    val showUpdateDialog = !updateDialogShown && appUpdateState.pendingUpdate != null
+    if (showUpdateDialog) {
+        app.gamenative.ui.component.AppUpdateDialog(
+            update = appUpdateState.pendingUpdate!!,
+            installState = appUpdateState.installState,
+            onInstall = appUpdateViewModel::installUpdate,
+            onDismiss = { updateDialogShown = true },
+        )
+    }
+    if (appUpdateState.pendingUpdate != null && !updateDialogShown) {
+        updateDialogShown = true
+    }
+    // ── End IIC self-update dialog ────────────────────────────────────────────
 
     var msgDialogState by rememberSaveable(stateSaver = MessageDialogState.Saver) {
         mutableStateOf(MessageDialogState(false))
@@ -306,7 +325,8 @@ fun PluviaMain(
 
     var gameBackAction by remember { mutableStateOf<() -> Unit?>({}) }
 
-    var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+    // [IIC] updateInfo removed — old API-backed updater replaced by AppUpdateViewModel.
+    // Launch-time update dialog is hosted below (new AppUpdateViewModel).
 
     var openContainerConfigForAppId by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -366,19 +386,8 @@ fun PluviaMain(
         }
     }
 
-    // Check for updates on app start
-    LaunchedEffect(Unit) {
-        val checkedUpdateInfo = UpdateChecker.checkForUpdate(context)
-        if (checkedUpdateInfo != null) {
-            val appVersionCode = BuildConfig.VERSION_CODE
-            val serverVersionCode = checkedUpdateInfo.versionCode
-            Timber.i("Update check: app versionCode=$appVersionCode, server versionCode=$serverVersionCode")
-            if (appVersionCode < serverVersionCode) {
-                updateInfo = checkedUpdateInfo
-                viewModel.setUpdateInfo(checkedUpdateInfo)
-            }
-        }
-    }
+    // [IIC] Old update-check call removed — replaced by the secure IIC self-updater
+    // (AppUpdateChecker fired in PluviaApp.onCreate, surfaced via AppUpdateViewModel).
 
     // shared intent-launch path. resolves isOffline at the call site because intent launches can
     // arrive pre-login (cold-boot via stored creds) and downstream cloud-sync needs a settled answer.
@@ -1087,43 +1096,12 @@ fun PluviaMain(
         }
 
         DialogType.APP_UPDATE -> {
-            onConfirmClick = {
-                setMessageDialogState(MessageDialogState(false))
-                val updateInfo = viewModel.updateInfo.value
-                if (updateInfo != null) {
-                    scope.launch {
-                        viewModel.setLoadingDialogVisible(true)
-                        viewModel.setLoadingDialogMessage("Downloading update...")
-                        viewModel.setLoadingDialogProgress(0f)
-
-                        val success = UpdateInstaller.downloadAndInstall(
-                            context = context,
-                            downloadUrl = updateInfo.downloadUrl,
-                            versionName = updateInfo.versionName,
-                            onProgress = { progress ->
-                                viewModel.setLoadingDialogProgress(progress)
-                            },
-                        )
-
-                        viewModel.setLoadingDialogVisible(false)
-                        if (!success) {
-                            msgDialogState = MessageDialogState(
-                                visible = true,
-                                type = DialogType.SYNC_FAIL,
-                                title = context.getString(R.string.main_update_failed_title),
-                                message = context.getString(R.string.main_update_failed_message),
-                                dismissBtnText = context.getString(R.string.ok),
-                            )
-                        }
-                    }
-                }
-            }
-            onDismissClick = {
-                setMessageDialogState(MessageDialogState(false))
-            }
-            onDismissRequest = {
-                setMessageDialogState(MessageDialogState(false))
-            }
+            // [IIC] Dead branch: APP_UPDATE dialog is no longer triggered from PluviaMain.
+            // The IIC AppUpdateViewModel/AppUpdateDialog handles all update UI now.
+            // This case is kept to avoid exhaustiveness compiler errors (DialogType is an enum).
+            onConfirmClick = null
+            onDismissClick = { setMessageDialogState(MessageDialogState(false)) }
+            onDismissRequest = { setMessageDialogState(MessageDialogState(false)) }
         }
 
         DialogType.WORKSHOP_UPDATE_PROMPT -> {
@@ -1382,22 +1360,10 @@ fun PluviaMain(
                         val shouldShowDialogs = !isOffline || !SteamUtils.hasStoredCredentials()
 
                         if (shouldShowDialogs && !state.annoyingDialogShown && PluviaApp.xEnvironment == null && !SteamService.keepAlive && !MainActivity.wasLaunchedViaExternalIntent) {
-                            val currentUpdateInfo = updateInfo
-                            if (currentUpdateInfo != null) {
-                                viewModel.setAnnoyingDialogShown(true)
-                                msgDialogState = MessageDialogState(
-                                    visible = true,
-                                    type = DialogType.APP_UPDATE,
-                                    title = context.getString(R.string.main_update_available_title),
-                                    message = context.getString(
-                                        R.string.main_update_available_message,
-                                        currentUpdateInfo.versionName,
-                                        currentUpdateInfo.releaseNotes?.let { "\n\n$it" } ?: "",
-                                    ),
-                                    confirmBtnText = context.getString(R.string.main_update_button),
-                                    dismissBtnText = context.getString(R.string.main_later_button),
-                                )
-                            } else if (state.hasCrashedLastStart) {
+                            // [IIC] Old update dialog removed — replaced by AppUpdateViewModel/AppUpdateDialog above.
+                            // The IIC self-updater shows a Compose dialog at the top of PluviaMain
+                            // instead of routing through the MessageDialog/DialogType system.
+                            if (state.hasCrashedLastStart) {
                                 viewModel.setAnnoyingDialogShown(true)
                                 msgDialogState = MessageDialogState(
                                     visible = true,

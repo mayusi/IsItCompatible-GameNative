@@ -1363,4 +1363,90 @@ object PrefManager {
     fun setLastPlayedSubGame(appId: String, exePath: String) {
         setPref(stringPreferencesKey("collection_last_exe_$appId"), exePath)
     }
+
+    // ── Self-update prefs (IIC secure updater) ────────────────────────────────
+
+    /** Epoch-ms of the last completed update check (0 = never). */
+    private val LAST_UPDATE_CHECK_MS = longPreferencesKey("last_update_check_ms")
+    var lastUpdateCheckMs: Long
+        get() = getPref(LAST_UPDATE_CHECK_MS, 0L)
+        set(value) { setPref(LAST_UPDATE_CHECK_MS, value) }
+
+    /** Whether automatic background update checks are enabled (default true). */
+    private val UPDATE_AUTO_CHECK_ENABLED = booleanPreferencesKey("update_auto_check_enabled")
+    var updateAutoCheckEnabled: Boolean
+        get() = getPref(UPDATE_AUTO_CHECK_ENABLED, true)
+        set(value) { setPref(UPDATE_AUTO_CHECK_ENABLED, value) }
+
+    // Pending-update payload (all fields null when no update is pending).
+    private val PENDING_UPDATE_VERSION  = stringPreferencesKey("pending_update_version")
+    private val PENDING_UPDATE_URL      = stringPreferencesKey("pending_update_url")
+    private val PENDING_UPDATE_FILENAME = stringPreferencesKey("pending_update_filename")
+    private val PENDING_UPDATE_NOTES    = stringPreferencesKey("pending_update_notes")
+    private val PENDING_UPDATE_SIZE     = longPreferencesKey("pending_update_size")
+    private val PENDING_UPDATE_SHA256   = stringPreferencesKey("pending_update_sha256")
+
+    var pendingUpdateVersion: String?
+        get() = getPref(PENDING_UPDATE_VERSION, "").ifEmpty { null }
+        set(value) { if (value != null) setPref(PENDING_UPDATE_VERSION, value) }
+
+    var pendingUpdateUrl: String?
+        get() = getPref(PENDING_UPDATE_URL, "").ifEmpty { null }
+        set(value) { if (value != null) setPref(PENDING_UPDATE_URL, value) }
+
+    var pendingUpdateFilename: String?
+        get() = getPref(PENDING_UPDATE_FILENAME, "").ifEmpty { null }
+        set(value) { if (value != null) setPref(PENDING_UPDATE_FILENAME, value) }
+
+    var pendingUpdateNotes: String?
+        get() = getPref(PENDING_UPDATE_NOTES, "").ifEmpty { null }
+        set(value) { setPref(PENDING_UPDATE_NOTES, value ?: "") }
+
+    var pendingUpdateSize: Long
+        get() = getPref(PENDING_UPDATE_SIZE, 0L)
+        set(value) { setPref(PENDING_UPDATE_SIZE, value) }
+
+    var pendingUpdateSha256: String?
+        get() = getPref(PENDING_UPDATE_SHA256, "").ifEmpty { null }
+        set(value) { setPref(PENDING_UPDATE_SHA256, value ?: "") }
+
+    /**
+     * Atomically writes all pending-update fields. Called by [AppUpdateChecker]
+     * when a new release is found.
+     */
+    fun setPendingUpdate(
+        version: String,
+        url: String,
+        filename: String,
+        notes: String,
+        sizeBytes: Long,
+        sha256: String?,
+    ) {
+        scope.launch {
+            dataStore.edit { pref ->
+                pref[PENDING_UPDATE_VERSION]  = version
+                pref[PENDING_UPDATE_URL]      = url
+                pref[PENDING_UPDATE_FILENAME] = filename
+                pref[PENDING_UPDATE_NOTES]    = notes
+                pref[PENDING_UPDATE_SIZE]     = sizeBytes
+                pref[PENDING_UPDATE_SHA256]   = sha256 ?: ""
+            }
+        }
+    }
+
+    /**
+     * Clears all pending-update fields. Called by [AppUpdateViewModel.dismiss].
+     */
+    fun clearPendingUpdate() {
+        scope.launch {
+            dataStore.edit { pref ->
+                pref.remove(PENDING_UPDATE_VERSION)
+                pref.remove(PENDING_UPDATE_URL)
+                pref.remove(PENDING_UPDATE_FILENAME)
+                pref.remove(PENDING_UPDATE_NOTES)
+                pref.remove(PENDING_UPDATE_SIZE)
+                pref.remove(PENDING_UPDATE_SHA256)
+            }
+        }
+    }
 }

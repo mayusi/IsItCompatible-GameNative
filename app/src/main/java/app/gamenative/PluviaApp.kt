@@ -13,6 +13,7 @@ import app.gamenative.service.DownloadService
 import app.gamenative.service.SteamService
 import app.gamenative.sync.FrontendSyncManager
 import app.gamenative.gamefixes.GameFixesRegistry
+import app.gamenative.update.AppUpdateChecker
 import app.gamenative.utils.ContainerMigrator
 import app.gamenative.utils.DeviceProfileDetector
 import app.gamenative.utils.FuseExternalMigrator
@@ -198,6 +199,13 @@ class PluviaApp : SplitCompatApplication() {
         }
 
         PlayIntegrity.warmUp(this)
+
+        // IIC self-updater: check GitHub for a new release (12h debounce, no-op on DEBUG).
+        // runCatching so a network failure can never crash the app on startup.
+        appScope.launch {
+            runCatching { AppUpdateChecker().checkIfDue(applicationContext) }
+                .onFailure { Timber.w(it, "self-update check failed") }
+        }
 
     }
 
