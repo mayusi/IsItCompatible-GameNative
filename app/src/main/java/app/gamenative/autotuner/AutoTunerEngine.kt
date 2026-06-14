@@ -2,6 +2,7 @@ package app.gamenative.autotuner
 
 import android.content.Context
 import app.gamenative.gamefixes.GameFixesRegistry
+import app.gamenative.iic.AutoTunerResultBroadcaster
 import app.gamenative.utils.CrashClassifier
 import app.gamenative.utils.ContainerUtils
 import app.gamenative.utils.IntentLaunchManager
@@ -653,6 +654,27 @@ class AutoTunerEngine(
                 container.putExtra(extraDataKey, summary.toString())
                 container.saveData()
                 Timber.tag(TAG).i("Winner applied and stored in extraData[$extraDataKey] for $appId")
+
+                // Broadcast the winner to the IIC app so it can store a Tier-1 verified
+                // guide for this game+device. Best-effort + crash-safe: any failure here
+                // must NEVER propagate — the container save above already succeeded.
+                try {
+                    val numericId = ContainerUtils.extractGameIdFromContainerId(appId)
+                    val gameSource = try {
+                        ContainerUtils.extractGameSourceFromContainerId(appId).name
+                    } catch (_: Exception) {
+                        "STEAM"
+                    }
+                    AutoTunerResultBroadcaster.send(
+                        context = context,
+                        appId = numericId,
+                        gameSource = gameSource,
+                        outcome = outcome,
+                        winnerConfig = winner.config,
+                    )
+                } catch (e: Exception) {
+                    Timber.tag(TAG).w(e, "AutoTuner result broadcast failed (non-fatal) for $appId")
+                }
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Failed to apply winner for $appId")
                 throw e
