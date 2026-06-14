@@ -140,29 +140,27 @@ class PluviaApp : SplitCompatApplication() {
 
         DownloadService.populateDownloadService(this)
 
-        // Run the one-time GOG/Amazon path migration off the main thread.
-        // The PrefManager.gogAmazonPathMigrated guard makes this idempotent;
-        // marking the flag at the end of the coroutine (inside the suspend body)
-        // is safe because the coroutine is the ONLY writer for that path.
+        // Run the storage migrations off the main thread (avoids the old runBlocking
+        // ANR), but SEQUENTIALLY within a single coroutine so they can't race each
+        // other on the storage prefs / install-path DB. Order matters: fix GOG/Amazon
+        // install paths first, then legacy containers, then the FUSE→internal move —
+        // each reads the state the previous one settled.
+        // The PrefManager.gogAmazonPathMigrated guard makes the first idempotent.
         appScope.launch {
             migrateGogAmazonPaths()
-        }
 
-        appScope.launch {
             ContainerMigrator.migrateLegacyContainersIfNeeded(
                 context = applicationContext,
                 onProgressUpdate = null,
                 onComplete = null
             )
-        }
 
-        // IIC: Auto-migrate games installed to the FUSE-backed primary-external path to
-        // internal storage so they can actually run.  The FUSE mount is torn down by
-        // Android (vold/MediaProvider crash) when Wine/Box64 opens many game files
-        // simultaneously, killing the game process.  Internal ext4/f2fs has no such issue.
-        // This migration fires once per device-session when no real SD card is present and
-        // there are game directories at the FUSE path.
-        appScope.launch {
+            // IIC: Auto-migrate games installed to the FUSE-backed primary-external path to
+            // internal storage so they can actually run.  The FUSE mount is torn down by
+            // Android (vold/MediaProvider crash) when Wine/Box64 opens many game files
+            // simultaneously, killing the game process.  Internal ext4/f2fs has no such issue.
+            // This migration fires once per device-session when no real SD card is present and
+            // there are game directories at the FUSE path.
             FuseExternalMigrator.migrateIfNeeded(applicationContext)
         }
 

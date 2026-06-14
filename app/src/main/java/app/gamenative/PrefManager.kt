@@ -1153,7 +1153,14 @@ object PrefManager {
         get() = getPref(USE_EXTERNAL_STORAGE, false)
         set(value) {
             setPref(USE_EXTERNAL_STORAGE, value)
-            setPref(EXTERNAL_STORAGE_PATH, "")
+            // Only clear the chosen path when DISABLING external storage. The old
+            // code cleared it unconditionally, so enabling external storage wiped
+            // the path right after the UI set it — installs then silently fell back
+            // to internal storage even with the toggle on. Preserve the path when
+            // enabling; the caller sets a fresh one when picking a new volume.
+            if (!value) {
+                setPref(EXTERNAL_STORAGE_PATH, "")
+            }
         }
 
     private val FETCH_STEAMGRIDDB_IMAGES = booleanPreferencesKey("fetch_steamgriddb_images")

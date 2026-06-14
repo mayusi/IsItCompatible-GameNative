@@ -150,15 +150,23 @@ object FuseExternalMigrator {
         )
 
         // If all succeeded (or nothing was there), clear the stale FUSE-path externalStoragePath
-        // pref so the app no longer points at the FUSE dir.
+        // pref so the app no longer points at the FUSE dir, and mark the migration done.
+        // If ANY game failed to move, do NOT mark migrated — otherwise a partially-moved
+        // game (split between FUSE and internal) would be stuck forever: getAppDirPath would
+        // resolve to the broken FUSE copy and the launch would FUSE-teardown crash, with no
+        // chance to retry. Leaving the flag unset lets the migration retry on next launch.
         if (errorCount == 0) {
             if (PrefManager.externalStoragePath.startsWith(fuseDirBase)) {
                 Timber.tag(TAG).i("Clearing stale externalStoragePath pref (was pointing at FUSE dir)")
                 PrefManager.externalStoragePath = ""
                 PrefManager.useExternalStorage = false
             }
+            PrefManager.setFloat(PREF_MIGRATED, 1f)
+        } else {
+            Timber.tag(TAG).w(
+                "FUSE migration had %d error(s) — NOT marking done so it retries next launch",
+                errorCount,
+            )
         }
-
-        PrefManager.setFloat(PREF_MIGRATED, 1f)
     }
 }
