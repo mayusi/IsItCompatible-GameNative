@@ -334,7 +334,7 @@ object PrefManager {
     var quickMenuLastTab: Int
         get() = getPref(QUICK_MENU_LAST_TAB, 0)
         set(value) {
-            setPref(QUICK_MENU_LAST_TAB, value.coerceIn(0, 2))
+            setPref(QUICK_MENU_LAST_TAB, value.coerceIn(0, 5))
         }
 
     private val SHOW_FPS = booleanPreferencesKey("show_fps")
@@ -1329,6 +1329,13 @@ object PrefManager {
     var usageAnalyticsEnabled: Boolean
         get() = getPref(USAGE_ANALYTICS_ENABLED, true)
         set(value) { setPref(USAGE_ANALYTICS_ENABLED, value) }
+
+    // Memory-cheat trainer feature — disabled by default; enables LD_PRELOAD of
+    // libtrainer.so and sets TRAINER_ENABLED=1 in the Wine/Box64 environment.
+    private val TRAINER_ENABLED = booleanPreferencesKey("trainer_enabled")
+    var trainerEnabled: Boolean
+        get() = getPref(TRAINER_ENABLED, false)
+        set(value) { setPref(TRAINER_ENABLED, value) }
 
     /* Multi-game collection: last-played sub-game exe per appId.
      * Key: "collection_last_exe_<appId>", Value: relative exe path (e.g. "dmc1.exe"). */

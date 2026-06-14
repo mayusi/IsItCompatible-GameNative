@@ -1,5 +1,6 @@
 package app.gamenative.ui.component
 
+import android.content.Context
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -55,6 +56,7 @@ import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.QueryStats
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -85,9 +87,11 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import app.gamenative.PrefManager
 import app.gamenative.R
+import app.gamenative.trainer.TrainerShm
 import app.gamenative.ui.data.PerformanceHudConfig
 import app.gamenative.ui.data.PerformanceHudSize
 import app.gamenative.ui.theme.PluviaTheme
@@ -117,6 +121,7 @@ private object QuickMenuTab {
     const val EFFECTS = 2
     const val CONTROLLER = 3
     const val TOOLS = 4
+    const val TRAINER = 5
 }
 
 data class QuickMenuItem(
@@ -340,6 +345,7 @@ fun QuickMenu(
         QuickMenuTab.LSFG -> R.string.lsfg_tab_title
         QuickMenuTab.EFFECTS -> R.string.screen_effects
         QuickMenuTab.TOOLS -> R.string.task_manager
+        QuickMenuTab.TRAINER -> R.string.trainer_tab_title
         else -> R.string.quick_menu_tab_controller
     }
 
@@ -357,6 +363,15 @@ fun QuickMenu(
     val controllerItemFocusRequester = remember { FocusRequester() }
     val toolsItemFocusRequester = remember { FocusRequester() }
     val lsfgItemFocusRequester = remember { FocusRequester() }
+    val trainerTabFocusRequester = remember { FocusRequester() }
+    val trainerItemFocusRequester = remember { FocusRequester() }
+
+    // Trainer engine — created once lazily when the Trainer tab is first shown.
+    // Null means the engine couldn't be initialised (feature disabled / lib not loaded).
+    val context = LocalContext.current
+    val trainerShm = remember {
+        if (PrefManager.trainerEnabled) TrainerShm.create(context) else null
+    }
 
     val visibleState = remember { MutableTransitionState(false) }
     visibleState.targetState = isVisible
@@ -518,6 +533,18 @@ fun QuickMenu(
                                     modifier = Modifier.width(56.dp),
                                     focusRequester = toolsTabFocusRequester,
                                 )
+                                QuickMenuTabButton(
+                                    icon = Icons.Default.SmartToy,
+                                    contentDescriptionResId = R.string.trainer_tab_title,
+                                    selected = selectedTab == QuickMenuTab.TRAINER,
+                                    accentColor = PluviaTheme.colors.accentPurple,
+                                    onSelected = {
+                                        selectedTab = QuickMenuTab.TRAINER
+                                        PrefManager.quickMenuLastTab = selectedTab
+                                    },
+                                    modifier = Modifier.width(56.dp),
+                                    focusRequester = trainerTabFocusRequester,
+                                )
                             }
 
                             Box(
@@ -644,6 +671,14 @@ fun QuickMenu(
                                         )
                                     }
 
+                                    QuickMenuTab.TRAINER -> {
+                                        TrainerTab(
+                                            trainerShm = trainerShm,
+                                            focusRequester = trainerItemFocusRequester,
+                                            modifier = Modifier.fillMaxSize(),
+                                        )
+                                    }
+
                                     else -> {
                                         Column(
                                             modifier = Modifier
@@ -692,6 +727,7 @@ fun QuickMenu(
                         QuickMenuTab.LSFG -> lsfgItemFocusRequester.requestFocus()
                         QuickMenuTab.EFFECTS -> effectsItemFocusRequester.requestFocus()
                         QuickMenuTab.TOOLS -> toolsItemFocusRequester.requestFocus()
+                        QuickMenuTab.TRAINER -> trainerItemFocusRequester.requestFocus()
                         else -> controllerItemFocusRequester.requestFocus()
                     }
                     return@LaunchedEffect

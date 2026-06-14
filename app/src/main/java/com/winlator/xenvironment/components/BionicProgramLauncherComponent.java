@@ -307,6 +307,15 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         ld_preload += ":" + evshimPath;
         ld_preload += ":" + replacePath;
 
+        // ---- Trainer LD_PRELOAD injection ----
+        // libtrainer.so is a no-op unless TRAINER_ENABLED=1, so we always
+        // append it when the .so exists — the activation guard is the env var.
+        // This avoids re-building the ld_preload string on every launch toggle.
+        String trainerLibPath = context.getApplicationInfo().nativeLibraryDir + "/libtrainer.so";
+        if (new File(trainerLibPath).exists()) {
+            ld_preload += ":" + trainerLibPath;
+        }
+
         envVars.put("LD_PRELOAD", ld_preload);
         envVars.put("EVSHIM_WINE", 1);
         envVars.put("EVSHIM_SHM_NAME", "controller-shm0");
@@ -315,6 +324,15 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         // WinHandler.java writes to context.getFilesDir()/gamepad_shm/, so we point the shim
         // at the same base: EVSHIM_BASE_PATH = <app-files-dir>  →  shim builds <base>/gamepad_shm/gamepad.mem
         envVars.put("EVSHIM_BASE_PATH", context.getFilesDir().getAbsolutePath());
+
+        // ---- Trainer env vars ----
+        // TRAINER_BASE_PATH lets libtrainer find/create <base>/trainer_shm/trainer.mem,
+        // matching the path TrainerShm.kt uses on the Android side.
+        // TRAINER_ENABLED=1 activates the worker thread inside libtrainer; without it
+        // the lib loads but immediately returns from its init hook (zero overhead).
+        boolean trainerEnabled = app.gamenative.PrefManager.INSTANCE.getTrainerEnabled();
+        envVars.put("TRAINER_BASE_PATH", context.getFilesDir().getAbsolutePath());
+        envVars.put("TRAINER_ENABLED", trainerEnabled ? "1" : "0");
 
         // Check for specific shared memory libraries
 //        if ((new File(imageFs.getLibDir(), "libandroid-sysvshm.so")).exists()){

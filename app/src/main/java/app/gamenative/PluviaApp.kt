@@ -66,6 +66,37 @@ class PluviaApp : SplitCompatApplication() {
             )
 
             Timber.plant(Timber.DebugTree())
+
+            // DEBUG-only: trigger the trainer engine self-test from adb without
+            // navigating the UI:
+            //   adb shell am broadcast -a app.gamenative.iic.RUN_TRAINER_SELFTEST
+            // The full PASS/FAIL report is logged under tag "TrainerSelfTest".
+            try {
+                val selfTestReceiver = object : android.content.BroadcastReceiver() {
+                    override fun onReceive(ctx: android.content.Context, intent: android.content.Intent) {
+                        appScope.launch {
+                            try {
+                                val report = app.gamenative.trainer.TrainerSelfTest.run(applicationContext)
+                                Timber.tag("TrainerSelfTest").i(
+                                    "BROADCAST self-test result: %s",
+                                    if (report.allPassed) "PASS" else "FAIL",
+                                )
+                            } catch (e: Exception) {
+                                Timber.tag("TrainerSelfTest").e(e, "self-test threw")
+                            }
+                        }
+                    }
+                }
+                val filter = android.content.IntentFilter("app.gamenative.iic.RUN_TRAINER_SELFTEST")
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    registerReceiver(selfTestReceiver, filter, android.content.Context.RECEIVER_EXPORTED)
+                } else {
+                    @Suppress("UnspecifiedRegisterReceiverFlag")
+                    registerReceiver(selfTestReceiver, filter)
+                }
+            } catch (e: Exception) {
+                Timber.tag("TrainerSelfTest").w(e, "failed to register debug self-test receiver")
+            }
         } else {
             Timber.plant(ReleaseTree())
         }

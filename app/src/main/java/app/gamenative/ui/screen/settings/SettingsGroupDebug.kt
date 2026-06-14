@@ -39,6 +39,10 @@ import java.io.File
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import app.gamenative.ui.component.dialog.WineDebugChannelsDialog
+import app.gamenative.BuildConfig
+import app.gamenative.trainer.TrainerSelfTest
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 
 @Suppress("UnnecessaryOptInAnnotation") // ExperimentalFoundationApi
 @OptIn(ExperimentalCoilApi::class, ExperimentalFoundationApi::class)
@@ -46,6 +50,7 @@ import app.gamenative.ui.component.dialog.WineDebugChannelsDialog
 fun SettingsGroupDebug() {
     val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
+    val scope = rememberCoroutineScope()
     if (!isPreview) {
         PrefManager.init(context)
         WinlatorPrefManager.init(context)
@@ -300,6 +305,37 @@ fun SettingsGroupDebug() {
             subtitle = { Text(text = stringResource(R.string.settings_debug_clear_cache_subtitle)) },
             onClick = {},
         )
+
+        // ---- Trainer self-test (DEBUG builds only) -------------------------
+        // Proves the libtrainer.so memory-scanner engine works in-process
+        // without needing a game. Long-press to run; single-press shows hint.
+        // The report is logged under tag "TrainerSelfTest" and a summary toast
+        // is shown. This item is compiled out of release APKs via BuildConfig.DEBUG.
+        if (BuildConfig.DEBUG) {
+            SettingsMenuLink(
+                modifier = Modifier.combinedClickable(
+                    onLongClick = {
+                        SnackbarManager.show("Trainer self-test running — check Logcat tag TrainerSelfTest")
+                        scope.launch(Dispatchers.IO) {
+                            val report = TrainerSelfTest.run(context)
+                            val summary = if (report.allPassed) {
+                                "TrainerSelfTest PASSED — engine works in-process"
+                            } else {
+                                "TrainerSelfTest FAILED — see Logcat tag TrainerSelfTest for details"
+                            }
+                            SnackbarManager.show(summary)
+                        }
+                    },
+                    onClick = {
+                        SnackbarManager.show("Long press to run trainer self-test (DEBUG only)")
+                    },
+                ),
+                colors = settingsTileColorsDebug(),
+                title = { Text(text = "[DEBUG] Run Trainer Self-Test") },
+                subtitle = { Text(text = "Long-press: tests libtrainer.so in-process (no game needed)") },
+                onClick = {},
+            )
+        }
     }
 }
 
