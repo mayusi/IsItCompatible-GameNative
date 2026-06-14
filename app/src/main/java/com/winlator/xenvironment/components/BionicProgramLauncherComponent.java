@@ -316,6 +316,15 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
             ld_preload += ":" + trainerLibPath;
         }
 
+        // ---- SpeedHack LD_PRELOAD injection ----
+        // libspeedhack.so is a pure passthrough unless SPEEDHACK_ENABLED=1, so we
+        // always append it when the .so exists — the activation guard is the env var.
+        // The multiplier is communicated via shared memory (SpeedHackShm.kt) at runtime.
+        String speedHackLibPath = context.getApplicationInfo().nativeLibraryDir + "/libspeedhack.so";
+        if (new File(speedHackLibPath).exists()) {
+            ld_preload += ":" + speedHackLibPath;
+        }
+
         envVars.put("LD_PRELOAD", ld_preload);
         envVars.put("EVSHIM_WINE", 1);
         envVars.put("EVSHIM_SHM_NAME", "controller-shm0");
@@ -333,6 +342,25 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         boolean trainerEnabled = app.gamenative.PrefManager.INSTANCE.getTrainerEnabled();
         envVars.put("TRAINER_BASE_PATH", context.getFilesDir().getAbsolutePath());
         envVars.put("TRAINER_ENABLED", trainerEnabled ? "1" : "0");
+
+        // ---- SpeedHack env vars ----
+        // SPEEDHACK_BASE_PATH lets libspeedhack find/create <base>/speedhack_shm/speedhack.mem,
+        // matching the path SpeedHackShm.kt uses on the Android side.
+        // SPEEDHACK_ENABLED=1 activates clock_gettime scaling; without it the lib loads but
+        // is a pure passthrough (zero per-call overhead beyond the function trampoline).
+        boolean speedHackEnabled = app.gamenative.PrefManager.INSTANCE.getSpeedHackEnabled();
+        envVars.put("SPEEDHACK_BASE_PATH", context.getFilesDir().getAbsolutePath());
+        envVars.put("SPEEDHACK_ENABLED", speedHackEnabled ? "1" : "0");
+
+        // ---- Macro / Turbo env vars ----
+        // MACRO_ENABLED=1 activates the turbo-fire + input-macro transform inside
+        // evshim.so (which is already LD_PRELOAD'd above).  When 0 the transform
+        // code path is never entered — zero risk to existing controller behaviour.
+        // MACRO_BASE_PATH tells evshim where to create <base>/macro_shm/macro.mem
+        // (same base directory convention as EVSHIM_BASE_PATH / TRAINER_BASE_PATH).
+        boolean macroEnabled = app.gamenative.PrefManager.INSTANCE.getMacroEnabled();
+        envVars.put("MACRO_ENABLED", macroEnabled ? "1" : "0");
+        envVars.put("MACRO_BASE_PATH", context.getFilesDir().getAbsolutePath());
 
         // Check for specific shared memory libraries
 //        if ((new File(imageFs.getLibDir(), "libandroid-sysvshm.so")).exists()){

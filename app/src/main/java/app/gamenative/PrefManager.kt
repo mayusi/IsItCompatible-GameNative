@@ -1337,6 +1337,22 @@ object PrefManager {
         get() = getPref(TRAINER_ENABLED, false)
         set(value) { setPref(TRAINER_ENABLED, value) }
 
+    // Speed-hack feature — disabled by default; enables LD_PRELOAD of
+    // libspeedhack.so and sets SPEEDHACK_ENABLED=1 in the Wine/Box64 environment.
+    // The multiplier is communicated at runtime via shared memory (SpeedHackShm).
+    private val SPEED_HACK_ENABLED = booleanPreferencesKey("speed_hack_enabled")
+    var speedHackEnabled: Boolean
+        get() = getPref(SPEED_HACK_ENABLED, false)
+        set(value) { setPref(SPEED_HACK_ENABLED, value) }
+
+    // Turbo-fire + Input-macro feature — disabled by default; sets MACRO_ENABLED=1
+    // in the Wine/Box64 environment so evshim activates its button-transform pipeline.
+    // When false the shim behaves exactly as before (pure no-op code path).
+    private val MACRO_ENABLED = booleanPreferencesKey("macro_enabled")
+    var macroEnabled: Boolean
+        get() = getPref(MACRO_ENABLED, false)
+        set(value) { setPref(MACRO_ENABLED, value) }
+
     /* Multi-game collection: last-played sub-game exe per appId.
      * Key: "collection_last_exe_<appId>", Value: relative exe path (e.g. "dmc1.exe"). */
     fun getLastPlayedSubGame(appId: String): String? {

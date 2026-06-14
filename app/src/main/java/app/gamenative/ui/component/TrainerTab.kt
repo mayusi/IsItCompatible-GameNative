@@ -67,7 +67,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import app.gamenative.PrefManager
 import app.gamenative.R
+import app.gamenative.trainer.MacroShm
 import app.gamenative.trainer.ScanResult
+import app.gamenative.trainer.SpeedHackShm
 import app.gamenative.trainer.TrainerProto
 import app.gamenative.trainer.TrainerShm
 import app.gamenative.ui.theme.PluviaTheme
@@ -120,23 +122,38 @@ private data class AddressEntry(
 // Public entry point
 // ---------------------------------------------------------------------------
 
+// Tab indices for the 3-capability chip switcher
+private object TrainerCapTab {
+    const val MEMORY = 0
+    const val SPEED  = 1
+    const val MACROS = 2
+}
+
 /**
  * The Trainer tab body, placed inside QuickMenu's content area.
  *
- * [trainerShm] may be null if the engine couldn't be initialised.
+ * [trainerShm] may be null if the trainer engine couldn't be initialised.
+ * [speedHackShm] may be null if speed hack is disabled or not yet loaded.
+ * [macroShm] may be null if macros are disabled or not yet loaded.
  * [focusRequester] is the first-item requester used by QuickMenu's LaunchedEffect.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TrainerTab(
     trainerShm: TrainerShm?,
+    speedHackShm: SpeedHackShm?,
+    macroShm: MacroShm?,
     focusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier,
 ) {
     val scrollState = rememberScrollState()
+    val accentColor = PluviaTheme.colors.accentPurple
 
-    // Ping the worker once on entry so `available` flips true when the engine
-    // is actually loaded (it starts false until a successful round-trip). A
-    // recomposition trigger lets the gate below re-evaluate after the ping.
+    // Capability tab selection — persists across recompositions while QuickMenu is open
+    var selectedCapTab by remember { mutableIntStateOf(TrainerCapTab.MEMORY) }
+
+    // Ping the trainer worker once on entry so `available` flips true when the
+    // engine is loaded (it starts false until a successful round-trip).
     var pinged by remember(trainerShm) { mutableStateOf(false) }
     LaunchedEffect(trainerShm) {
         if (trainerShm != null && PrefManager.trainerEnabled) {
@@ -151,20 +168,67 @@ fun TrainerTab(
             .focusGroup(),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        when {
-            !PrefManager.trainerEnabled -> {
-                TrainerNotEnabledSection(focusRequester = focusRequester)
+        // ---- 3-chip capability switcher ----
+        FlowRow(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TrainerChip(
+                text = stringResource(R.string.trainer_cap_memory),
+                selected = selectedCapTab == TrainerCapTab.MEMORY,
+                accentColor = accentColor,
+                onClick = { selectedCapTab = TrainerCapTab.MEMORY },
+                focusRequester = if (selectedCapTab == TrainerCapTab.MEMORY) focusRequester else null,
+            )
+            TrainerChip(
+                text = stringResource(R.string.trainer_cap_speed),
+                selected = selectedCapTab == TrainerCapTab.SPEED,
+                accentColor = accentColor,
+                onClick = { selectedCapTab = TrainerCapTab.SPEED },
+                focusRequester = if (selectedCapTab == TrainerCapTab.SPEED) focusRequester else null,
+            )
+            TrainerChip(
+                text = stringResource(R.string.trainer_cap_macros),
+                selected = selectedCapTab == TrainerCapTab.MACROS,
+                accentColor = accentColor,
+                onClick = { selectedCapTab = TrainerCapTab.MACROS },
+                focusRequester = if (selectedCapTab == TrainerCapTab.MACROS) focusRequester else null,
+            )
+        }
+
+        HorizontalDivider(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f),
+        )
+
+        // ---- Active capability section ----
+        when (selectedCapTab) {
+            TrainerCapTab.MEMORY -> {
+                when {
+                    !PrefManager.trainerEnabled -> {
+                        TrainerNotEnabledSection(
+                            focusRequester = if (selectedCapTab == TrainerCapTab.MEMORY) null else focusRequester,
+                        )
+                    }
+                    trainerShm == null || !trainerShm.available -> {
+                        TrainerNotLoadedSection()
+                    }
+                    else -> {
+                        TrainerScannerSection(
+                            trainerShm = trainerShm,
+                            focusRequester = null,
+                        )
+                    }
+                }
             }
 
-            trainerShm == null || !trainerShm.available -> {
-                TrainerNotLoadedSection()
+            TrainerCapTab.SPEED -> {
+                SpeedSection(speedHackShm = speedHackShm)
             }
 
-            else -> {
-                TrainerScannerSection(
-                    trainerShm = trainerShm,
-                    focusRequester = focusRequester,
-                )
+            TrainerCapTab.MACROS -> {
+                MacroSection(macroShm = macroShm)
             }
         }
 
@@ -888,7 +952,7 @@ private fun TrainerToggleRow(
     }
 }
 
-/** Small chip for value type / filter selection. */
+/** Small chip for value type / filter / capability selection. */
 @Composable
 private fun TrainerChip(
     text: String,
@@ -896,6 +960,7 @@ private fun TrainerChip(
     accentColor: androidx.compose.ui.graphics.Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    focusRequester: FocusRequester? = null,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
@@ -924,6 +989,7 @@ private fun TrainerChip(
                     else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f)
                 },
             )
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,

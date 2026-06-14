@@ -1637,4 +1637,66 @@
     <string name="trainer_write_failed">Write failed.</string>
     <string name="trainer_freeze_ok">Frozen.</string>
     <string name="trainer_freeze_failed">Freeze failed.</string>
+
+    <!-- Trainer capability switcher chips -->
+    <string name="trainer_cap_memory">Memory</string>
+    <string name="trainer_cap_speed">Speed</string>
+    <string name="trainer_cap_macros">Macros</string>
+
+    <!-- Speed hack strings -->
+    <string name="speed_not_enabled_title">Speed hack is disabled</string>
+    <string name="speed_not_enabled_body">Enable the speed-hack engine to control game speed in real time. The engine is injected at game launch via LD_PRELOAD.</string>
+    <string name="speed_enable_toggle">Enable speed hack</string>
+    <string name="speed_enable_note">Takes effect when you next launch a game.</string>
+    <string name="speed_not_loaded_title">Speed engine not loaded</string>
+    <string name="speed_not_loaded_body">Relaunch the game with speed hack enabled to use this feature.</string>
+    <string name="speed_multiplier_label">Game speed</string>
+    <!-- %1$s is the formatted multiplier, e.g. "2×" -->
+    <string name="speed_multiplier_value">%1$s</string>
+    <string name="speed_reset">Reset</string>
+    <string name="speed_hint_slowmo">Slow motion active</string>
+    <string name="speed_hint_fast">Fast-forward active</string>
+
+    <!-- Macro / Turbo strings -->
+    <string name="macro_not_enabled_title">Macros &amp; Turbo disabled</string>
+    <string name="macro_not_enabled_body">Enable the macro engine to use turbo-fire and button macros. The shim is activated at game launch.</string>
+    <string name="macro_enable_toggle">Enable macros &amp; turbo</string>
+    <string name="macro_enable_note">Takes effect when you next launch a game.</string>
+    <string name="macro_not_loaded_title">Macro engine not loaded</string>
+    <string name="macro_not_loaded_body">Relaunch the game with macros enabled to use this feature.</string>
+    <string name="macro_turbo_title">Turbo fire</string>
+    <string name="macro_turbo_rate_label">Rate</string>
+    <!-- %1$d is the Hz value -->
+    <string name="macro_turbo_rate_value">%1$d Hz</string>
+    <string name="macro_presets_title">Macro presets</string>
+    <string name="macro_presets_hint">Assign a preset macro to a trigger button. Press the trigger in-game to execute.</string>
+    <!-- %1$d is slot number (1-4) -->
+    <string name="macro_slot_label">Slot %1$d</string>
+    <!-- %1$s = preset name, %2$s = trigger button name -->
+    <string name="macro_slot_summary">%1$s → %2$s</string>
+    <string name="macro_slot_empty">Unassigned</string>
+    <string name="macro_slot_clear">Clear slot</string>
+    <string name="macro_slot_expand">Edit</string>
+    <string name="macro_slot_collapse">Done</string>
+    <string name="macro_choose_preset">Preset</string>
+    <string name="macro_choose_trigger">Trigger button</string>
+    <string name="macro_assign">Assign</string>
+    <string name="macro_clear_all">Clear all macros &amp; turbo</string>
+    <string name="macro_online_warning">Single-player only — turbo/macros can be detected as cheating online.</string>
+
+    <!-- Button names (SDL order, used in turbo + macro UI) -->
+    <string name="macro_btn_a">A</string>
+    <string name="macro_btn_b">B</string>
+    <string name="macro_btn_x">X</string>
+    <string name="macro_btn_y">Y</string>
+    <string name="macro_btn_lb">LB</string>
+    <string name="macro_btn_rb">RB</string>
+    <string name="macro_btn_l3">L3</string>
+    <string name="macro_btn_r3">R3</string>
+
+    <!-- Macro preset names -->
+    <string name="macro_preset_rapid_a5">Rapid A ×5</string>
+    <string name="macro_preset_a_then_b">A then B</string>
+    <string name="macro_preset_mash_x">Mash X</string>
+    <string name="macro_preset_y_b_combo">Y+B combo</string>
 </resources>

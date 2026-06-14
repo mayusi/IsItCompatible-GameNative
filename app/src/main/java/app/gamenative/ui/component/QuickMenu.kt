@@ -91,6 +91,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import app.gamenative.PrefManager
 import app.gamenative.R
+import app.gamenative.trainer.MacroShm
+import app.gamenative.trainer.SpeedHackShm
 import app.gamenative.trainer.TrainerShm
 import app.gamenative.ui.data.PerformanceHudConfig
 import app.gamenative.ui.data.PerformanceHudSize
@@ -366,11 +368,17 @@ fun QuickMenu(
     val trainerTabFocusRequester = remember { FocusRequester() }
     val trainerItemFocusRequester = remember { FocusRequester() }
 
-    // Trainer engine — created once lazily when the Trainer tab is first shown.
+    // Trainer/Speed/Macro engines — each created once.
     // Null means the engine couldn't be initialised (feature disabled / lib not loaded).
     val context = LocalContext.current
     val trainerShm = remember {
         if (PrefManager.trainerEnabled) TrainerShm.create(context) else null
+    }
+    val speedHackShm = remember {
+        if (PrefManager.speedHackEnabled) SpeedHackShm.create(context) else null
+    }
+    val macroShm = remember {
+        if (PrefManager.macroEnabled) MacroShm.create(context) else null
     }
 
     val visibleState = remember { MutableTransitionState(false) }
@@ -674,6 +682,8 @@ fun QuickMenu(
                                     QuickMenuTab.TRAINER -> {
                                         TrainerTab(
                                             trainerShm = trainerShm,
+                                            speedHackShm = speedHackShm,
+                                            macroShm = macroShm,
                                             focusRequester = trainerItemFocusRequester,
                                             modifier = Modifier.fillMaxSize(),
                                         )
