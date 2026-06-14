@@ -8,6 +8,7 @@ import com.winlator.container.ContainerData
 import org.json.JSONArray
 import org.json.JSONObject
 import timber.log.Timber
+import app.gamenative.iic.IicStability
 
 /**
  * Best-effort broadcaster: fires `io.github.mayusi.isitcompatible.AUTOTUNER_RESULT`
@@ -101,13 +102,12 @@ object AutoTunerResultBroadcaster {
             // Instance-specific fields are blanked for reusability + privacy.
             val configJson = buildConfigJson(winnerConfig, outcome)
 
-            // stability label: honest representation of what the auto-tuner measured.
-            val stability = when {
-                winner.avgFps >= 55f -> "PERFECT"
-                winner.avgFps >= 30f -> "PLAYABLE"
-                winner.avgFps > 0f -> "GLITCHY"
-                else -> "PLAYABLE" // probe sweep: boot-success counts as playable
-            }
+            // stability label: std-dev-based pacing steadiness via shared IicStability.label().
+            val stability = IicStability.label(
+                stdDev = winner.fpsStdDev,
+                avgFps = winner.avgFps,
+                samples = if (winner.fpsStdDev > 0f) 3 else 1,
+            ).ifBlank { "PLAYABLE" }  // probe sweep / boot-success still counts as playable
 
             // applied fixes as a JSON array string (may be empty)
             val appliedFixesJson = try {

@@ -556,12 +556,20 @@ class MainViewModel @Inject constructor(
                     val numericId = runCatching {
                         ContainerUtils.extractGameIdFromContainerId(appId)
                     }.getOrDefault(0)
+                    val avgFpsInt = runCatching {
+                        ContainerUtils.getContainer(context, appId).getSessionMetadata("iic_avg_fps").toIntOrNull() ?: 0
+                    }.getOrDefault(0)
+                    val stabilityStr = runCatching {
+                        ContainerUtils.getContainer(context, appId).getSessionMetadata("iic_stability")
+                    }.getOrDefault("")
                     SessionFeedbackBroadcaster.send(
                         context = context,
                         appId = numericId,
                         gameSource = gameSource.name,
                         sessionStartMs = iicSessionStartMs,
                         showedFps = PrefManager.showFps,
+                        avgFps = avgFpsInt,
+                        stability = stabilityStr,
                     )
                 } catch (e: Exception) {
                     Timber.w(e, "[IIC] Unexpected error preparing session feedback broadcast (non-fatal)")

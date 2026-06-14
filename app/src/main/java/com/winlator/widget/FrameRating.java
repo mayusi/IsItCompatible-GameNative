@@ -137,6 +137,11 @@ public class FrameRating extends FrameLayout implements Runnable {
         return (float) Math.sqrt(variance);
     }
 
+    /** Returns the number of 1-second FPS readings collected since the last {@link #reset()}. */
+    public int getReadingCount() {
+        return readingCount;
+    }
+
     public float getSessionLengthSec() {
         if (sessionStartTime == 0) return 0;
         return (SystemClock.elapsedRealtime() - sessionStartTime) / 1000.0f;

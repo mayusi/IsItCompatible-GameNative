@@ -26,6 +26,8 @@ object SessionFeedbackBroadcaster {
     const val EXTRA_GAME_SOURCE = "game_source"
     const val EXTRA_SESSION_MINUTES = "session_minutes"
     const val EXTRA_SHOWED_FPS = "showed_fps"
+    const val EXTRA_AVG_FPS = "avg_fps"
+    const val EXTRA_STABILITY = "stability"
 
     /**
      * Fire the broadcast.  All parameters are best-effort: pass 0 / empty strings
@@ -37,6 +39,9 @@ object SessionFeedbackBroadcaster {
      * @param sessionStartMs  System.currentTimeMillis() when the session started.
      *                        Pass 0 to omit session-length (will broadcast 0 minutes).
      * @param showedFps  Whether the FPS HUD was active during this session.
+     * @param avgFps     Average FPS for the session (integer). 0 when not measured.
+     * @param stability  Stability label ("PERFECT", "PLAYABLE", "GLITCHY", or "").
+     *                   Empty string when FPS was not measured this session.
      */
     fun send(
         context: Context,
@@ -44,6 +49,8 @@ object SessionFeedbackBroadcaster {
         gameSource: String,
         sessionStartMs: Long,
         showedFps: Boolean,
+        avgFps: Int = 0,
+        stability: String = "",
     ) {
         try {
             // Android 11+: PackageManager.getPackageInfo throws NameNotFoundException
@@ -81,9 +88,11 @@ object SessionFeedbackBroadcaster {
                 putExtra(EXTRA_GAME_SOURCE, gameSource)
                 putExtra(EXTRA_SESSION_MINUTES, sessionMinutes)
                 putExtra(EXTRA_SHOWED_FPS, showedFps)
+                putExtra(EXTRA_AVG_FPS, avgFps)
+                if (stability.isNotBlank()) putExtra(EXTRA_STABILITY, stability)
             }
             context.sendBroadcast(intent)
-            Timber.i("[IIC] Sent session-ended broadcast to $resolvedPackage: appId=$appId src=$gameSource mins=$sessionMinutes fps=$showedFps")
+            Timber.i("[IIC] Sent session-ended broadcast to $resolvedPackage: appId=$appId src=$gameSource mins=$sessionMinutes fps=$showedFps avgFps=$avgFps stability=$stability")
         } catch (e: Exception) {
             // Best-effort: never crash the fork if the broadcast fails.
             Timber.w(e, "[IIC] Failed to send session-ended broadcast (non-fatal)")

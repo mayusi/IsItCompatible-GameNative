@@ -151,6 +151,7 @@ import com.winlator.inputcontrols.ControlsProfile
 import com.winlator.inputcontrols.ExternalController
 import com.winlator.inputcontrols.InputControlsManager
 import com.winlator.inputcontrols.TouchMouse
+import app.gamenative.iic.IicStability
 import com.winlator.widget.FrameRating
 import com.winlator.widget.InputControlsView
 import com.winlator.widget.TouchpadView
@@ -4034,6 +4035,12 @@ private fun exit(
     frameRating?.let { rating ->
         container.putSessionMetadata("avg_fps", rating.avgFPS)
         container.putSessionMetadata("session_length_sec", rating.sessionLengthSec.toInt())
+        // IIC broadcast extras: integer avg FPS and stability label.
+        // Stability uses std-dev-based pacing steadiness via IicStability.label()
+        // so both this site and AutoTunerResultBroadcaster agree on labels.
+        container.putSessionMetadata("iic_avg_fps", rating.avgFPS.toInt())
+        val iicStability = IicStability.label(rating.fpsStdDev, rating.avgFPS, rating.readingCount)
+        container.putSessionMetadata("iic_stability", iicStability)
         container.saveData()
     }
 
