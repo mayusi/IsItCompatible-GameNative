@@ -23,12 +23,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
@@ -148,7 +146,6 @@ fun CheatTab(
     focusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier,
 ) {
-    val scrollState = rememberScrollState()
     val accentColor = PluviaTheme.colors.accentPurple
     val scope = rememberCoroutineScope()
 
@@ -160,9 +157,14 @@ fun CheatTab(
         }
     }
 
+    // NOTE: do NOT add .verticalScroll() here. This composable is hosted inside
+    // TrainerTab's Column which already has .verticalScroll() — nesting two vertical
+    // scrollers gives the inner one infinite-height constraints and crashes Compose
+    // with "Vertically scrollable component was measured with an infinity maximum
+    // height". The Memory/Speed/Macros sections correctly rely on the parent scroll;
+    // Cheats must too. (This was the every-time crash on pressing the Cheats chip.)
     Column(
         modifier = modifier
-            .verticalScroll(scrollState)
             .focusGroup(),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
