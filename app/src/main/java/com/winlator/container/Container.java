@@ -1,7 +1,10 @@
 package com.winlator.container;
 
+import android.content.Context;
 import android.os.Environment;
 import android.util.Log;
+
+import app.gamenative.BuildConfig;
 
 import com.winlator.box86_64.Box86_64Preset;
 import com.winlator.core.DefaultVersion;
@@ -46,15 +49,32 @@ public class Container {
     public static final String DEFAULT_GRAPHICSDRIVERCONFIG = "vulkanVersion=1.3" + ",version=" + DefaultVersion.WRAPPER + ",blacklistedExtensions=" + ",maxDeviceMemory=0" + ",presentMode=mailbox" + ",syncFrame=0" + ",disablePresentWait=0" + ",resourceType=auto" + ",bcnEmulation=auto" + ",bcnEmulationType=compute" + ",bcnEmulationCache=0" + ",gpuName=Device";
     public static final String DEFAULT_WINCOMPONENTS = "direct3d=1,directsound=1,directmusic=0,directshow=0,directplay=0,vcrun2010=1,wmdecoder=1,opengl=0";
     public static final String FALLBACK_WINCOMPONENTS = "direct3d=1,directsound=1,directmusic=1,directshow=1,directplay=1,vcrun2010=1,wmdecoder=1,opengl=0";
+    /** Returns MEDIACONV env vars with paths resolved for the running package.
+     *  Uses context.getFilesDir() so the imagefs path reflects the actual installed
+     *  package (e.g. app.gamenative.iic) rather than a hardcoded base package name. */
+    public static String[] getMediaconvEnvVars(Context context) {
+        String imagefsHome = context.getFilesDir().getAbsolutePath() + "/imagefs/home/xuser";
+        return new String[]{
+            "MEDIACONV_AUDIO_DUMP_FILE="       + imagefsHome + "/audio.dmp",
+            "MEDIACONV_VIDEO_DUMP_FILE="        + imagefsHome + "/video.dmp",
+            "MEDIACONV_VIDEO_TRANSCODED_FILE="  + imagefsHome + "/transcoded.mkv",
+            "MEDIACONV_AUDIO_TRANSCODED_FILE="  + imagefsHome + "/transcoded.wav",
+            "MEDIACONV_BLANK_AUDIO_FILE="       + imagefsHome + "/blank.wav",
+            "MEDIACONV_BLANK_VIDEO_FILE="       + imagefsHome + "/blank.mkv",
+        };
+    }
+    /** Deprecated static array kept for source compat; callers with Context should use
+     *  {@link #getMediaconvEnvVars(Context)} instead to get the correct package path. */
+    @Deprecated
     public static final String[] MEDIACONV_ENV_VARS = {
-            "MEDIACONV_AUDIO_DUMP_FILE=/data/data/app.gamenative/files/imagefs/home/xuser/audio.dmp",
-            "MEDIACONV_VIDEO_DUMP_FILE=/data/data/app.gamenative/files/imagefs/home/xuser/video.dmp",
-            "MEDIACONV_VIDEO_TRANSCODED_FILE=/data/data/app.gamenative/files/imagefs/home/xuser/transcoded.mkv",
-            "MEDIACONV_AUDIO_TRANSCODED_FILE=/data/data/app.gamenative/files/imagefs/home/xuser/transcoded.wav",
-            "MEDIACONV_BLANK_AUDIO_FILE=/data/data/app.gamenative/files/imagefs/home/xuser/blank.wav",
-            "MEDIACONV_BLANK_VIDEO_FILE=/data/data/app.gamenative/files/imagefs/home/xuser/blank.mkv",
+            "MEDIACONV_AUDIO_DUMP_FILE=/data/data/" + BuildConfig.APPLICATION_ID + "/files/imagefs/home/xuser/audio.dmp",
+            "MEDIACONV_VIDEO_DUMP_FILE=/data/data/" + BuildConfig.APPLICATION_ID + "/files/imagefs/home/xuser/video.dmp",
+            "MEDIACONV_VIDEO_TRANSCODED_FILE=/data/data/" + BuildConfig.APPLICATION_ID + "/files/imagefs/home/xuser/transcoded.mkv",
+            "MEDIACONV_AUDIO_TRANSCODED_FILE=/data/data/" + BuildConfig.APPLICATION_ID + "/files/imagefs/home/xuser/transcoded.wav",
+            "MEDIACONV_BLANK_AUDIO_FILE=/data/data/" + BuildConfig.APPLICATION_ID + "/files/imagefs/home/xuser/blank.wav",
+            "MEDIACONV_BLANK_VIDEO_FILE=/data/data/" + BuildConfig.APPLICATION_ID + "/files/imagefs/home/xuser/blank.mkv",
     };
-    public static final String DEFAULT_DRIVES = "D:"+Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)+"E:/data/data/app.gamenative/storage";
+    public static final String DEFAULT_DRIVES = "D:"+Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)+"E:/data/data/" + BuildConfig.APPLICATION_ID + "/storage";
     public static final String DEFAULT_VARIANT = DefaultVersion.VARIANT;
     public static final String DEFAULT_WINE_VERSION = DefaultVersion.WINE_VERSION;
     public static final byte STARTUP_SELECTION_NORMAL = 0;

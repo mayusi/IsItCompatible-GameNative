@@ -337,6 +337,17 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         }
 
         envVars.put("LD_PRELOAD", ld_preload);
+
+        // Tell libredirect-bionic-wx.so which package is the actual host so it rewrites
+        // /data/data/com.winlator/... -> /data/data/<this package>/...  correctly.
+        // Without this the .so falls back to its XOR-encoded default ("app.gamenative"),
+        // which is wrong for the modern/IIC build whose applicationId is "app.gamenative.iic".
+        // Any prebuilt binary (e.g. lsteamclient) that has the old app.gamenative path baked
+        // in will also be corrected by chaining through the com.winlator -> app.gamenative
+        // mapping that the .so already installs (since com.winlator ends up at .iic via
+        // WINEMU_HOST_PKG).  Using BuildConfig.APPLICATION_ID avoids any hardcoded string.
+        envVars.put("WINEMU_HOST_PKG", BuildConfig.APPLICATION_ID);
+
         envVars.put("EVSHIM_WINE", 1);
         envVars.put("EVSHIM_SHM_NAME", "controller-shm0");
         // Tell the native shim where to find/create the gamepad shared-memory files.
@@ -658,8 +669,14 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         new File(breakpadDir).mkdirs();
 
         // A. lsteamclient.dll loader paths -> native Linux client/bridge .so
-        envVars.put("WINESTEAMCLIENTPATH64", steamRootLinux + "/linux64/steamclient.so");
-        envVars.put("WINESTEAMCLIENTPATH",   steamRootLinux + "/linux32/steamclient.so");
+        // Point directly at the bionic libsteamclient.so in imagefs/usr/lib/ so that
+        // Proton's lsteamclient.unix uses the correct package-relative path on this build.
+        // Using imageFs.getLibDir() (derived from context.getFilesDir()) ensures the path
+        // reflects the actual installed package (e.g. app.gamenative.iic) rather than the
+        // base package name that any hardcoded fallback inside lsteamclient would use.
+        String nativeClientPath = new File(imageFs.getLibDir(), "libsteamclient.so").getAbsolutePath();
+        envVars.put("WINESTEAMCLIENTPATH64", nativeClientPath);
+        envVars.put("WINESTEAMCLIENTPATH",   nativeClientPath);
 
         // B. libsteamclient.so bootstrap-gate handshake (all required together)
         envVars.put("_STEAM_SETENV_MANAGER", "1");
@@ -869,6 +886,7 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         ld_preload += ":" + replacePath;
 
         envVars.put("LD_PRELOAD", ld_preload);
+        envVars.put("WINEMU_HOST_PKG", BuildConfig.APPLICATION_ID);
 
         String emulator = container.getEmulator();
         if (this.envVars != null) envVars.putAll(this.envVars);
