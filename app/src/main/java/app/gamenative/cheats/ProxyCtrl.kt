@@ -135,6 +135,102 @@ class ProxyCtrl private constructor(private val gameDir: File) {
         return writeCmd("chainclear")
     }
 
+    // -------------------------------------------------------------------------
+    // DIY value-scanner API (the "make your own cheat" path for games with no
+    // pre-made table). Wraps the DLL's universal scanner commands. The DLL writes
+    // results to cheat_out.txt as:
+    //   [scan] i32 target=N found=M ...      / [scan]   cand[i]=0xADDR
+    //   [next] i32 value=N remaining=M       / [next]   cand[i]=0xADDR
+    //   [delta] dir=D remaining=M            / [delta]  cand[i]=0xADDR val=V
+    // We poll cheat_out.txt until the matching result line for THIS command shows
+    // up (a scan over a big process can take a couple seconds). Returns the match
+    // count and (when small) the candidate addresses.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Result of a DIY scan/narrow step.
+     * @property count      Total matches the DLL reported.
+     * @property addresses  Up to 12 candidate addresses the DLL dumped (only when count is small).
+     * @property ok         False if the command couldn't be written or no result appeared in time.
+     */
+    data class ScanReply(val count: Int, val addresses: List<Long>, val ok: Boolean)
+
+    /** Fresh exact scan for an integer value across all writable game memory. */
+    suspend fun scanInt(value: Int): ScanReply = runScan("scani=$value", "[scan]")
+
+    /** Fresh exact scan for a float value. */
+    suspend fun scanFloat(value: Float): ScanReply = runScan("scanf=$value", "[scan]")
+
+    /** Narrow the current candidate set to those now equal to [value] (int). */
+    suspend fun narrowInt(value: Int): ScanReply = runScan("nexti=$value", "[next]")
+
+    /** Narrow the current candidate set to those now equal to [value] (float). */
+    suspend fun narrowFloat(value: Float): ScanReply = runScan("nextf=$value", "[next]")
+
+    /** Snapshot all writable memory (entry point for the unknown-value flow). */
+    suspend fun snapshot(): Boolean = writeCmdUnique("snap")
+
+    /** Keep candidates whose value increased / decreased / changed since the last snapshot. */
+    suspend fun narrowIncreased(): ScanReply = runScan("inc", "[delta]")
+    suspend fun narrowDecreased(): ScanReply = runScan("dec", "[delta]")
+    suspend fun narrowChanged(): ScanReply = runScan("chg", "[delta]")
+
+    /** Freeze a resolved absolute address to a value (int). */
+    suspend fun freezeIntAddr(addr: Long, value: Int): Boolean =
+        writeCmdUnique("freezei=${addr.toString(16)}=$value")
+
+    /** Freeze a resolved absolute address to a value (float). */
+    suspend fun freezeFloatAddr(addr: Long, value: Float): Boolean =
+        writeCmdUnique("freezef=${addr.toString(16)}=$value")
+
+    /**
+     * Write a scan command, then poll cheat_out.txt until the result line tagged
+     * [resultTag] appears (or timeout). Returns the parsed count + candidate addrs.
+     *
+     * The DLL de-dupes by content, so each distinct command must differ — we append
+     * a short unique nonce comment the DLL's prefix-matched parser ignores (it uses
+     * strncmp on the command keyword, so trailing chars after the value are safe).
+     */
+    private suspend fun runScan(cmd: String, resultTag: String): ScanReply = withContext(Dispatchers.IO) {
+        if (!available) return@withContext ScanReply(0, emptyList(), false)
+        // Snapshot the current out-file length so we only read NEW result lines.
+        val outFile = File(gameDir, OUT_FILE)
+        val before = try { if (outFile.exists()) outFile.length() else 0L } catch (e: IOException) { 0L }
+
+        // Make the command content-unique (DLL prefix-matches the keyword, ignores the rest).
+        val nonce = (before xor System.identityHashCode(cmd).toLong()) and 0xFFFFL
+        if (!writeCmd("$cmd #$nonce")) return@withContext ScanReply(0, emptyList(), false)
+
+        // Poll for a new line starting with resultTag (e.g. "[scan]"/"[next]"/"[delta]").
+        val deadline = System.currentTimeMillis() + SCAN_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            kotlinx.coroutines.delay(SCAN_POLL_MS)
+            val text = try {
+                if (!outFile.exists() || outFile.length() <= before) continue
+                outFile.readText(Charsets.UTF_8).substring(before.toInt().coerceAtMost(outFile.length().toInt()))
+            } catch (e: Exception) { continue }
+
+            // Find the summary line for this result kind.
+            val summary = text.lineSequence().firstOrNull {
+                it.startsWith(resultTag) && (it.contains("found=") || it.contains("remaining="))
+            } ?: continue
+
+            val count = Regex("(?:found|remaining)=(\\d+)").find(summary)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val addrs = Regex("cand\\[\\d+]=0x([0-9a-fA-F]+)").findAll(text)
+                .mapNotNull { it.groupValues[1].toLongOrNull(16) }
+                .take(12).toList()
+            return@withContext ScanReply(count, addrs, true)
+        }
+        Log.w(TAG, "runScan: timed out waiting for $resultTag after '$cmd'")
+        ScanReply(0, emptyList(), false)
+    }
+
+    /** Write a command made content-unique with a nonce so repeats aren't de-duped away. */
+    private suspend fun writeCmdUnique(cmd: String): Boolean {
+        val nonce = (System.nanoTime() and 0xFFFFL)
+        return writeCmd("$cmd #$nonce")
+    }
+
     /**
      * Read the last acknowledgement line from `cheat_out.txt` (best-effort).
      *
@@ -195,6 +291,10 @@ class ProxyCtrl private constructor(private val gameDir: File) {
         private const val TAG       = "ProxyCtrl"
         private const val CTRL_FILE = "cheat_ctrl.txt"
         private const val OUT_FILE  = "cheat_out.txt"
+
+        // DIY scanner result polling — a full-process scan can take a couple seconds.
+        private const val SCAN_POLL_MS    = 200L
+        private const val SCAN_TIMEOUT_MS = 12_000L
 
         /**
          * Create a [ProxyCtrl] for the given [gameDir].

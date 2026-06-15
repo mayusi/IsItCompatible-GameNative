@@ -621,6 +621,212 @@ object CheatExecutor {
     ): Boolean = proxy.removeChain(slotIdFor(cheat))
 
     // -------------------------------------------------------------------------
+    // DIY (make-your-own-cheat) scan flow — ProxyCtrl scanner only
+    // -------------------------------------------------------------------------
+    //
+    // These functions drive ProxyCtrl's scanner API for a free-form user scan.
+    // They intentionally do NOT touch TrainerShm, the guided-scan helpers
+    // (firstScan / narrow), or any AOB / chain path.  The owning UI is
+    // responsible for enforcing the single-active-scan constraint, exactly as it
+    // does for the existing guided flow.
+    //
+    // Freeze-value requirement: ProxyCtrl's freeze primitives require a concrete
+    // value to write.  There is currently no "read current value" primitive on
+    // ProxyCtrl, so a "freeze at current" shortcut is not implementable without
+    // a round-trip extension on the DLL side.  The UI must always collect a
+    // freeze value from the user before calling diyFreeze.  This is documented
+    // here so a future maintainer knows why diyFreezeAtCurrent is absent.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Start a fresh exact-value scan via ProxyCtrl.
+     *
+     * Parses [enteredValue] according to [vtype] ("i32" -> Int, "f32" -> Float).
+     * An unparseable value returns [DiyResult] with ok=false and a parse error
+     * without touching the scanner state.
+     *
+     * @param proxy        The [ProxyCtrl] bridge to the in-game DLL scanner.
+     * @param vtype        Value type token: "i32" or "f32".
+     * @param enteredValue User-supplied text representing the current in-game value.
+     * @return [DiyResult] with the match count and up to 12 candidate addresses,
+     *         or ok=false on parse failure or scanner IO/timeout.
+     */
+    suspend fun diyFirstScan(
+        proxy: ProxyCtrl,
+        vtype: String,
+        enteredValue: String,
+    ): DiyResult {
+        val reply = when (vtype.trim().lowercase()) {
+            "f32" -> {
+                val v = enteredValue.trim().toFloatOrNull()
+                    ?: return DiyResult(0, LongArray(0), false, "Invalid value")
+                proxy.scanFloat(v)
+            }
+            else -> {
+                val v = enteredValue.trim().toIntOrNull()
+                    ?: return DiyResult(0, LongArray(0), false, "Invalid value")
+                proxy.scanInt(v)
+            }
+        }
+        return DiyResult(
+            count     = reply.count,
+            addresses = reply.addresses.toLongArray(),
+            ok        = reply.ok,
+            error     = if (!reply.ok) "Scan failed or timed out" else null,
+        )
+    }
+
+    /**
+     * Narrow the current scan result set to addresses whose value equals
+     * [enteredValue] (exact re-scan).
+     *
+     * Parses [enteredValue] per [vtype] before calling ProxyCtrl.  An unparseable
+     * value returns [DiyResult] with ok=false without touching the scanner state.
+     *
+     * @param proxy        The [ProxyCtrl] bridge.
+     * @param vtype        "i32" or "f32".
+     * @param enteredValue The value the target variable now holds.
+     * @return Updated [DiyResult]; count should decrease toward 1 with each call.
+     */
+    suspend fun diyNarrow(
+        proxy: ProxyCtrl,
+        vtype: String,
+        enteredValue: String,
+    ): DiyResult {
+        val reply = when (vtype.trim().lowercase()) {
+            "f32" -> {
+                val v = enteredValue.trim().toFloatOrNull()
+                    ?: return DiyResult(0, LongArray(0), false, "Invalid value")
+                proxy.narrowFloat(v)
+            }
+            else -> {
+                val v = enteredValue.trim().toIntOrNull()
+                    ?: return DiyResult(0, LongArray(0), false, "Invalid value")
+                proxy.narrowInt(v)
+            }
+        }
+        return DiyResult(
+            count     = reply.count,
+            addresses = reply.addresses.toLongArray(),
+            ok        = reply.ok,
+            error     = if (!reply.ok) "Scan failed or timed out" else null,
+        )
+    }
+
+    /**
+     * Take a memory snapshot for an unknown-value (changed/increased/decreased) flow.
+     *
+     * Call this before the user causes the in-game value to change, then call
+     * [diyNarrowDirection] to keep only addresses whose value moved in the
+     * expected direction.
+     *
+     * @param proxy The [ProxyCtrl] bridge.
+     * @return true if the snapshot was acknowledged by the DLL; false on failure.
+     */
+    suspend fun diySnapshot(proxy: ProxyCtrl): Boolean = proxy.snapshot()
+
+    /**
+     * Narrow the current result set to addresses whose value changed in the
+     * direction indicated by [dir] since the last [diySnapshot].
+     *
+     * Accepted [dir] values (case-insensitive):
+     * - "up"      — keep addresses where the value increased
+     * - "down"    — keep addresses where the value decreased
+     * - "changed" — keep addresses where the value changed in any direction
+     *
+     * An unrecognised direction string returns [DiyResult] with ok=false and
+     * does not touch the scanner state.
+     *
+     * @param proxy The [ProxyCtrl] bridge.
+     * @param dir   Direction token: "up", "down", or "changed".
+     * @return Updated [DiyResult].
+     */
+    suspend fun diyNarrowDirection(
+        proxy: ProxyCtrl,
+        dir: String,
+    ): DiyResult {
+        val reply = when (dir.trim().lowercase()) {
+            "up"      -> proxy.narrowIncreased()
+            "down"    -> proxy.narrowDecreased()
+            "changed" -> proxy.narrowChanged()
+            else      -> return DiyResult(
+                count     = 0,
+                addresses = LongArray(0),
+                ok        = false,
+                error     = "Unknown direction \"$dir\" — expected \"up\", \"down\", or \"changed\"",
+            )
+        }
+        return DiyResult(
+            count     = reply.count,
+            addresses = reply.addresses.toLongArray(),
+            ok        = reply.ok,
+            error     = if (!reply.ok) "Scan failed or timed out" else null,
+        )
+    }
+
+    /**
+     * Freeze a set of candidate addresses at an explicit [freezeValue].
+     *
+     * At most [MAX_DIY_FREEZE] addresses are processed; excess entries are
+     * silently ignored.  The UI should gate the "Freeze" action behind a
+     * candidate count <= [MAX_DIY_FREEZE] to match this cap.
+     *
+     * Parses [freezeValue] per [vtype] before sending freeze commands.  An
+     * unparseable value returns false immediately without issuing any freeze.
+     *
+     * @param proxy        The [ProxyCtrl] bridge.
+     * @param vtype        "i32" or "f32".
+     * @param addresses    Candidate addresses from the last [DiyResult].
+     * @param freezeValue  The value to write and hold at each address.
+     * @return true if at least one freeze command was acknowledged; false if
+     *         parsing failed or every freeze call returned false.
+     */
+    suspend fun diyFreeze(
+        proxy: ProxyCtrl,
+        vtype: String,
+        addresses: LongArray,
+        freezeValue: String,
+    ): Boolean {
+        val capped = addresses.take(MAX_DIY_FREEZE)
+        var anyOk = false
+
+        when (vtype.trim().lowercase()) {
+            "f32" -> {
+                val v = freezeValue.trim().toFloatOrNull()
+                if (v == null) {
+                    Log.w(TAG, "diyFreeze: invalid f32 freeze value \"$freezeValue\"")
+                    return false
+                }
+                for (addr in capped) {
+                    val ok = proxy.freezeFloatAddr(addr, v)
+                    if (ok) {
+                        anyOk = true
+                    } else {
+                        Log.w(TAG, "diyFreeze: freezeFloatAddr(0x${addr.toString(16).uppercase()}) returned false")
+                    }
+                }
+            }
+            else -> {
+                val v = freezeValue.trim().toIntOrNull()
+                if (v == null) {
+                    Log.w(TAG, "diyFreeze: invalid i32 freeze value \"$freezeValue\"")
+                    return false
+                }
+                for (addr in capped) {
+                    val ok = proxy.freezeIntAddr(addr, v)
+                    if (ok) {
+                        anyOk = true
+                    } else {
+                        Log.w(TAG, "diyFreeze: freezeIntAddr(0x${addr.toString(16).uppercase()}) returned false")
+                    }
+                }
+            }
+        }
+
+        return anyOk
+    }
+
+    // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
 
@@ -678,6 +884,15 @@ object CheatExecutor {
      * the risk of silently corrupting unrelated code is too high.
      */
     const val MAX_PATCH_SITES = 8
+
+    /**
+     * Maximum number of DIY candidate addresses that [diyFreeze] will process in a
+     * single call.  The UI should gate the "Freeze" action behind a candidate count
+     * <= this value, mirroring the [MAX_FREEZE_CANDIDATES] gate on the guided flow.
+     * Capping at 8 prevents accidentally freezing a large candidate set that the
+     * user has not yet narrowed sufficiently.
+     */
+    const val MAX_DIY_FREEZE = 8
 }
 
 /**
@@ -752,3 +967,42 @@ data class ChainResult(
     val slotId: Int,
     val error: String? = null,
 )
+
+/**
+ * Result of a DIY scan step ([CheatExecutor.diyFirstScan], [CheatExecutor.diyNarrow],
+ * [CheatExecutor.diyNarrowDirection]).
+ *
+ * @property count     Total number of matches in the scanner's current result set.
+ * @property addresses Up to 12 candidate addresses (populated when [count] is small;
+ *                     empty when there are too many matches to enumerate usefully).
+ * @property ok        false when the ProxyCtrl call failed due to IO or timeout.
+ * @property error     Human-readable failure message when [ok] is false or when the
+ *                     user-supplied value could not be parsed.  Null on success.
+ *
+ * Custom [equals] / [hashCode] are provided because [addresses] is a [LongArray]
+ * (a JVM primitive array whose structural equality is not handled by data-class
+ * synthesis), following the same pattern as [FreezeResult] and [PatchResult].
+ */
+data class DiyResult(
+    val count: Int,
+    val addresses: LongArray,
+    val ok: Boolean,
+    val error: String? = null,
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is DiyResult) return false
+        return count == other.count &&
+            addresses.contentEquals(other.addresses) &&
+            ok == other.ok &&
+            error == other.error
+    }
+
+    override fun hashCode(): Int {
+        var result = count.hashCode()
+        result = 31 * result + addresses.contentHashCode()
+        result = 31 * result + ok.hashCode()
+        result = 31 * result + (error?.hashCode() ?: 0)
+        return result
+    }
+}

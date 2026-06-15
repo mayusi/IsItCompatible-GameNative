@@ -57,9 +57,13 @@ object CheatStager {
         // cheats that aren't actually frozen in this new process.
         CheatUiState.clearGame(appId)
 
-        // Step 1: bail out immediately if there is no cheat table for this game.
-        if (!CheatTableRegistry.hasTableFor(appId)) {
-            Timber.tag(TAG).d("No cheat table for $appId — skipping staging")
+        // Step 1: gate on the Trainer feature, NOT on whether this game has a table.
+        // When the Trainer is ON, we inject the cheat DLL into EVERY game so the
+        // DIY "make your own cheat" scanner works on games without a pre-made table
+        // (and one-tap cheats work on games that do have one). When the Trainer is
+        // OFF (the default), we inject nothing — zero impact on any launch.
+        if (!app.gamenative.PrefManager.trainerEnabled) {
+            Timber.tag(TAG).d("Trainer disabled — skipping cheat DLL staging for $appId")
             return false
         }
 

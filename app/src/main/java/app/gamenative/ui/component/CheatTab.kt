@@ -16,6 +16,8 @@ import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -184,16 +186,25 @@ fun CheatTab(
             return@Column
         }
 
-        // ---- Empty state: no cheat table ----
+        // ---- No cheat table — offer the DIY scanner instead ----
         if (!CheatTableRegistry.hasTableFor(appId)) {
-            CheatSectionHeader(stringResource(R.string.cheat_no_table_title))
-            Text(
-                text = stringResource(R.string.cheat_no_table_body),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            )
-            CheatDisclaimer()
+            if (proxyCtrl == null) {
+                // Proxy engine not loaded — can't run DIY scans
+                CheatSectionHeader(stringResource(R.string.cheat_engine_not_loaded_title))
+                Text(
+                    text = "Enable the Trainer in Settings and relaunch this game to make your own cheats.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+                MemoryGuideCard(accentColor = accentColor)
+                Spacer(modifier = Modifier.height(8.dp))
+                CheatDisclaimer()
+            } else {
+                DiyCheatMaker(proxyCtrl = proxyCtrl, accentColor = accentColor)
+                Spacer(modifier = Modifier.height(8.dp))
+                CheatDisclaimer()
+            }
             return@Column
         }
 
@@ -495,6 +506,568 @@ fun CheatTab(
         CheatDisclaimer()
 
         Spacer(modifier = Modifier.height(8.dp))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DIY cheat maker — "cheat any game" scanner UI (no pre-made cheat table)
+// ---------------------------------------------------------------------------
+
+/** State machine for the DIY free-form scanner. */
+private enum class DiyState {
+    /** No scan started yet. */
+    Idle,
+    /** A scan is currently in flight. */
+    Scanning,
+    /** First scan returned results; user needs to narrow or freeze. */
+    Scanned,
+    /** User initiated unknown-value flow; snapshot taken; direction buttons shown. */
+    UnknownMode,
+    /** Narrowing after a scan or unknown-value snapshot. */
+    Narrowing,
+    /** Addresses frozen; cheat is active. */
+    Frozen,
+    /** Engine reported an error. */
+    Error,
+}
+
+/** Goal chip data — sets a label hint and a default value-type. */
+private data class GoalChip(val label: String, val defaultVtype: String)
+
+private val DIY_GOALS = listOf(
+    GoalChip("Health", "i32"),
+    GoalChip("Money / Gold", "i32"),
+    GoalChip("Ammo", "i32"),
+    GoalChip("Lives", "i32"),
+    GoalChip("Other", "i32"),
+)
+
+/**
+ * DIY cheat maker — OneX-style "make your own cheat" scanner.
+ *
+ * Hosted inside CheatTab's Column which is itself inside TrainerTab's verticalScroll.
+ * DO NOT add any verticalScroll or LazyColumn here — nesting infinite-height
+ * containers crashes Compose ("Vertically scrollable component was measured with an
+ * infinity maximum height"). Use plain Column/Row with bounded heights only.
+ *
+ * DIY addresses are NOT persisted across relaunches; Box64 ASLR makes them stale,
+ * so all state lives in local remember{} vars only (not CheatUiState).
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DiyCheatMaker(
+    proxyCtrl: app.gamenative.cheats.ProxyCtrl,
+    accentColor: androidx.compose.ui.graphics.Color,
+    modifier: Modifier = Modifier,
+) {
+    val scope = rememberCoroutineScope()
+
+    // ---- Value-type toggle: "i32" or "f32" ----
+    var vtype by remember { mutableStateOf("i32") }
+
+    // ---- Goal chip selection (-1 = none) ----
+    var selectedGoalIndex by remember { mutableIntStateOf(-1) }
+
+    // ---- Scanner state machine ----
+    var diyState by remember { mutableStateOf(DiyState.Idle) }
+    var candidateCount by remember { mutableIntStateOf(0) }
+    var candidateAddresses by remember { mutableStateOf(LongArray(0)) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+
+    // ---- Input fields ----
+    var scanValue by remember { mutableStateOf("") }
+    var narrowValue by remember { mutableStateOf("") }
+    var freezeValue by remember { mutableStateOf("") }
+
+    // Helper: reset to Idle and clear all state
+    fun startOver() {
+        diyState = DiyState.Idle
+        candidateCount = 0
+        candidateAddresses = LongArray(0)
+        errorMsg = null
+        scanValue = ""
+        narrowValue = ""
+        freezeValue = ""
+    }
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        // ---- Header ----
+        CheatSectionHeader("Make your own cheat")
+
+        // ---- How-to guide (collapsible) ----
+        MemoryGuideCard(accentColor = accentColor)
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // ---- Goal chips ----
+        CheatSectionHeader("What do you want to cheat?")
+        FlowRow(
+            modifier = Modifier.padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            DIY_GOALS.forEachIndexed { index, goal ->
+                DiyChip(
+                    label = goal.label,
+                    selected = selectedGoalIndex == index,
+                    accentColor = accentColor,
+                    onClick = {
+                        selectedGoalIndex = index
+                        vtype = goal.defaultVtype
+                    },
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // ---- Value-type toggle ----
+        CheatSectionHeader("Value type")
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            DiyChip(
+                label = "Whole number (int)",
+                selected = vtype == "i32",
+                accentColor = accentColor,
+                onClick = { vtype = "i32" },
+            )
+            DiyChip(
+                label = "Decimal (float)",
+                selected = vtype == "f32",
+                accentColor = accentColor,
+                onClick = { vtype = "f32" },
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // ---- State machine body ----
+        when (diyState) {
+
+            // ------------------------------------------------------------------
+            // Idle — initial scan entry
+            // ------------------------------------------------------------------
+            DiyState.Idle -> {
+                Text(
+                    text = "Read the number on screen (your health, gold, ammo, etc.) and type it here.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Column(modifier = Modifier.padding(horizontal = 8.dp)) {
+                    CheatInputRow(
+                        value = scanValue,
+                        onValueChange = { scanValue = it },
+                        hint = stringResource(R.string.cheat_value_input_hint),
+                        buttonLabel = stringResource(R.string.cheat_scan_button),
+                        enabled = true,
+                        accentColor = accentColor,
+                        onAction = {
+                            if (scanValue.isNotBlank()) {
+                                diyState = DiyState.Scanning
+                                scope.launch {
+                                    val r = CheatExecutor.diyFirstScan(proxyCtrl, vtype, scanValue)
+                                    diyState = if (!r.ok) {
+                                        errorMsg = r.error ?: "Scan failed"
+                                        DiyState.Error
+                                    } else {
+                                        candidateCount = r.count
+                                        candidateAddresses = r.addresses
+                                        DiyState.Scanned
+                                    }
+                                }
+                            }
+                        },
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Can't see a number?",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                )
+                CheatTextButton(
+                    label = "I can't see a number — use direction mode",
+                    accentColor = accentColor,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    onClick = {
+                        diyState = DiyState.Scanning
+                        scope.launch {
+                            val ok = CheatExecutor.diySnapshot(proxyCtrl)
+                            diyState = if (ok) DiyState.UnknownMode else {
+                                errorMsg = "Could not take memory snapshot — make sure the game is running"
+                                DiyState.Error
+                            }
+                        }
+                    },
+                )
+            }
+
+            // ------------------------------------------------------------------
+            // Scanning — spinner / progress message
+            // ------------------------------------------------------------------
+            DiyState.Scanning -> {
+                Text(
+                    text = stringResource(R.string.cheat_scanning),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                )
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp)
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(999.dp)),
+                    color = accentColor,
+                    trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                )
+            }
+
+            // ------------------------------------------------------------------
+            // UnknownMode — snapshot taken; show direction buttons
+            // ------------------------------------------------------------------
+            DiyState.UnknownMode -> {
+                Text(
+                    text = "Snapshot taken. Now cause the value to change in the game (take damage, spend money, etc.), then tap which direction it moved:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CheatActionButton(
+                        label = "Value went UP",
+                        enabled = true,
+                        accentColor = accentColor,
+                        onClick = {
+                            diyState = DiyState.Scanning
+                            scope.launch {
+                                val r = CheatExecutor.diyNarrowDirection(proxyCtrl, "up")
+                                diyState = if (!r.ok) {
+                                    errorMsg = r.error ?: "Scan failed"
+                                    DiyState.Error
+                                } else {
+                                    candidateCount = r.count
+                                    candidateAddresses = r.addresses
+                                    DiyState.Narrowing
+                                }
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                    CheatActionButton(
+                        label = "Value went DOWN",
+                        enabled = true,
+                        accentColor = accentColor,
+                        onClick = {
+                            diyState = DiyState.Scanning
+                            scope.launch {
+                                val r = CheatExecutor.diyNarrowDirection(proxyCtrl, "down")
+                                diyState = if (!r.ok) {
+                                    errorMsg = r.error ?: "Scan failed"
+                                    DiyState.Error
+                                } else {
+                                    candidateCount = r.count
+                                    candidateAddresses = r.addresses
+                                    DiyState.Narrowing
+                                }
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                CheatActionButton(
+                    label = "Value changed (either direction)",
+                    enabled = true,
+                    accentColor = accentColor,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    onClick = {
+                        diyState = DiyState.Scanning
+                        scope.launch {
+                            val r = CheatExecutor.diyNarrowDirection(proxyCtrl, "changed")
+                            diyState = if (!r.ok) {
+                                errorMsg = r.error ?: "Scan failed"
+                                DiyState.Error
+                            } else {
+                                candidateCount = r.count
+                                candidateAddresses = r.addresses
+                                DiyState.Narrowing
+                            }
+                        }
+                    },
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                CheatTextButton(
+                    label = stringResource(R.string.cheat_start_over_button),
+                    accentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    onClick = { startOver() },
+                )
+            }
+
+            // ------------------------------------------------------------------
+            // Scanned / Narrowing — show result count, offer narrow or freeze
+            // ------------------------------------------------------------------
+            DiyState.Scanned, DiyState.Narrowing -> {
+                val tooMany = candidateCount > CheatExecutor.MAX_DIY_FREEZE
+
+                // Match count badge
+                Text(
+                    text = if (tooMany)
+                        stringResource(R.string.cheat_matches_too_many, candidateCount)
+                    else
+                        stringResource(R.string.cheat_matches_found, candidateCount),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = accentColor,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                )
+
+                if (candidateCount == 0) {
+                    // Zero results — nothing to freeze, ask to start over
+                    Text(
+                        text = stringResource(R.string.cheat_matches_none),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    CheatActionButton(
+                        label = stringResource(R.string.cheat_start_over_button),
+                        enabled = true,
+                        accentColor = accentColor,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp),
+                        onClick = { startOver() },
+                    )
+                } else if (tooMany) {
+                    // Too many — narrow with exact value
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Now change the value in the game — take damage or spend money — then type the new number and tap Narrow.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Column(modifier = Modifier.padding(horizontal = 8.dp)) {
+                        CheatInputRow(
+                            value = narrowValue,
+                            onValueChange = { narrowValue = it },
+                            hint = "New in-game value",
+                            buttonLabel = stringResource(R.string.cheat_narrow_button),
+                            enabled = true,
+                            accentColor = accentColor,
+                            onAction = {
+                                if (narrowValue.isNotBlank()) {
+                                    diyState = DiyState.Scanning
+                                    scope.launch {
+                                        val r = CheatExecutor.diyNarrow(proxyCtrl, vtype, narrowValue)
+                                        diyState = if (!r.ok) {
+                                            errorMsg = r.error ?: "Narrow failed"
+                                            DiyState.Error
+                                        } else {
+                                            candidateCount = r.count
+                                            candidateAddresses = r.addresses
+                                            narrowValue = ""
+                                            DiyState.Narrowing
+                                        }
+                                    }
+                                }
+                            },
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Keep narrowing until you get 8 or fewer matches.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    CheatTextButton(
+                        label = stringResource(R.string.cheat_start_over_button),
+                        accentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        onClick = { startOver() },
+                    )
+                } else {
+                    // Small enough — show freeze section
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Good — enter the value you want to lock in (e.g. 999 for max health) and tap Freeze.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Column(modifier = Modifier.padding(horizontal = 8.dp)) {
+                        CheatInputRow(
+                            value = freezeValue,
+                            onValueChange = { freezeValue = it },
+                            hint = "Value to freeze at (e.g. 999)",
+                            buttonLabel = "Freeze",
+                            enabled = true,
+                            accentColor = accentColor,
+                            onAction = {
+                                if (freezeValue.isNotBlank()) {
+                                    diyState = DiyState.Scanning
+                                    scope.launch {
+                                        val ok = CheatExecutor.diyFreeze(
+                                            proxyCtrl, vtype, candidateAddresses, freezeValue,
+                                        )
+                                        diyState = if (ok) DiyState.Frozen else {
+                                            errorMsg = "Freeze failed — try starting over"
+                                            DiyState.Error
+                                        }
+                                    }
+                                }
+                            },
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    CheatTextButton(
+                        label = stringResource(R.string.cheat_start_over_button),
+                        accentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        onClick = { startOver() },
+                    )
+                }
+            }
+
+            // ------------------------------------------------------------------
+            // Frozen — cheat is active
+            // ------------------------------------------------------------------
+            DiyState.Frozen -> {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = null,
+                        tint = accentColor,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        text = "Cheat active — value frozen",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = accentColor,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                CheatActionButton(
+                    label = "Stop / Start over",
+                    enabled = true,
+                    accentColor = PluviaTheme.colors.accentDanger,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    onClick = {
+                        scope.launch {
+                            proxyCtrl.clearAll()
+                            startOver()
+                        }
+                    },
+                )
+            }
+
+            // ------------------------------------------------------------------
+            // Error — show message and allow retry
+            // ------------------------------------------------------------------
+            DiyState.Error -> {
+                Text(
+                    text = errorMsg ?: stringResource(R.string.cheat_activate_failed),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                CheatTextButton(
+                    label = "Try again",
+                    accentColor = accentColor,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    onClick = { startOver() },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Small selectable chip for DIY goal/vtype selection.
+ * Reuses the visual language of the existing CheatActionButton but in chip style.
+ * No verticalScroll — bounded height.
+ */
+@Composable
+private fun DiyChip(
+    label: String,
+    selected: Boolean,
+    accentColor: androidx.compose.ui.graphics.Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+    val shape = RoundedCornerShape(10.dp)
+
+    Box(
+        modifier = modifier
+            .height(36.dp)
+            .then(
+                if (isFocused) {
+                    Modifier.border(width = 2.dp, color = accentColor.copy(alpha = 0.7f), shape = shape)
+                } else {
+                    Modifier.border(
+                        width = 1.dp,
+                        color = if (selected) accentColor.copy(alpha = 0.55f)
+                        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                        shape = shape,
+                    )
+                },
+            )
+            .clip(shape)
+            .background(
+                when {
+                    selected -> accentColor.copy(alpha = 0.18f)
+                    isFocused -> accentColor.copy(alpha = 0.12f)
+                    else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f)
+                },
+            )
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick,
+                role = Role.Button,
+            )
+            .focusable(interactionSource = interactionSource)
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (selected || isFocused) accentColor else MaterialTheme.colorScheme.onSurface,
+            fontWeight = if (selected || isFocused) androidx.compose.ui.text.font.FontWeight.SemiBold
+            else androidx.compose.ui.text.font.FontWeight.Normal,
+        )
     }
 }
 
