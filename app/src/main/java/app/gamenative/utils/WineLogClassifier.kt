@@ -36,6 +36,24 @@ object WineLogClassifier {
             joined.contains(Regex("err:module:import_dll Library d3dcompiler")) ->
                 FixLadder.FailureClass.D3D_COMPILER
 
+            // DX12 / vkd3d device-creation failure — the device's Vulkan driver cannot satisfy
+            // D3D feature level 12 (e.g. Lies of P on ARM Adreno/Mali devices).
+            // Note: the game's own "DX12 not supported" MessageBox is app-rendered and may never
+            // reach Wine stderr, so we key off the vkd3d/Vulkan device-create failure that
+            // PRECEDES it. We require an actual failure/not-supported token alongside the
+            // vkd3d/d3d12 context to avoid false-positives on benign fixme:vkd3d lines.
+            joined.contains("VK_ERROR_FEATURE_NOT_PRESENT") ||
+                joined.contains(Regex("(?i)failed to create.*device")) ||
+                joined.contains("D3D_FEATURE_LEVEL_12") ||
+                joined.contains(Regex("(?i)feature level 12")) ||
+                (joined.contains("vkd3d", ignoreCase = true) &&
+                    (joined.contains("not supported", ignoreCase = true) ||
+                        joined.contains("Adapter does not support", ignoreCase = true) ||
+                        joined.contains("no Vulkan", ignoreCase = true))) ||
+                (joined.contains("err:vkd3d") && joined.contains(Regex("(?i)(fail|error|unsupported|not present)"))) ||
+                (joined.contains("fixme:vkd3d") && joined.contains(Regex("(?i)(fail|error|unsupported|not present)"))) ->
+                FixLadder.FailureClass.D3D12_UNSUPPORTED
+
             // Steam overlay crash
             joined.contains("GameOverlayRenderer64") ||
                 joined.contains("GameOverlayRenderer.dll") ->

@@ -38,6 +38,7 @@ object FixLadder {
     enum class FailureClass {
         WMV_CODEC,
         D3D_COMPILER,
+        D3D12_UNSUPPORTED,
         STEAM_OVERLAY,
         EOS_CRASH,
         MSVC_MISSING,
@@ -185,7 +186,45 @@ object FixLadder {
             },
         ),
 
-        // Rung 5 — Disable EOS
+        // Rung 5 — Force the game's DX11 render path when the device's Vulkan driver
+        // cannot satisfy DX12 / D3D_FEATURE_LEVEL_12 (e.g. "DX12 isn't supported on
+        // your device — try without DX12" on UE4 games like Lies of P).
+        //
+        // CORRECT FIX (verified): do NOT switch the wrapper to wined3d — that routes
+        // DX11 through OpenGL and is unplayable / crashes for modern UE4 AAA titles.
+        // Instead append the game's "-dx11" launch arg, which forces UE4 onto its
+        // DX11 renderer while KEEPING the fast, well-supported dxvk (DX11→Vulkan)
+        // wrapper. This is exactly the Winlator/ProtonDB community fix. We only
+        // append -dx11 when execArgs is empty (don't clobber a user's args) and the
+        // container is on a DX12-capable wrapper config.
+        Rung(
+            id = "dx12_force_dx11",
+            description = "Force DX11 render path (-dx11), keep dxvk",
+            appliesToClasses = setOf(FailureClass.D3D12_UNSUPPORTED),
+            condition = { _, _, baseConfig, _ ->
+                baseConfig.execArgs.isBlank() && (
+                    baseConfig.dxwrapper.contains("vkd3d", ignoreCase = true) ||
+                        baseConfig.dxwrapper.equals("dxvk", ignoreCase = true) ||
+                        baseConfig.dxwrapperConfig.contains("vkd3d", ignoreCase = true) ||
+                        baseConfig.dxwrapperConfig.contains("12_", ignoreCase = true)
+                )
+            },
+            apply = { _, appId, baseConfig, _, _ ->
+                try {
+                    val arg = "-dx11"
+                    val patched = baseConfig.copy(execArgs = arg)
+                    FixResult(
+                        appliedFix = AppliedFix.LaunchArg(arg),
+                        patchedConfig = patched,
+                    )
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "Rung dx12_force_dx11 failed for $appId")
+                    null
+                }
+            },
+        ),
+
+        // Rung 6 — Disable EOS (was Rung 5)
         Rung(
             id = "eos_disable",
             description = "Disable Epic Online Services",
@@ -204,7 +243,7 @@ object FixLadder {
             },
         ),
 
-        // Rung 6 — DXVK_ASYNC=1 for BLACK_SCREEN / UNKNOWN when dxwrapper=dxvk
+        // Rung 7 — DXVK_ASYNC=1 for BLACK_SCREEN / UNKNOWN when dxwrapper=dxvk (was Rung 6)
         Rung(
             id = "dxvk_async",
             description = "Enable DXVK async shader compilation",

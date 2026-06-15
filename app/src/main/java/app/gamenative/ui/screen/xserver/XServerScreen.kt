@@ -3155,13 +3155,22 @@ private fun setupXEnvironment(
     val enableWineDebug = PrefManager.enableWineDebug
     val enableBox86Logs = WinlatorPrefManager.getBoolean("enable_box86_64_logs", false)
     val wineDebugChannels = PrefManager.wineDebugChannels
-    // explicitly enable or disable Wine debug channels
+    // explicitly enable or disable Wine debug channels.
+    // IMPORTANT: even when the user has NOT enabled verbose Wine debug, we keep the
+    // err + fixme channels ON (instead of "-all"). The crash classifier
+    // (CrashClassifier / WineLogClassifier) pattern-matches err:/fixme: lines to
+    // detect *why* a game failed (missing DLL, codec, vkd3d device-create failure,
+    // etc.) and drive both the one-tap crash snackbar and the auto-tuner's
+    // fix-retry ladder. Under "-all" those lines are suppressed, so for a default
+    // user the crash buffer is empty and every auto-fix silently no-ops. Keeping
+    // err,fixme on is cheap (a handful of lines per launch) and makes crash
+    // detection + auto-fix actually work out of the box.
     envVars.put(
         "WINEDEBUG",
         if (enableWineDebug && wineDebugChannels.isNotEmpty())
             "+" + wineDebugChannels.replace(",", ",+")
         else
-            "-all",
+            "+err,+fixme,-all",
     )
     // capture debug output to file if either Wine or Box86/64 logging is enabled
     var logFile: File? = null

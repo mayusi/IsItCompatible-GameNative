@@ -38,4 +38,9 @@ sealed class AppliedFix {
     object EosDisabled : AppliedFix() {
         override fun label(): String = "EOS disabled"
     }
+
+    /** A launch argument was appended to force a render path (e.g. "-dx11" to disable DX12). */
+    data class LaunchArg(val arg: String) : AppliedFix() {
+        override fun label(): String = "Launch arg: $arg"
+    }
 }
