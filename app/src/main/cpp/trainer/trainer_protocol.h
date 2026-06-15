@@ -34,13 +34,27 @@
 
 #include <stdint.h>
 
-/* Bump when the wire layout changes; the Kotlin side checks this. */
-#define TRAINER_PROTO_VERSION 1u
+/* Bump when the wire layout changes; the Kotlin side checks this.
+ * v2: added TCMD_AOB_SCAN (+ reserved TCMD_PATCH/TCMD_RESTORE) and the pattern
+ *     param block (cmd_pattern/cmd_mask/cmd_pattern_len/cmd_patch_len) at off 768.
+ * v3: added owner_pid/owner_heartbeat at off 576 for single-owner arbitration
+ *     (fixes the multi-worker race where every command timed out). */
+#define TRAINER_PROTO_VERSION 3u
 
 /* The mmap'd region is one page (4096) — plenty for the control block plus a
  * bounded result window. Results beyond RESULT_CAP are summarised by count. */
 #define TRAINER_SHM_SIZE       4096u
 #define TRAINER_RESULT_CAP     64u   /* max result addresses surfaced per scan */
+
+/* ---- AOB (Array-Of-Bytes) pattern scanning (one-tap cheats) ----
+ * cmd_pattern holds up to TRAINER_PATTERN_CAP signature bytes; cmd_mask holds a
+ * per-byte wildcard mask (0xFF = must match this byte, 0x00 = wildcard / "??").
+ * cmd_pattern_len gives the active length (<= TRAINER_PATTERN_CAP). For an
+ * AOB_SCAN, cmd_addr carries the SIGNED data offset added to each match's base
+ * (the pattern's start address) to yield the address surfaced in results[].
+ * cmd_patch_len is reserved for TCMD_PATCH (deferred). The pattern block lives in
+ * the page tail at OFF_CMD_PATTERN so the header + results[] layout is unchanged. */
+#define TRAINER_PATTERN_CAP    256u  /* max signature/patch bytes */
 
 /* ---- value types the scanner understands ---- */
 enum trainer_vtype {
@@ -68,6 +82,18 @@ enum trainer_cmd {
     TCMD_UNFREEZE   = 6,  /* remove a frozen address (cmd_addr); cmd_addr==0 => clear all */
     TCMD_RESET      = 7,  /* drop the current result set + all freezes */
     TCMD_PING       = 8,  /* liveness: worker just bumps resp_seq with TST_READY */
+    TCMD_AOB_SCAN   = 9,  /* one-tap: scan r-x + rw regions for cmd_pattern[/cmd_mask],
+                           * apply cmd_addr as a SIGNED offset to each hit, surface the
+                           * resolved data addresses in results[]. cmd_vtype sets how the
+                           * caller will later READ/FREEZE the resolved address. */
+    TCMD_PATCH      = 10, /* code-patch: write cmd_patch_len bytes (from cmd_pattern[]) to
+                           * cmd_addr via mprotect(rwx)→write→mprotect(restore). Snapshots the
+                           * original bytes into the patch table so TCMD_RESTORE can undo it.
+                           * Used for NOP-the-instruction cheats (e.g. NOP an HP-drain subss).
+                           * resp_status=TST_READY on success, TST_ERROR (resp_error=errno) on
+                           * mprotect/verify failure. */
+    TCMD_RESTORE    = 11, /* restore bytes saved by a prior PATCH at cmd_addr; cmd_addr==0 =>
+                           * restore ALL outstanding patches. resp_status=TST_READY. */
 };
 
 /* ---- SCAN_NEXT filter modes (cmd_filter) ---- */
@@ -86,6 +112,7 @@ enum trainer_status {
     TST_SCANNING = 2,  /* a scan is in progress (resp_progress 0..100) */
     TST_ERROR    = 3,  /* resp_error holds an errno-ish/code */
     TST_TOO_MANY = 4,  /* match count > RESULT_CAP: results[] holds first CAP, resp_count = total */
+    TST_NO_MATCH = 5,  /* AOB_SCAN found zero matches (resp_count == 0) */
 };
 
 #define TRAINER_FREEZE_CAP 32u  /* max simultaneously frozen addresses */
@@ -117,6 +144,26 @@ struct trainer_shm {
 
     /* --- bounded result window (worker writes; addresses of current matches) --- */
     uint64_t results[TRAINER_RESULT_CAP];   /* off 64 : first resp_count (capped) match addrs */
+                                            /* results[] ends at 64 + 64*8 = 576 */
+
+    /* --- single-owner arbitration (worker writes) ---
+     * Multiple libtrainer copies are LD_PRELOAD'd across the Wine/Box64 process
+     * tree and ALL try to mmap this one file. Without arbitration they race the
+     * cmd_seq/resp_seq handshake and the Android side times out (the real
+     * "no cheat works" bug). The FIRST worker to CAS owner_pid 0->getpid() wins
+     * and is the SOLE responder; losers munmap and no-op. owner_heartbeat lets a
+     * relaunch reclaim a stale owner (dead PID). Carved from the reserved gap so
+     * the AOB block at off 768 and every prior offset are UNCHANGED. */
+    uint32_t owner_pid;                      /* off 576 : CAS 0->pid; sole responder */
+    uint32_t owner_heartbeat;                /* off 580 : monotonic tick from the owner */
+
+    /* --- AOB pattern param block (UI writes; off fixed at OFF_CMD_PATTERN=768) --- */
+    uint8_t  _pad_to_pattern[768u - 584u];  /* off 584 : reserved gap (184 bytes) */
+    uint32_t cmd_pattern_len;               /* off 768 : active signature length (<= CAP) */
+    uint32_t cmd_patch_len;                 /* off 772 : reserved (TCMD_PATCH) */
+    uint8_t  cmd_pattern[TRAINER_PATTERN_CAP]; /* off 776 : signature/patch bytes */
+    uint8_t  cmd_mask[TRAINER_PATTERN_CAP];    /* off 1032: 0xFF=match, 0x00=wildcard */
+                                            /* cmd_mask ends at 1032 + 256 = 1288 */
 
     /* tail padding fills the page to TRAINER_SHM_SIZE */
 };
@@ -136,7 +183,15 @@ struct trainer_shm {
  *   OFF_RESP_PROGRESS = 48  (int32)
  *   OFF_RESP_COUNT    = 52  (int32)
  *   OFF_RESP_VALUE    = 56  (int64)
- *   OFF_RESULTS       = 64  (int64[TRAINER_RESULT_CAP])
+ *   OFF_RESULTS       = 64  (int64[TRAINER_RESULT_CAP])  ; ends at 576
+ *   OFF_OWNER_PID       = 576  (int32)  ; CAS 0->pid arbitration
+ *   OFF_OWNER_HEARTBEAT = 580  (int32)
+ *   OFF_CMD_PATTERN_LEN = 768  (int32)
+ *   OFF_CMD_PATCH_LEN   = 772  (int32)
+ *   OFF_CMD_PATTERN     = 776  (uint8[TRAINER_PATTERN_CAP=256])  ; ends at 1032
+ *   OFF_CMD_MASK        = 1032 (uint8[TRAINER_PATTERN_CAP=256])  ; ends at 1288
+ *
+ * NOTE: cmd_addr (off 24) doubles as the SIGNED data offset for TCMD_AOB_SCAN.
  */
 
 #endif /* TRAINER_PROTOCOL_H */

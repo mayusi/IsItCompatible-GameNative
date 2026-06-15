@@ -34,6 +34,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -145,6 +147,7 @@ fun CheatTab(
     trainerShm: TrainerShm?,
     focusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier,
+    proxyCtrl: app.gamenative.cheats.ProxyCtrl? = null,
 ) {
     val accentColor = PluviaTheme.colors.accentPurple
     val scope = rememberCoroutineScope()
@@ -214,10 +217,25 @@ fun CheatTab(
 
         Spacer(modifier = Modifier.height(4.dp))
 
-        // Per-cheat runtime state — keyed by cheat.id
+        // Per-cheat runtime state — keyed by cheat.id.
+        // SEED from CheatUiState so toggles survive the QuickMenu being closed +
+        // reopened (the composable's remember{} is destroyed each time, but the
+        // in-game DLL keeps freezing; CheatUiState is the process-level source of
+        // truth for "is this cheat showing as on"). Only pointer_chain/static
+        // cheats persist this way — their freeze lives entirely in the DLL slot
+        // table, independent of UI lifetime. Guided/aob cheats start Idle as before.
         val cheatStates = remember(table) {
             mutableMapOf<String, CheatState>().also { map ->
-                table.cheats.forEach { cheat -> map[cheat.id] = CheatState() }
+                table.cheats.forEach { cheat ->
+                    val persistedOn = appId != null &&
+                        (cheat.recipe.kind == "pointer_chain" || cheat.recipe.kind == "static") &&
+                        app.gamenative.cheats.CheatUiState.isActive(appId, cheat.id)
+                    map[cheat.id] = if (persistedOn) {
+                        CheatState(flow = CheatFlowState.Frozen, frozenAddresses = LongArray(0))
+                    } else {
+                        CheatState()
+                    }
+                }
             }
         }
         // Recompose trigger for cheatStates map changes
@@ -241,131 +259,233 @@ fun CheatTab(
             val scanBusy = activeScanCheatId != null && activeScanCheatId != cheat.id
             val isScanning = state.flow == CheatFlowState.Scanning
 
-            CheatRow(
-                cheat = cheat,
-                state = state,
-                scanBusy = scanBusy,
-                isScanning = isScanning,
-                scanProgress = if (isScanning) scanProgress else 0,
-                accentColor = accentColor,
-                focusRequester = if (cheat == table.cheats.first() && state.flow == CheatFlowState.Idle)
-                    focusRequester else null,
-                onFirstScan = { enteredValue ->
-                    scope.launch {
-                        cheatStates[cheat.id] = CheatState(flow = CheatFlowState.Scanning)
-                        activeScanCheatId = cheat.id
-                        stateVersion++
+            val kind = cheat.recipe.kind
+            if (kind == "aob_freeze" || kind == "aob_patch" || kind == "pointer_chain" || kind == "static") {
+                // ---- One-tap cheat row (aob_freeze, aob_patch, pointer_chain, static) ----
+                OneTapCheatRow(
+                    cheat = cheat,
+                    state = state,
+                    scanBusy = scanBusy,
+                    isScanning = isScanning,
+                    scanProgress = if (isScanning) scanProgress else 0,
+                    accentColor = accentColor,
+                    focusRequester = if (cheat == table.cheats.first() && state.flow == CheatFlowState.Idle)
+                        focusRequester else null,
+                    onToggleOn = {
+                        scope.launch {
+                            cheatStates[cheat.id] = CheatState(flow = CheatFlowState.Scanning)
+                            activeScanCheatId = cheat.id
+                            stateVersion++
 
-                        val result = CheatExecutor.firstScan(trainerShm, cheat, enteredValue)
-                        if (!result.success) {
-                            cheatStates[cheat.id] = CheatState(
-                                flow = CheatFlowState.Error,
-                                errorMsg = result.error,
-                            )
-                            activeScanCheatId = null
-                        } else {
-                            val nextFlow = when {
-                                result.count == 0 -> CheatFlowState.Idle
-                                result.count <= CheatExecutor.MAX_FREEZE_CANDIDATES && !result.tooMany ->
-                                    CheatFlowState.ReadyToFreeze
-                                else -> CheatFlowState.NeedNarrow
+                            when (kind) {
+                                "aob_patch" -> {
+                                    val r = CheatExecutor.aobPatch(trainerShm, cheat)
+                                    if (r.success) {
+                                        cheatStates[cheat.id] = CheatState(
+                                            flow = CheatFlowState.Frozen,
+                                            frozenAddresses = r.patchedAddresses,
+                                        )
+                                    } else {
+                                        cheatStates[cheat.id] = CheatState(
+                                            flow = CheatFlowState.Error,
+                                            errorMsg = r.error,
+                                        )
+                                    }
+                                }
+                                "pointer_chain", "static" -> {
+                                    if (proxyCtrl == null) {
+                                        cheatStates[cheat.id] = CheatState(
+                                            flow = CheatFlowState.Error,
+                                            errorMsg = "Cheat engine not ready — relaunch the game with the trainer enabled",
+                                        )
+                                    } else {
+                                        val r = CheatExecutor.applyChainFreeze(proxyCtrl, cheat)
+                                        if (r.success) {
+                                            cheatStates[cheat.id] = CheatState(
+                                                flow = CheatFlowState.Frozen,
+                                                frozenAddresses = LongArray(0),
+                                            )
+                                            // Persist so the toggle stays ON after the menu is reopened.
+                                            if (appId != null) app.gamenative.cheats.CheatUiState.setActive(appId, cheat.id, true)
+                                        } else {
+                                            cheatStates[cheat.id] = CheatState(
+                                                flow = CheatFlowState.Error,
+                                                errorMsg = r.error,
+                                            )
+                                        }
+                                    }
+                                }
+                                else -> {
+                                    // kind == "aob_freeze"
+                                    val r = CheatExecutor.aobActivate(trainerShm, cheat)
+                                    if (r.success) {
+                                        cheatStates[cheat.id] = CheatState(
+                                            flow = CheatFlowState.Frozen,
+                                            frozenAddresses = r.frozenAddresses,
+                                        )
+                                    } else {
+                                        cheatStates[cheat.id] = CheatState(
+                                            flow = CheatFlowState.Error,
+                                            errorMsg = r.error,
+                                        )
+                                    }
+                                }
                             }
-                            cheatStates[cheat.id] = CheatState(
-                                flow = nextFlow,
-                                matchCount = result.count,
-                                addresses = result.addresses,
-                                tooMany = result.tooMany,
-                            )
-                            // Release the result-set lock only once we're done scanning;
-                            // keep it while NeedNarrow so subsequent narrow() calls work.
-                            if (nextFlow == CheatFlowState.Idle) activeScanCheatId = null
+                            activeScanCheatId = null
+                            stateVersion++
                         }
-                        stateVersion++
-                    }
-                },
-                onNarrow = { enteredValue ->
-                    scope.launch {
-                        cheatStates[cheat.id] = cheatStates[cheat.id]!!.copy(
-                            flow = CheatFlowState.Scanning,
-                        )
-                        stateVersion++
+                    },
+                    onToggleOff = {
+                        val currentState = cheatStates[cheat.id] ?: return@OneTapCheatRow
+                        scope.launch {
+                            when (kind) {
+                                "aob_patch" -> {
+                                    CheatExecutor.undoPatch(trainerShm, currentState.frozenAddresses)
+                                }
+                                "pointer_chain", "static" -> {
+                                    if (proxyCtrl != null) {
+                                        CheatExecutor.removeChainFreeze(proxyCtrl, cheat)
+                                    }
+                                    if (appId != null) app.gamenative.cheats.CheatUiState.setActive(appId, cheat.id, false)
+                                }
+                                else -> {
+                                    // kind == "aob_freeze"
+                                    CheatExecutor.deactivate(trainerShm, currentState.frozenAddresses)
+                                }
+                            }
+                            cheatStates[cheat.id] = CheatState(flow = CheatFlowState.Idle)
+                            stateVersion++
+                        }
+                    },
+                )
+            } else {
+                // ---- Existing guided cheat row (guided_known and any future kinds) ----
+                CheatRow(
+                    cheat = cheat,
+                    state = state,
+                    scanBusy = scanBusy,
+                    isScanning = isScanning,
+                    scanProgress = if (isScanning) scanProgress else 0,
+                    accentColor = accentColor,
+                    focusRequester = if (cheat == table.cheats.first() && state.flow == CheatFlowState.Idle)
+                        focusRequester else null,
+                    onFirstScan = { enteredValue ->
+                        scope.launch {
+                            cheatStates[cheat.id] = CheatState(flow = CheatFlowState.Scanning)
+                            activeScanCheatId = cheat.id
+                            stateVersion++
 
-                        val result = CheatExecutor.narrow(trainerShm, cheat, enteredValue)
-                        if (!result.success) {
-                            cheatStates[cheat.id] = CheatState(
-                                flow = CheatFlowState.Error,
-                                errorMsg = result.error,
-                            )
-                            activeScanCheatId = null
-                        } else {
-                            val nextFlow = when {
-                                result.count == 0 -> CheatFlowState.Idle
-                                result.count <= CheatExecutor.MAX_FREEZE_CANDIDATES && !result.tooMany ->
-                                    CheatFlowState.ReadyToFreeze
-                                else -> CheatFlowState.NeedNarrow
+                            val result = CheatExecutor.firstScan(trainerShm, cheat, enteredValue)
+                            if (!result.success) {
+                                cheatStates[cheat.id] = CheatState(
+                                    flow = CheatFlowState.Error,
+                                    errorMsg = result.error,
+                                )
+                                activeScanCheatId = null
+                            } else {
+                                val nextFlow = when {
+                                    result.count == 0 -> CheatFlowState.Idle
+                                    result.count <= CheatExecutor.MAX_FREEZE_CANDIDATES && !result.tooMany ->
+                                        CheatFlowState.ReadyToFreeze
+                                    else -> CheatFlowState.NeedNarrow
+                                }
+                                cheatStates[cheat.id] = CheatState(
+                                    flow = nextFlow,
+                                    matchCount = result.count,
+                                    addresses = result.addresses,
+                                    tooMany = result.tooMany,
+                                )
+                                // Release the result-set lock only once we're done scanning;
+                                // keep it while NeedNarrow so subsequent narrow() calls work.
+                                if (nextFlow == CheatFlowState.Idle) activeScanCheatId = null
                             }
-                            cheatStates[cheat.id] = CheatState(
-                                flow = nextFlow,
-                                matchCount = result.count,
-                                addresses = result.addresses,
-                                tooMany = result.tooMany,
-                            )
-                            if (nextFlow == CheatFlowState.Idle) activeScanCheatId = null
+                            stateVersion++
                         }
-                        stateVersion++
-                    }
-                },
-                onActivate = {
-                    val currentState = cheatStates[cheat.id] ?: return@CheatRow
-                    scope.launch {
-                        val freezeResult = CheatExecutor.applyFreeze(
-                            trainerShm,
-                            cheat,
-                            currentState.addresses,
-                        )
-                        if (freezeResult.success) {
-                            cheatStates[cheat.id] = currentState.copy(
-                                flow = CheatFlowState.Frozen,
-                                frozenAddresses = freezeResult.frozenAddresses,
+                    },
+                    onNarrow = { enteredValue ->
+                        scope.launch {
+                            cheatStates[cheat.id] = cheatStates[cheat.id]!!.copy(
+                                flow = CheatFlowState.Scanning,
                             )
-                            // Release the scan result-set lock — freeze is address-based, not
-                            // result-set-based, so other cheats can now start their scans.
-                            if (activeScanCheatId == cheat.id) activeScanCheatId = null
-                        } else {
-                            cheatStates[cheat.id] = currentState.copy(
-                                flow = CheatFlowState.Error,
-                                errorMsg = freezeResult.error,
-                            )
-                            if (activeScanCheatId == cheat.id) activeScanCheatId = null
+                            stateVersion++
+
+                            val result = CheatExecutor.narrow(trainerShm, cheat, enteredValue)
+                            if (!result.success) {
+                                cheatStates[cheat.id] = CheatState(
+                                    flow = CheatFlowState.Error,
+                                    errorMsg = result.error,
+                                )
+                                activeScanCheatId = null
+                            } else {
+                                val nextFlow = when {
+                                    result.count == 0 -> CheatFlowState.Idle
+                                    result.count <= CheatExecutor.MAX_FREEZE_CANDIDATES && !result.tooMany ->
+                                        CheatFlowState.ReadyToFreeze
+                                    else -> CheatFlowState.NeedNarrow
+                                }
+                                cheatStates[cheat.id] = CheatState(
+                                    flow = nextFlow,
+                                    matchCount = result.count,
+                                    addresses = result.addresses,
+                                    tooMany = result.tooMany,
+                                )
+                                if (nextFlow == CheatFlowState.Idle) activeScanCheatId = null
+                            }
+                            stateVersion++
                         }
-                        stateVersion++
-                    }
-                },
-                onDeactivate = {
-                    val currentState = cheatStates[cheat.id] ?: return@CheatRow
-                    scope.launch {
-                        CheatExecutor.deactivate(trainerShm, currentState.frozenAddresses)
-                        cheatStates[cheat.id] = CheatState(flow = CheatFlowState.Idle)
-                        stateVersion++
-                    }
-                },
-                onStartOver = {
-                    scope.launch {
-                        val currentState = cheatStates[cheat.id] ?: return@launch
-                        // If frozen, deactivate first
-                        if (currentState.flow == CheatFlowState.Frozen) {
+                    },
+                    onActivate = {
+                        val currentState = cheatStates[cheat.id] ?: return@CheatRow
+                        scope.launch {
+                            val freezeResult = CheatExecutor.applyFreeze(
+                                trainerShm,
+                                cheat,
+                                currentState.addresses,
+                            )
+                            if (freezeResult.success) {
+                                cheatStates[cheat.id] = currentState.copy(
+                                    flow = CheatFlowState.Frozen,
+                                    frozenAddresses = freezeResult.frozenAddresses,
+                                )
+                                // Release the scan result-set lock — freeze is address-based, not
+                                // result-set-based, so other cheats can now start their scans.
+                                if (activeScanCheatId == cheat.id) activeScanCheatId = null
+                            } else {
+                                cheatStates[cheat.id] = currentState.copy(
+                                    flow = CheatFlowState.Error,
+                                    errorMsg = freezeResult.error,
+                                )
+                                if (activeScanCheatId == cheat.id) activeScanCheatId = null
+                            }
+                            stateVersion++
+                        }
+                    },
+                    onDeactivate = {
+                        val currentState = cheatStates[cheat.id] ?: return@CheatRow
+                        scope.launch {
                             CheatExecutor.deactivate(trainerShm, currentState.frozenAddresses)
+                            cheatStates[cheat.id] = CheatState(flow = CheatFlowState.Idle)
+                            stateVersion++
                         }
-                        cheatStates[cheat.id] = CheatState(flow = CheatFlowState.Idle)
-                        if (activeScanCheatId == cheat.id) {
-                            activeScanCheatId = null
-                            // Best-effort reset of the engine result set
-                            trainerShm.reset()
+                    },
+                    onStartOver = {
+                        scope.launch {
+                            val currentState = cheatStates[cheat.id] ?: return@launch
+                            // If frozen, deactivate first
+                            if (currentState.flow == CheatFlowState.Frozen) {
+                                CheatExecutor.deactivate(trainerShm, currentState.frozenAddresses)
+                            }
+                            cheatStates[cheat.id] = CheatState(flow = CheatFlowState.Idle)
+                            if (activeScanCheatId == cheat.id) {
+                                activeScanCheatId = null
+                                // Best-effort reset of the engine result set
+                                trainerShm.reset()
+                            }
+                            stateVersion++
                         }
-                        stateVersion++
-                    }
-                },
-            )
+                    },
+                )
+            }
 
             Spacer(modifier = Modifier.height(4.dp))
         }
@@ -709,6 +829,253 @@ private fun CheatRow(
                     }
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// One-tap AOB cheat row — WeMod-style toggle card (no value entry, no narrowing)
+// ---------------------------------------------------------------------------
+
+/**
+ * A simplified card for "aob_freeze" and "aob_patch" cheats. The user taps a toggle
+ * to activate or deactivate — no value entry or narrowing steps required. State machine:
+ *   Idle (off) -> [onToggleOn] -> Scanning (activating) -> Frozen (on) or Error.
+ *   Frozen (on) -> [onToggleOff] -> Idle (off).
+ *   Error -> tapping the toggle retries (same as toggling from Idle).
+ *
+ * The actual executor call (aobActivate/aobPatch and deactivate/undoPatch) is dispatched
+ * in the [onToggleOn]/[onToggleOff] lambdas by the caller based on [cheat.recipe.kind].
+ * The UI is identical for both kinds — just a toggle + status text.
+ * For aob_patch, [CheatState.frozenAddresses] stores the patched addresses (reuse).
+ *
+ * Uses the same [cheatStates] / [stateVersion] map as the guided [CheatRow] and
+ * honours the single-active-scan constraint via [scanBusy].
+ *
+ * No verticalScroll, no LazyColumn — bounded height, plain Column/Row layout to
+ * avoid nesting with TrainerTab's parent verticalScroll.
+ */
+@Composable
+private fun OneTapCheatRow(
+    cheat: Cheat,
+    state: CheatState,
+    scanBusy: Boolean,
+    isScanning: Boolean,
+    scanProgress: Int,
+    accentColor: androidx.compose.ui.graphics.Color,
+    focusRequester: FocusRequester?,
+    onToggleOn: () -> Unit,
+    onToggleOff: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+    val shape = RoundedCornerShape(14.dp)
+
+    // The toggle is checked when Frozen; also treat Error as "off" (retry = re-toggle).
+    val isActive = state.flow == CheatFlowState.Frozen
+    // Disable the toggle while this cheat itself is scanning OR another cheat owns
+    // the result set. Also disabled during Scanning state (operation in flight).
+    val toggleEnabled = !isScanning && !(scanBusy && !isActive)
+
+    val onToggle = {
+        when (state.flow) {
+            CheatFlowState.Frozen -> onToggleOff()
+            // Idle, Error, and any unexpected state all treat toggle-on as "activate".
+            else -> if (!scanBusy) onToggleOn()
+        }
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+            .clip(shape)
+            .background(
+                when {
+                    isActive -> Brush.horizontalGradient(
+                        colors = listOf(
+                            accentColor.copy(alpha = 0.22f),
+                            accentColor.copy(alpha = 0.10f),
+                        ),
+                    )
+                    isFocused -> Brush.horizontalGradient(
+                        colors = listOf(
+                            accentColor.copy(alpha = 0.16f),
+                            accentColor.copy(alpha = 0.08f),
+                        ),
+                    )
+                    else -> Brush.horizontalGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f),
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.10f),
+                        ),
+                    )
+                },
+            )
+            .then(
+                if (isFocused || isActive) {
+                    Modifier.border(
+                        width = if (isActive) 2.dp else 1.5.dp,
+                        color = accentColor.copy(alpha = if (isActive) 0.9f else 0.7f),
+                        shape = shape,
+                    )
+                } else {
+                    Modifier.border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.18f),
+                        shape = shape,
+                    )
+                },
+            )
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .focusable(interactionSource = interactionSource)
+            .onPreviewKeyEvent { keyEvent ->
+                if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN && isFocused) {
+                    when (keyEvent.nativeKeyEvent.keyCode) {
+                        KeyEvent.KEYCODE_BUTTON_A,
+                        KeyEvent.KEYCODE_DPAD_CENTER,
+                        KeyEvent.KEYCODE_ENTER -> {
+                            if (toggleEnabled) onToggle()
+                            true
+                        }
+                        else -> false
+                    }
+                } else {
+                    false
+                }
+            }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                enabled = toggleEnabled,
+                onClick = onToggle,
+                role = Role.Switch,
+            )
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+    ) {
+        // ---- Header row: name + category on the left, toggle on the right ----
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = cheat.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (isActive) accentColor else MaterialTheme.colorScheme.onSurface,
+                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
+                )
+                Text(
+                    text = stringResource(R.string.cheat_category_label, cheat.category),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                )
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            // Toggle — disabled and visually dimmed while scanBusy (another cheat owns the engine)
+            Switch(
+                checked = isActive,
+                onCheckedChange = { if (toggleEnabled) onToggle() },
+                enabled = toggleEnabled,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = androidx.compose.ui.graphics.Color.White,
+                    checkedTrackColor = accentColor,
+                    checkedBorderColor = accentColor.copy(alpha = 0.0f),
+                    uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    uncheckedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                    disabledCheckedTrackColor = accentColor.copy(alpha = 0.4f),
+                    disabledUncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                ),
+                // Suppress the default interaction ripple — the card itself handles focus/clicks
+                interactionSource = remember { MutableInteractionSource() },
+            )
+        }
+
+        // ---- Status area below the header (Scanning progress, active badge, error) ----
+        when (state.flow) {
+            CheatFlowState.Scanning -> {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = stringResource(R.string.cheat_scanning),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                LinearProgressIndicator(
+                    progress = { scanProgress / 100f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(999.dp)),
+                    color = accentColor,
+                    trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                )
+            }
+
+            CheatFlowState.Frozen -> {
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = stringResource(R.string.cheat_active_label),
+                        tint = accentColor,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Text(
+                        text = stringResource(R.string.cheat_active_label),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = accentColor,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+
+            CheatFlowState.Error -> {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = state.errorMsg ?: stringResource(R.string.cheat_activate_failed),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                if (scanBusy) {
+                    // Can't retry yet — another cheat owns the engine
+                    Text(
+                        text = stringResource(R.string.cheat_scan_busy),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    )
+                } else {
+                    Text(
+                        text = stringResource(R.string.cheat_activate_button) + " to retry",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = accentColor.copy(alpha = 0.8f),
+                    )
+                }
+            }
+
+            CheatFlowState.Idle -> {
+                // No extra content when off — keep the card compact
+                if (scanBusy) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = stringResource(R.string.cheat_scan_busy),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    )
+                }
+            }
+
+            // NeedNarrow / ReadyToFreeze are guided-flow states and should never
+            // be reached for aob_freeze or aob_patch cheats, but guard defensively.
+            else -> Unit
         }
     }
 }

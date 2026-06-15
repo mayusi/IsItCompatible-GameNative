@@ -87,6 +87,38 @@ class TrainerShm private constructor(
     }
 
     /**
+     * Establish availability by pinging the native worker with retries.
+     *
+     * Must be called after [create] — the worker may take a moment to claim
+     * ownership and start its worker thread after game launch, so a single
+     * immediate ping often fails.  This function retries up to
+     * [CONNECT_ATTEMPTS] times with [CONNECT_RETRY_DELAY_MS] between each
+     * attempt, giving the worker time to initialise and write
+     * TRAINER_PROTO_VERSION into the shm header.
+     *
+     * Sets and returns [available].  If all attempts fail, [available] remains
+     * false and all other suspend calls will time out gracefully.
+     *
+     * Typical caller:
+     * ```kotlin
+     * val shm = TrainerShm.create(context) ?: return
+     * val ready = shm.connect()
+     * if (!ready) { /* show "trainer unavailable" UI */ }
+     * ```
+     */
+    suspend fun connect(): Boolean = withContext(Dispatchers.IO) {
+        repeat(CONNECT_ATTEMPTS) { attempt ->
+            if (ping()) return@withContext true
+            if (attempt < CONNECT_ATTEMPTS - 1) {
+                Log.d(TAG, "connect: ping attempt ${attempt + 1}/$CONNECT_ATTEMPTS failed — retrying in ${CONNECT_RETRY_DELAY_MS}ms")
+                delay(CONNECT_RETRY_DELAY_MS)
+            }
+        }
+        Log.w(TAG, "connect: worker did not respond after $CONNECT_ATTEMPTS attempts")
+        false
+    }
+
+    /**
      * TCMD_SCAN_NEW — fresh scan of all rw regions.
      * [value] is raw bits (use TrainerProto helpers for float/double).
      */
@@ -113,6 +145,47 @@ class TrainerShm private constructor(
             filter = filter,
             addr = 0L,
             value = value,
+        )
+    }
+
+    /**
+     * TCMD_AOB_SCAN — scan r-x and rw memory regions for [pattern] (with [mask]).
+     *
+     * Each byte in [mask] controls matching: 0xFF means "this byte must equal the
+     * corresponding [pattern] byte"; 0x00 means wildcard (the "??" token in
+     * CheatEngine notation).
+     *
+     * [dataOffset] is the SIGNED byte offset added to each hit's start address to
+     * yield the data address surfaced in [ScanResult.addresses].  A value of 0L means
+     * "surface the pattern's own start address".
+     *
+     * [vtype] is stored in cmd_vtype so the caller can later READ/FREEZE the resolved
+     * addresses without having to supply the type again.
+     *
+     * Use [TrainerProto.parseAob] to convert a CheatEngine-style AOB string into
+     * the (pattern, mask) pair before calling this function.
+     *
+     * Returns a [ScanResult] in all cases:
+     * - success == true  → TST_READY or TST_TOO_MANY (as with normal scans)
+     * - TST_NO_MATCH     → count == 0, addresses is empty; success == false, but NOT an error
+     * - TST_ERROR        → errorMsg is set
+     * - timeout / unavailable → errorMsg is set
+     */
+    suspend fun aobScan(
+        pattern: ByteArray,
+        mask: ByteArray,
+        dataOffset: Long,
+        vtype: Int,
+    ): ScanResult = withContext(Dispatchers.IO) {
+        if (pattern.size != mask.size || pattern.isEmpty() || pattern.size > TrainerProto.TRAINER_PATTERN_CAP) {
+            return@withContext ScanResult.error("Invalid AOB pattern length")
+        }
+        _progress.value = 0
+        runAobScanCommand(
+            pattern = pattern,
+            mask = mask,
+            dataOffset = dataOffset,
+            vtype = vtype,
         )
     }
 
@@ -179,6 +252,54 @@ class TrainerShm private constructor(
     }
 
     /**
+     * TCMD_PATCH — write [patchBytes] to [addr] in the target process and snapshot
+     * the original bytes so they can be restored later via [restore].
+     *
+     * Typical use-case: NOP out an instruction, flip a branch, or zero a register
+     * save site.  The worker saves the original bytes keyed on [addr]; a subsequent
+     * [restore] call with the same address will undo the patch exactly.
+     *
+     * [patchBytes] must be non-empty and no longer than 32 bytes.  Larger patches
+     * should be split into 32-byte chunks and applied sequentially.
+     *
+     * Returns true on TST_READY (patch applied); false on TST_ERROR, timeout, or
+     * validation failure.
+     */
+    suspend fun patch(addr: Long, patchBytes: ByteArray): Boolean = withContext(Dispatchers.IO) {
+        if (patchBytes.isEmpty() || patchBytes.size > 32) {
+            Log.w(TAG, "patch: invalid patchBytes length ${patchBytes.size} (must be 1..32)")
+            return@withContext false
+        }
+        runCommand(
+            cmd = TrainerProto.TCMD_PATCH,
+            addr = addr,
+            timeoutMs = TIMEOUT_SHORT_MS,
+            patchLen = patchBytes.size,
+            patchBytes = patchBytes,
+        ) { status ->
+            status == TrainerProto.TST_READY
+        } ?: false
+    }
+
+    /**
+     * TCMD_RESTORE — restore the original bytes at [addr] that were saved by a
+     * prior [patch] command.
+     *
+     * Pass [addr] == 0L to restore ALL patches recorded by the worker in one shot.
+     *
+     * Returns true on TST_READY (restore applied); false on TST_ERROR or timeout.
+     */
+    suspend fun restore(addr: Long): Boolean = withContext(Dispatchers.IO) {
+        runCommand(
+            cmd = TrainerProto.TCMD_RESTORE,
+            addr = addr,
+            timeoutMs = TIMEOUT_SHORT_MS,
+        ) { status ->
+            status == TrainerProto.TST_READY
+        } ?: false
+    }
+
+    /**
      * TCMD_RESET — drop the current result set and all frozen addresses.
      */
     suspend fun reset(): Boolean = withContext(Dispatchers.IO) {
@@ -214,6 +335,13 @@ class TrainerShm private constructor(
      * [predicate] receives resp_status and must return true for a "success"
      * result; the function returns the predicate result, or null on timeout /
      * unavailability.
+     *
+     * [patchLen] and [patchBytes] are optional — supply them only for
+     * TCMD_PATCH.  When non-null/non-zero they are written into the
+     * cmd_patch_len (OFF_CMD_PATCH_LEN) and cmd_pattern (OFF_CMD_PATTERN)
+     * fields BEFORE cmd_seq is bumped, so the worker sees them atomically.
+     * All existing callers omit these params (defaults: 0 / null) and are
+     * therefore completely unaffected.
      */
     private suspend fun <T> runCommand(
         cmd: Int,
@@ -222,6 +350,8 @@ class TrainerShm private constructor(
         addr: Long = 0L,
         value: Long = 0L,
         timeoutMs: Long,
+        patchLen: Int = 0,
+        patchBytes: ByteArray? = null,
         predicate: (Int) -> T,
     ): T? = mutex.withLock {
         // Bail out early if the mmap failed at init time
@@ -243,6 +373,15 @@ class TrainerShm private constructor(
         buf.putInt(OFF_CMD_FILTER, filter)
         buf.putLong(OFF_CMD_ADDR, addr)
         buf.putLong(OFF_CMD_VALUE, value)
+
+        // Write patch-block fields when supplied (TCMD_PATCH only).
+        // Absolute-index puts do not alter the buffer's position marker.
+        if (patchBytes != null) {
+            buf.putInt(OFF_CMD_PATCH_LEN, patchLen)
+            for (i in patchBytes.indices) {
+                buf.put(OFF_CMD_PATTERN + i, patchBytes[i])
+            }
+        }
 
         // Bump cmd_seq — this is the "ring the doorbell" step for the worker
         val newCmdSeq = buf.getInt(OFF_CMD_SEQ) + 1
@@ -342,6 +481,116 @@ class TrainerShm private constructor(
         ScanResult.error("Timeout waiting for scan response (${TIMEOUT_SCAN_MS}ms)")
     }
 
+    /**
+     * Specialised AOB-scan dispatcher — mirrors [runScanCommand] exactly but also
+     * writes the pattern / mask block (OFF_CMD_PATTERN_LEN, OFF_CMD_PATTERN,
+     * OFF_CMD_MASK) before bumping cmd_seq.
+     *
+     * Terminal status handling:
+     * - TST_READY / TST_TOO_MANY — resolved addresses are read from results[], same as a
+     *   regular scan.
+     * - TST_NO_MATCH — returned as a normal (non-error) ScanResult with count == 0 so the
+     *   caller can distinguish "no hits" from a protocol error.
+     * - TST_SCANNING — intermediate progress tick; keep waiting (same as runScanCommand).
+     * - TST_ERROR / anything else — treated as error.
+     *
+     * [MappedByteBuffer.put(index, byte)] does NOT alter the buffer position and is safe
+     * to call from the coroutine's IO thread while the mutex is held.
+     */
+    private suspend fun runAobScanCommand(
+        pattern: ByteArray,
+        mask: ByteArray,
+        dataOffset: Long,
+        vtype: Int,
+    ): ScanResult = mutex.withLock {
+        val buf = shm
+
+        val version = buf.getInt(OFF_PROTO_VERSION)
+        if (version != 0 && version != TrainerProto.TRAINER_PROTO_VERSION) {
+            return@withLock ScanResult.error("Proto version mismatch")
+        }
+
+        val oldRespSeq = buf.getInt(OFF_RESP_SEQ)
+
+        // Write standard command params
+        buf.putInt(OFF_CMD, TrainerProto.TCMD_AOB_SCAN)
+        buf.putInt(OFF_CMD_VTYPE, vtype)
+        buf.putInt(OFF_CMD_FILTER, TrainerProto.TFLT_EXACT)
+        buf.putLong(OFF_CMD_ADDR, dataOffset)  // doubles as signed data offset for AOB_SCAN
+        buf.putLong(OFF_CMD_VALUE, 0L)
+
+        // Write AOB pattern block (off 768+) — absolute index puts, position-safe
+        buf.putInt(OFF_CMD_PATTERN_LEN, pattern.size)
+        // cmd_patch_len left as-is (reserved, worker ignores for AOB_SCAN)
+        for (i in pattern.indices) {
+            buf.put(OFF_CMD_PATTERN + i, pattern[i])
+        }
+        for (i in mask.indices) {
+            buf.put(OFF_CMD_MASK + i, mask[i])
+        }
+
+        // Bump cmd_seq — "ring the doorbell" — must happen AFTER all param writes
+        val newCmdSeq = buf.getInt(OFF_CMD_SEQ) + 1
+        buf.putInt(OFF_CMD_SEQ, newCmdSeq)
+
+        val deadline = System.currentTimeMillis() + TIMEOUT_SCAN_MS
+        // Track the last resp_seq we observed so we detect each new bump from the worker
+        // (including intermediate TST_SCANNING progress ticks).
+        var lastSeq = oldRespSeq
+        while (System.currentTimeMillis() < deadline) {
+            delay(POLL_INTERVAL_MS)
+            // Update the progress flow so UI can display a progress bar
+            _progress.value = buf.getInt(OFF_RESP_PROGRESS)
+
+            val curRespSeq = buf.getInt(OFF_RESP_SEQ)
+            if (curRespSeq != lastSeq) {
+                lastSeq = curRespSeq
+                val status = buf.getInt(OFF_RESP_STATUS)
+
+                // Intermediate progress tick — not the final response. Keep waiting.
+                if (status == TrainerProto.TST_SCANNING) {
+                    continue
+                }
+
+                val count = buf.getInt(OFF_RESP_COUNT)
+                val errCode = buf.getInt(OFF_RESP_ERROR)
+
+                _progress.value = 100
+
+                return@withLock when (status) {
+                    TrainerProto.TST_READY, TrainerProto.TST_TOO_MANY -> {
+                        val cap = minOf(count, TrainerProto.TRAINER_RESULT_CAP)
+                        val addresses = LongArray(cap) { i ->
+                            buf.getLong(OFF_RESULTS + i * Long.SIZE_BYTES)
+                        }
+                        ScanResult(
+                            status = status,
+                            count = count,
+                            addresses = addresses,
+                            tooMany = status == TrainerProto.TST_TOO_MANY,
+                            errorCode = 0,
+                        )
+                    }
+                    TrainerProto.TST_NO_MATCH -> {
+                        // Zero matches — valid terminal state, not an error
+                        ScanResult(
+                            status = TrainerProto.TST_NO_MATCH,
+                            count = 0,
+                            addresses = LongArray(0),
+                            tooMany = false,
+                            errorCode = 0,
+                        )
+                    }
+                    TrainerProto.TST_ERROR -> ScanResult.error("Worker error code $errCode", errCode)
+                    else -> ScanResult.error("Unexpected status $status")
+                }
+            }
+        }
+
+        _progress.value = 0
+        ScanResult.error("Timeout waiting for AOB scan response (${TIMEOUT_SCAN_MS}ms)")
+    }
+
     // -------------------------------------------------------------------------
     // Companion — factory
     // -------------------------------------------------------------------------
@@ -358,6 +607,11 @@ class TrainerShm private constructor(
 
         // All other commands are fast (read/write/freeze/unfreeze/reset/ping)
         private const val TIMEOUT_SHORT_MS = 2_000L
+
+        // connect() retry policy — the native worker may take a moment to claim
+        // ownership and write proto_version after game launch; retry patiently.
+        private const val CONNECT_ATTEMPTS = 5
+        private const val CONNECT_RETRY_DELAY_MS = 200L
 
         // ---- Byte offsets mirrored from trainer_protocol.h (OFF_* table) ----
         // proto_version  @ 0  (int32)
@@ -386,15 +640,41 @@ class TrainerShm private constructor(
         private const val OFF_RESP_COUNT = 52
         // resp_value     @ 56 (int64)
         private const val OFF_RESP_VALUE = 56
-        // results[0]     @ 64 (int64[TRAINER_RESULT_CAP])
+        // results[0]     @ 64 (int64[TRAINER_RESULT_CAP])  ; ends at 576
         private const val OFF_RESULTS = 64
+        // owner_pid      @ 576 (int32) — native CAS's 0->pid for single-owner arbitration (v3)
+        internal const val OFF_OWNER_PID = 576
+        // owner_heartbeat @ 580 (int32) — native increments every ~50ms while alive (v3)
+        internal const val OFF_OWNER_HEARTBEAT = 580
+        // cmd_pattern_len @ 768 (int32) — active AOB signature length (<= TRAINER_PATTERN_CAP)
+        private const val OFF_CMD_PATTERN_LEN = 768
+        // cmd_patch_len   @ 772 (int32) — reserved for TCMD_PATCH
+        private const val OFF_CMD_PATCH_LEN = 772
+        // cmd_pattern     @ 776 (uint8[256]) — AOB signature bytes ; ends at 1032
+        private const val OFF_CMD_PATTERN = 776
+        // cmd_mask        @ 1032 (uint8[256]) — 0xFF=must-match, 0x00=wildcard ; ends at 1288
+        private const val OFF_CMD_MASK = 1032
 
         /**
          * Create a [TrainerShm] instance for the given app [context].
          *
-         * Returns null if the mmap fails (feature disabled, lib not loaded yet,
-         * permissions issue).  Callers should treat null as "feature unavailable"
-         * rather than an unrecoverable error.
+         * Returns null only on a real mmap / IO failure (feature disabled, lib not
+         * loaded, permissions issue).  Callers should treat null as "feature
+         * unavailable" rather than an unrecoverable error.
+         *
+         * **Stale-proto-version handling:** if a trainer.mem file was left on disk
+         * from a previous app version with an older proto_version (e.g. 1 or 2) the
+         * runCommand gate (`version != 0 && version != TRAINER_PROTO_VERSION`) would
+         * reject every command with the new version (3).  To prevent this we reset
+         * proto_version to 0 when the on-disk value is present but does NOT match
+         * the current version.  The native worker overwrites it with 3 once it
+         * claims ownership, so the gate will then accept commands normally.
+         *
+         * Note: only proto_version is zeroed here.  The native side owns
+         * owner_pid / owner_heartbeat arbitration; Android MUST NOT write those.
+         *
+         * After create(), callers MUST call [TrainerShm.connect] to establish
+         * availability and wait for the native worker to initialise.
          */
         fun create(context: Context): TrainerShm? {
             return try {
@@ -411,6 +691,18 @@ class TrainerShm private constructor(
                     TrainerProto.TRAINER_SHM_SIZE.toLong(),
                 )
                 buf.order(ByteOrder.LITTLE_ENDIAN)
+
+                // Stale proto-version check: if the on-disk value is non-zero but does
+                // not match the current protocol version, zero it so the command gate
+                // treats the header as "uninitialised — wait for the native worker to
+                // set it" rather than "version mismatch — reject all commands".
+                // Do NOT touch owner_pid or owner_heartbeat — the native side owns those.
+                val onDiskVersion = buf.getInt(OFF_PROTO_VERSION)
+                if (onDiskVersion != 0 && onDiskVersion != TrainerProto.TRAINER_PROTO_VERSION) {
+                    Log.i(TAG, "Stale proto_version $onDiskVersion on disk; resetting to 0 so worker can re-claim")
+                    buf.putInt(OFF_PROTO_VERSION, 0)
+                }
+
                 TrainerShm(buf, raf)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to create trainer shm — trainer feature disabled", e)
@@ -434,10 +726,12 @@ class TrainerShm private constructor(
 object TrainerProto {
 
     // ---- Wire constants ----
-    const val TRAINER_PROTO_VERSION: Int = 1
+    const val TRAINER_PROTO_VERSION: Int = 3
     const val TRAINER_SHM_SIZE: Int = 4096
     const val TRAINER_RESULT_CAP: Int = 64
     const val TRAINER_FREEZE_CAP: Int = 32
+    /** Max bytes in an AOB pattern / mask (mirrors TRAINER_PATTERN_CAP in trainer_protocol.h). */
+    const val TRAINER_PATTERN_CAP: Int = 256
 
     // ---- enum trainer_vtype ----
     const val TVT_NONE: Int = 0
@@ -462,6 +756,13 @@ object TrainerProto {
     const val TCMD_UNFREEZE: Int = 6
     const val TCMD_RESET: Int = 7
     const val TCMD_PING: Int = 8
+    /** Scan r-x + rw regions for a byte-pattern; cmd_addr is a signed data offset applied
+     *  to each hit to yield the address surfaced in results[]. */
+    const val TCMD_AOB_SCAN: Int = 9
+    /** RESERVED — write cmd_patch_len bytes (cmd_pattern) to cmd_addr (snapshot for RESTORE). */
+    const val TCMD_PATCH: Int = 10
+    /** RESERVED — restore bytes saved by a prior PATCH; cmd_addr == 0 restores all. */
+    const val TCMD_RESTORE: Int = 11
 
     // ---- enum trainer_filter ----
     const val TFLT_EXACT: Int = 0
@@ -476,6 +777,56 @@ object TrainerProto {
     const val TST_SCANNING: Int = 2
     const val TST_ERROR: Int = 3
     const val TST_TOO_MANY: Int = 4
+    /** AOB_SCAN found zero matches (resp_count == 0). Not an error — the caller checks count. */
+    const val TST_NO_MATCH: Int = 5
+
+    // ---- AOB parsing helper ----
+
+    /**
+     * Parse a CheatEngine-style AOB string into a (pattern, mask) pair ready for
+     * [TrainerShm.aobScan].
+     *
+     * Format: space-separated tokens. Each token is one of:
+     * - A two-hex-digit byte: `"48"`, `"8B"`, `"0f"` (upper- or lower-case).
+     *   Produces pattern byte = parsed value, mask byte = 0xFF.
+     * - A wildcard: `"?"`, `"??"`, or `"*"`.
+     *   Produces pattern byte = 0x00, mask byte = 0x00.
+     *
+     * Multiple consecutive spaces and surrounding whitespace are tolerated.
+     *
+     * Returns null if:
+     * - Any token does not match a two-hex-digit byte or a recognised wildcard.
+     * - The resulting sequence is empty.
+     * - The resulting sequence exceeds [TRAINER_PATTERN_CAP] bytes.
+     *
+     * Example:
+     * ```
+     * val (pat, mask) = TrainerProto.parseAob("48 8B 05 ?? ?? ?? ?? 48") ?: return
+     * ```
+     */
+    fun parseAob(aob: String): Pair<ByteArray, ByteArray>? {
+        val tokens = aob.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (tokens.isEmpty() || tokens.size > TRAINER_PATTERN_CAP) return null
+
+        val patternBytes = ByteArray(tokens.size)
+        val maskBytes = ByteArray(tokens.size)
+
+        for ((i, token) in tokens.withIndex()) {
+            when {
+                token == "?" || token == "??" || token == "*" -> {
+                    patternBytes[i] = 0x00.toByte()
+                    maskBytes[i] = 0x00.toByte()
+                }
+                token.length == 2 && token.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' } -> {
+                    patternBytes[i] = token.toInt(16).toByte()
+                    maskBytes[i] = 0xFF.toByte()
+                }
+                else -> return null  // malformed token
+            }
+        }
+
+        return Pair(patternBytes, maskBytes)
+    }
 
     // ---- Value encoding helpers ----
 

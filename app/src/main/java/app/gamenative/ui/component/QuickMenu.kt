@@ -380,6 +380,32 @@ fun QuickMenu(
     val macroShm = remember {
         if (PrefManager.macroEnabled) MacroShm.create(context) else null
     }
+    // ProxyCtrl drives the in-game cheat DLL (one-tap pointer_chain/static cheats).
+    // It writes a control file into the running game's folder, so it's keyed to the
+    // game dir derived from the container id. Null if no game / dir unavailable.
+    val proxyCtrl = remember(container?.id) {
+        val cid = container?.id
+        if (cid != null && PrefManager.trainerEnabled) {
+            try {
+                val gid = app.gamenative.utils.ContainerUtils.extractGameIdFromContainerId(cid)
+                app.gamenative.cheats.ProxyCtrl.create(app.gamenative.service.SteamService.getAppDirPath(gid))
+            } catch (e: Exception) {
+                null
+            }
+        } else null
+    }
+
+    // Establish the trainer IPC connection. TrainerShm.create() only mmaps the
+    // shared file; `available` stays false until a PING round-trips to the native
+    // worker. The worker may need a moment after game launch to claim shm
+    // ownership and start its thread, so connect() retries. Without this the
+    // Cheats tab would never see available==true and every command would time
+    // out (the real "no cheat works" bug). Re-attempt whenever the menu opens.
+    LaunchedEffect(trainerShm, isVisible) {
+        if (trainerShm != null && isVisible && !trainerShm.available) {
+            trainerShm.connect()
+        }
+    }
 
     val visibleState = remember { MutableTransitionState(false) }
     visibleState.targetState = isVisible
@@ -685,6 +711,7 @@ fun QuickMenu(
                                             speedHackShm = speedHackShm,
                                             macroShm = macroShm,
                                             appId = container?.id,
+                                            proxyCtrl = proxyCtrl,
                                             focusRequester = trainerItemFocusRequester,
                                             modifier = Modifier.fillMaxSize(),
                                         )

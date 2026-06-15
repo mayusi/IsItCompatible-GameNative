@@ -149,6 +149,7 @@ fun TrainerTab(
     speedHackShm: SpeedHackShm?,
     macroShm: MacroShm?,
     appId: String? = null,
+    proxyCtrl: app.gamenative.cheats.ProxyCtrl? = null,
     focusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -248,6 +249,7 @@ fun TrainerTab(
                 CheatTab(
                     appId = appId,
                     trainerShm = trainerShm,
+                    proxyCtrl = proxyCtrl,
                     focusRequester = null,
                 )
             }

@@ -357,24 +357,80 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         // FIX 1b: Tell libtrainer which process is the actual game so it activates
         // ONLY there, not in wineserver/explorer/services that also inherit LD_PRELOAD.
         //
-        // guestExecutable is the raw command string set by the caller (e.g.
-        // "wine explorer /desktop=shell,... \"C:\\Games\\dmc3.exe\"").  We try to
-        // extract the last Windows .exe leaf from it so the native gate can match
-        // the actual game process by name.
+        // Source priority:
+        //   1. container.getExecutablePath() — the canonical relative path stored on the
+        //      container (e.g. "steamapps/common/DMC3/dmc3.exe").  This is populated by
+        //      XServerScreen before start() is called and is the most reliable source for
+        //      BOTH direct and Steam/loader launches.  We take only the basename.
+        //   2. SteamService.getInstalledExe(appId) — queries the PICS manifest for the
+        //      best Windows launch exe.  Used when executablePath is empty and we have a
+        //      numeric steamAppId (Steam-loader case where executablePath hasn't been
+        //      written yet).
+        //   3. Rightmost ".exe" scan of guestExecutable — last resort for non-Steam,
+        //      non-container launches (custom games, etc.).
         //
-        // If this is a Steam/loader launch (guestExecutable contains "steamclient"
-        // or "steam_loader" but not a direct game .exe), we leave TRAINER_TARGET_EXE
-        // empty so libtrainer uses its deny-list + ".exe" heuristic instead.
+        // We NEVER blank TRAINER_TARGET_EXE just because guestExecutable contains
+        // "steam" — that was the bug that left DMC empty on Steam-loader launches.
+        // The ONLY case for an empty TRAINER_TARGET_EXE is when no real game exe
+        // name can be determined at all (libtrainer falls back to its heuristic).
         {
             String trainerTargetExe = "";
-            if (guestExecutable != null && !guestExecutable.isEmpty()) {
-                // Find the rightmost Windows .exe (case-insensitive) in the command.
-                // E.g. from: wine explorer /desktop=... "C:\Games\dmc3.exe"
-                // we want:  dmc3.exe
+            String trainerSource = "none";
+
+            // --- Source 1: container.executablePath basename ---
+            try {
+                if (container != null) {
+                    String containerExePath = container.getExecutablePath();
+                    if (containerExePath != null && !containerExePath.isEmpty()) {
+                        // getExecutablePath() returns a relative path like
+                        // "steamapps/common/DMC3/dmc3.exe" or "game\dmc3.exe".
+                        // Extract just the leaf filename.
+                        String leaf = containerExePath;
+                        int lastSlash = Math.max(leaf.lastIndexOf('/'), leaf.lastIndexOf('\\'));
+                        if (lastSlash >= 0) leaf = leaf.substring(lastSlash + 1);
+                        leaf = leaf.toLowerCase();
+                        if (!leaf.isEmpty() && leaf.endsWith(".exe")) {
+                            trainerTargetExe = leaf;
+                            trainerSource = "container.executablePath";
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                Log.w("BionicProgramLauncherComponent",
+                      "TRAINER_TARGET_EXE: container.executablePath lookup threw", t);
+            }
+
+            // --- Source 2: SteamService.getInstalledExe(appId) ---
+            // Only consulted when source 1 was empty and we have a numeric Steam appId.
+            if (trainerTargetExe.isEmpty() && steamAppId != null && !steamAppId.isEmpty()) {
+                try {
+                    int appIdInt = Integer.parseInt(steamAppId);
+                    String installedExe = SteamService.Companion.getInstalledExe(appIdInt);
+                    if (installedExe != null && !installedExe.isEmpty()) {
+                        // getInstalledExe returns a relative path; take the basename.
+                        String leaf = installedExe;
+                        int lastSlash = Math.max(leaf.lastIndexOf('/'), leaf.lastIndexOf('\\'));
+                        if (lastSlash >= 0) leaf = leaf.substring(lastSlash + 1);
+                        leaf = leaf.toLowerCase();
+                        if (!leaf.isEmpty() && leaf.endsWith(".exe")) {
+                            trainerTargetExe = leaf;
+                            trainerSource = "SteamService.getInstalledExe(" + appIdInt + ")";
+                        }
+                    }
+                } catch (NumberFormatException nfe) {
+                    // steamAppId is not numeric — skip silently.
+                } catch (Throwable t) {
+                    Log.w("BionicProgramLauncherComponent",
+                          "TRAINER_TARGET_EXE: SteamService.getInstalledExe threw", t);
+                }
+            }
+
+            // --- Source 3: rightmost .exe scan of guestExecutable (last resort) ---
+            if (trainerTargetExe.isEmpty() && guestExecutable != null && !guestExecutable.isEmpty()) {
                 String lower = guestExecutable.toLowerCase();
                 int lastExe = lower.lastIndexOf(".exe");
                 if (lastExe >= 0) {
-                    // Walk backward from the '.exe' to find the start of the filename
+                    // Walk backward from '.exe' to find the start of the filename.
                     int nameStart = lastExe;
                     while (nameStart > 0) {
                         char c = guestExecutable.charAt(nameStart - 1);
@@ -382,20 +438,25 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
                         nameStart--;
                     }
                     String candidate = guestExecutable.substring(nameStart, lastExe + 4).toLowerCase();
-                    // Skip generic Wine infrastructure exes — if the only .exe we
-                    // find is wine/explorer/start/steam, leave target empty and rely
-                    // on the heuristic.
+                    // Skip Wine infrastructure exes that are never the real game target.
+                    // NOTE: we deliberately do NOT skip "steam*" here — if the only .exe
+                    // we can find at all is a steam loader, that is still better than empty.
                     boolean isInfra = candidate.equals("wine") || candidate.equals("wine64")
                             || candidate.equals("explorer.exe") || candidate.equals("start.exe")
-                            || candidate.startsWith("steam") || candidate.equals("wineboot.exe");
+                            || candidate.equals("wineboot.exe");
                     if (!isInfra) {
                         trainerTargetExe = candidate;
+                        trainerSource = "guestExecutable-scan";
                     }
                 }
             }
+
             envVars.put("TRAINER_TARGET_EXE", trainerTargetExe);
             Log.d("BionicProgramLauncherComponent",
-                  "TRAINER_TARGET_EXE='" + trainerTargetExe + "' (guestExecutable='" + guestExecutable + "')");
+                  "TRAINER_TARGET_EXE='" + trainerTargetExe + "' (source=" + trainerSource
+                  + ", containerExePath='" + (container != null ? container.getExecutablePath() : "null")
+                  + "', steamAppId='" + steamAppId + "'"
+                  + ", guestExecutable='" + guestExecutable + "')");
         }
 
         // ---- SpeedHack env vars ----

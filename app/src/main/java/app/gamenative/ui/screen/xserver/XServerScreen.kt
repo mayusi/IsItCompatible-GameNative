@@ -3219,6 +3219,17 @@ private fun setupXEnvironment(
         } catch (e: Exception) {
             Timber.tag("GameFixes").w(e, "Game fixes failed before launch")
         }
+        // One-tap cheats: if this game has a cheat table, drop our in-game cheat DLL
+        // into the game folder + set WINEDLLOVERRIDES so it loads. No-op for games
+        // without a table. Never throws into the launch path (CheatStager guards all).
+        try {
+            app.gamenative.cheats.CheatStager.stage(
+                context, container, appId,
+                app.gamenative.utils.ContainerUtils.extractGameIdFromContainerId(appId),
+            )
+        } catch (e: Exception) {
+            Timber.tag("CheatStager").w(e, "Cheat staging failed before launch")
+        }
         if (container.startupSelection == Container.STARTUP_SELECTION_AGGRESSIVE) {
             if (container.containerVariant.equals(Container.BIONIC)){
                 Timber.d("Incorrect startup selection detected. Reverting to essential startup selection")

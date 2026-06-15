@@ -84,49 +84,131 @@
       "source": "STEAM",
       "gameId": "631510",
       "title": "Devil May Cry HD Collection",
-      "_comment": "AppID 631510 covers the entire HD Collection: DMC1, DMC2, and DMC3 Special Edition. The trainer matches by appId so this table applies regardless of which game in the collection is active. Red Orbs and Vitality are integer values in all three games — the original PS2 ports store these as plain 32-bit integers. Style Points (SSS rank meter) scans similarly. DT (Devil Trigger) gauge is also integer.",
+      "_comment": "AppID 631510 covers the HD Collection (DMC1/2/3 SE). All cheats target DMC3 SE (dmc3.exe, x64). DATA TYPES: HP and DT are float32 (one gauge bar ~= 1000.0; full HP 3000.0-20000.0 with upgrades; DT ~3000.0 per bar). Red Orbs are uint32. APPROACH: the [RELIABLE] guided_known freeze cheats use the proven scan->freeze engine with NO dependence on Box64 dynarec SMC handling (the only thing that worked end-to-end on-device). The [EXPERIMENTAL] aob_patch cheats are true one-tap NOPs that may fail silently under Box64 dynarec if the JIT cached the pre-patch block — try them, but if HP/DT still drains use the freeze cheats. Pointer chain (for a future true-one-tap data freeze, NOT yet implemented): actorBase = *(dmc3.exe+0xC90DF8 -> +0x28); HP @ actorBase+0x411C, DT @ actorBase+0x3EB8 (source serpentiem/ddmk Mary/Memory.ixx + Mary/Training.ixx, fork berthrage/DMC3-Crimson). NOP sites verified from ddmk Training.ixx.",
       "cheats": [
         {
-          "id": "dmc_orbs",
-          "name": "Lots of Red Orbs",
+          "id": "dmc3_hp_onetap",
+          "name": "Infinite Vitality (DMC3) — One-Tap",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "pointer_chain",
+            "prompt": "One-tap: keeps your Vitality at max. Works in-mission.",
+            "narrowPrompt": null,
+            "freezeValue": null,
+            "_comment": "VERIFIED ON-DEVICE (2026-06-15): in-game proxy dinput8.dll resolves actor = *(*(dmc3.exe+0xC90E28)+0x18), writes HP@+0x411C = maxHP@+0x40EC every 16ms. dmc3diag read HP=5300/6000, freeze held through enemy hits. writeMax keeps the bar full without over-range glitching."
+          },
+          "chain": {
+            "module": "dmc3.exe",
+            "base": "0xC90E28",
+            "offsets": ["0x18"],
+            "valueOffset": "0x411C",
+            "writeMax": true,
+            "maxOffset": "0x40EC"
+          },
+          "aob": null
+        },
+        {
+          "id": "dmc3_dt_onetap",
+          "name": "Infinite Devil Trigger (DMC3) — One-Tap",
+          "category": "combat",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "pointer_chain",
+            "prompt": "One-tap: keeps your Devil Trigger gauge full (once you have DT runes).",
+            "narrowPrompt": null,
+            "freezeValue": null,
+            "_comment": "Same proven actor chain as HP: DT@+0x3EB8 = maxDT@+0x3EBC every tick. Only takes effect once you have at least one DT rune (maxDT>0); the engine skips the write when maxDT is 0 so it never forces a fake gauge."
+          },
+          "chain": {
+            "module": "dmc3.exe",
+            "base": "0xC90E28",
+            "offsets": ["0x18"],
+            "valueOffset": "0x3EB8",
+            "writeMax": true,
+            "maxOffset": "0x3EBC"
+          },
+          "aob": null
+        },
+        {
+          "id": "dmc3_hp_freeze",
+          "name": "Infinite Vitality (DMC3) — Value Freeze [guided]",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Vitality gauge (the orange bar). One full bar = 1000. If you have 3 bars, enter 3000. For partial HP, estimate from the bars (e.g. 2.5 bars ~ 2500). Enter a whole number.",
+            "narrowPrompt": "Take a hit so your HP drops, then re-read the gauge and enter the new lower value. Repeat until narrowed to a few matches.",
+            "freezeValue": 20000,
+            "_comment": "RELIABLE — proven scan->freeze engine, architecture-agnostic, no dynarec dependency. HP is f32, one bar ~1000.0, max ~20000.0 fully upgraded. Freeze at 20000 locks near max. If freeze looks odd, lower to 3000 (1 bar)."
+          },
+          "aob": null
+        },
+        {
+          "id": "dmc3_dt_freeze",
+          "name": "Infinite Devil Trigger (DMC3) — Value Freeze [RELIABLE]",
+          "category": "combat",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Activate Devil Trigger briefly then cancel it and look at your DT gauge. Each DT orb/star ~ 1000. If you have 3 DT orbs, enter 3000. Enter the current DT as a whole number.",
+            "narrowPrompt": "Let DT drain a little (activate DT for a second), then enter the new lower value.",
+            "freezeValue": 3000,
+            "_comment": "RELIABLE — proven scan->freeze, architecture-agnostic. DT is f32 at actorBase+0x3EB8. One DT star ~1000.0. Freeze 3000 = always-full 3-star DT; raise if more stars unlocked."
+          },
+          "aob": null
+        },
+        {
+          "id": "dmc3_orbs",
+          "name": "Lots of Red Orbs (guided) [RELIABLE]",
           "category": "resources",
           "vtype": "i32",
           "recipe": {
             "kind": "guided_known",
-            "prompt": "Look at your Red Orbs count in the HUD (top-left area). Enter the exact number shown.",
+            "prompt": "Look at your Red Orbs count in the top-left HUD. Enter the exact number shown.",
             "narrowPrompt": "Kill an enemy or break an object to collect some orbs so the number changes, then enter the new total.",
             "freezeValue": 999999,
-            "_comment": "Red Orbs are stored as a plain i32. Community Cheat Engine tables (fearlessrevolution, Nexus) confirm i32 scan narrows quickly. Applies to DMC1/2/3 in the HD Collection."
+            "_comment": "RELIABLE — Red Orbs = uint32 at MissionData+0x38 (per-mission dynamic alloc, no static chain under Box64 ASLR), so guided i32 scan. Narrows quickly. Applies across DMC1/2/3."
           },
           "aob": null
         },
         {
-          "id": "dmc_health",
-          "name": "Infinite Vitality (Health)",
+          "id": "dmc3_hp_nop",
+          "name": "Infinite Vitality — NOP patch [EXPERIMENTAL]",
           "category": "survivability",
-          "vtype": "i32",
+          "vtype": "f32",
           "recipe": {
-            "kind": "guided_known",
-            "prompt": "Note your current Vitality bar value. The maximum is typically 1000 for a full bar. Enter your current HP as shown (look for 'Vitality' in the menu, or count your health bar segments — each full segment is roughly 200 HP out of 1000).",
-            "narrowPrompt": "Take a hit from an enemy so your Vitality drops, then enter the new lower value.",
-            "freezeValue": 1000,
-            "_comment": "DMC HD Collection stores vitality as i32 with a range of 0-1000 (or 0-2000 with max upgrades). The segment display maps to these integer values. Freezing at 1000 keeps one full health bar permanently."
+            "kind": "aob_patch",
+            "prompt": "One-tap: NOPs the main HP-drain instruction so damage stops subtracting Vitality. EXPERIMENTAL under Box64 dynarec — if HP still drains, use the [RELIABLE] freeze cheat instead.",
+            "narrowPrompt": null,
+            "freezeValue": null,
+            "_comment": "EXPERIMENTAL aob_patch. Source ddmk Training.ixx ToggleInfiniteHitPoints site 1 (dmc3.exe+0x88517). Sig 'subss xmm0,xmm8' (5B) + 'movss [rax+08],xmm0' = unique 10B window. Patch 5x NOP at offset 0."
           },
-          "aob": null
+          "aob": {
+            "pattern": "F3 41 0F 5C C0 F3 0F 11 40 08",
+            "offset": 0,
+            "vtype": "f32",
+            "patchBytes": "90 90 90 90 90"
+          }
         },
         {
-          "id": "dmc_dt",
-          "name": "Infinite Devil Trigger",
+          "id": "dmc3_dt_nop_charge",
+          "name": "Infinite Devil Trigger — NOP patch [EXPERIMENTAL]",
           "category": "combat",
-          "vtype": "i32",
+          "vtype": "f32",
           "recipe": {
-            "kind": "guided_known",
-            "prompt": "Activate Devil Trigger briefly then cancel it so your DT gauge drops slightly. Count your current DT stars (DMC3) or note the DT meter value. Enter the number of filled stars (1-8) or the gauge value if visible.",
-            "narrowPrompt": "Use DT again so more gauge drains, then enter the new star count or gauge value.",
-            "freezeValue": 8,
-            "_comment": "Devil Trigger gauge is stored as an i32 counter (0-8 stars in DMC3). Freezing at 8 keeps maximum DT available. DMC1 DT gauge is similarly integer-based. May need 2-3 passes due to small range."
+            "kind": "aob_patch",
+            "prompt": "One-tap: NOPs the DT charge-drain so the gauge stops depleting when using Devil Trigger. EXPERIMENTAL under Box64 dynarec — if DT still drains, use the [RELIABLE] freeze cheat instead.",
+            "narrowPrompt": null,
+            "freezeValue": null,
+            "_comment": "EXPERIMENTAL. Source ddmk Training.ixx ToggleInfiniteMagicPoints site 2 (dmc3.exe+0x1E788A). 'subss xmm0,xmm1' (4B) + 'movss [rdi+0x3EB8],xmm0' — embedded 0x3EB8 (B8 3E 00 00) makes this 12B sig uniquely match once. Patch 4x NOP over the subss."
           },
-          "aob": null
+          "aob": {
+            "pattern": "F3 0F 5C C1 F3 0F 11 87 B8 3E 00 00",
+            "offset": 0,
+            "vtype": "f32",
+            "patchBytes": "90 90 90 90"
+          }
         }
       ]
     },
