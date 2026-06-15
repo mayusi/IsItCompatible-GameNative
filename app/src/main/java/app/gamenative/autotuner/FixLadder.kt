@@ -39,6 +39,7 @@ object FixLadder {
         WMV_CODEC,
         D3D_COMPILER,
         D3D12_UNSUPPORTED,
+        STEAM_INIT_FAILED,
         STEAM_OVERLAY,
         EOS_CRASH,
         MSVC_MISSING,

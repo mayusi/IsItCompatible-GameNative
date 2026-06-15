@@ -54,6 +54,27 @@ object WineLogClassifier {
                 (joined.contains("fixme:vkd3d") && joined.contains(Regex("(?i)(fail|error|unsupported|not present)"))) ->
                 FixLadder.FailureClass.D3D12_UNSUPPORTED
 
+            // Steam API / Steam client initialisation failure.
+            //
+            // FALSE-POSITIVE GUARDS: do NOT match bare "Steam" or "SteamGameId" — the launcher
+            // sets SteamGameId=0 on every launch and Wine fixme lines mention Steam constantly.
+            // Only the specific high-signal tokens below are matched.
+            //
+            // Note: the game's own "Could not initialize Steam" MessageBox may be app-rendered
+            // (not always on stderr), so we also key off the lsteamclient/steamclient bridge
+            // failures that precede it.  STEAM_INIT_FAILED is placed BEFORE STEAM_OVERLAY
+            // because init failure is the root cause; overlay crashes are a later symptom.
+            joined.contains("SteamAPI_Init() failed", ignoreCase = true) ||
+                joined.contains("Steam must be running to play this game", ignoreCase = true) ||
+                joined.contains("Could not initialize Steam", ignoreCase = true) ||
+                joined.contains("SteamAPI_RestartAppIfNecessary", ignoreCase = true) ||
+                (joined.contains("lsteamclient", ignoreCase = true) &&
+                    joined.contains("steamclient_main.c") &&
+                    joined.contains("Assertion")) ||
+                (joined.contains("steamclient", ignoreCase = true) &&
+                    joined.contains(Regex("(?i)(failed to load|dlopen FAILED|not found|init.*fail)"))) ->
+                FixLadder.FailureClass.STEAM_INIT_FAILED
+
             // Steam overlay crash
             joined.contains("GameOverlayRenderer64") ||
                 joined.contains("GameOverlayRenderer.dll") ->
