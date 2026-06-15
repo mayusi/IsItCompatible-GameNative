@@ -35,6 +35,19 @@
             "_comment": "Small-range value -> may need 2-3 narrow passes; the UI loops scanNext until few matches remain."
           },
           "aob": null
+        },
+        {
+          "id": "hk_soul",
+          "name": "Soul",
+          "category": "combat",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Soul has no on-screen number. If you can't read a number, use the DIY scanner instead. Internally Soul is 0-198 (the display 0-99 doubled), so enter the display value times 2 (e.g. display 66 -> enter 132).",
+            "narrowPrompt": "Cast a spell or collect soul to change the amount, then enter the new internal value (display value x 2).",
+            "freezeValue": 198
+          },
+          "aob": null
         }
       ]
     },
@@ -63,18 +76,96 @@
       "source": "STEAM",
       "gameId": "1145360",
       "title": "Hades",
+      "_comment": "MonoGame .NET/FNA (not Unity) — ALL economy values + HP are stored as f64 (Double), exe Hades.exe. Guided scan (user enters the on-screen value once) is the reliable recipe for this managed runtime.",
       "cheats": [
         {
           "id": "hades_health",
           "name": "Infinite Health",
           "category": "survivability",
-          "vtype": "f32",
+          "vtype": "f64",
           "recipe": {
             "kind": "guided_known",
-            "prompt": "Read your current HP (the number on the health bar) and enter it.",
-            "narrowPrompt": "Take a hit so HP drops, then enter the new HP value.",
-            "freezeValue": 200,
-            "_comment": "Hades stores HP as a float (f32) — the UI encodes the entered value via floatToRawBits before scanning."
+            "prompt": "Look at the HP number on your health bar (top-left during a run). Enter that exact number.",
+            "narrowPrompt": "Take a hit to reduce HP, then enter the new number shown on the health bar.",
+            "freezeValue": 200
+          },
+          "aob": null
+        },
+        {
+          "id": "hades_darkness",
+          "name": "Lots of Darkness",
+          "category": "resources",
+          "vtype": "f64",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open the Mirror of Night in the House of Hades. Read your Darkness total shown there and enter it.",
+            "narrowPrompt": "Spend or earn some Darkness, then enter the updated total shown at the Mirror.",
+            "freezeValue": 999999
+          },
+          "aob": null
+        },
+        {
+          "id": "hades_gems",
+          "name": "Lots of Gemstones",
+          "category": "resources",
+          "vtype": "f64",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Check your Gemstones total in the Resource Broker or House of Hades currency display. Enter that number.",
+            "narrowPrompt": "Spend or collect a Gemstone to change the count, then enter the new total.",
+            "freezeValue": 999999
+          },
+          "aob": null
+        },
+        {
+          "id": "hades_diamonds",
+          "name": "Lots of Diamonds",
+          "category": "resources",
+          "vtype": "f64",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Check your Diamond count in the Resource Broker. Enter that exact number.",
+            "narrowPrompt": "Spend or earn a Diamond, then enter the new count shown in the Broker.",
+            "freezeValue": 100
+          },
+          "aob": null
+        },
+        {
+          "id": "hades_titan_blood",
+          "name": "Lots of Titan Blood",
+          "category": "resources",
+          "vtype": "f64",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Check your Titan Blood count in the Resource Broker. Enter that exact number.",
+            "narrowPrompt": "Spend or earn Titan Blood, then enter the new count shown in the Broker.",
+            "freezeValue": 100
+          },
+          "aob": null
+        },
+        {
+          "id": "hades_nectar",
+          "name": "Lots of Nectar",
+          "category": "resources",
+          "vtype": "f64",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Check your Nectar count in the Resource Broker. Enter that exact number.",
+            "narrowPrompt": "Gift or collect a Nectar to change the count, then enter the new total.",
+            "freezeValue": 100
+          },
+          "aob": null
+        },
+        {
+          "id": "hades_keys",
+          "name": "Lots of Chthonic Keys",
+          "category": "resources",
+          "vtype": "f64",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Check your Chthonic Key count in the Resource Broker or Mirror. Enter that exact number.",
+            "narrowPrompt": "Spend or find a Key to change the count, then enter the new total.",
+            "freezeValue": 100
           },
           "aob": null
         }
@@ -281,6 +372,58 @@
             "_comment": "Terraria HP is stored as an i32. Max base HP is 400, max boosted is 500 with accessories. Freezing at 500 is safe."
           },
           "aob": null
+        },
+        {
+          "id": "terra_mana",
+          "name": "Infinite Mana",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at the blue mana stars in your HUD (top-right area). Read your current mana number and enter it.",
+            "narrowPrompt": "Use a spell to consume some mana, then enter the new mana value shown in the HUD.",
+            "freezeValue": 200
+          },
+          "aob": null
+        },
+        {
+          "id": "terra_defense",
+          "name": "High Defense",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open your inventory (Esc). Your Defense stat is shown near the armor slots. Enter that number.",
+            "narrowPrompt": "Equip or remove a piece of armor to change your Defense, then enter the new number shown.",
+            "freezeValue": 999
+          },
+          "aob": null
+        },
+        {
+          "id": "terra_gold",
+          "name": "Lots of Gold Coins (stack)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open inventory and hover over your Gold Coin stack. Enter the stack count shown (e.g. 47).",
+            "narrowPrompt": "Pick up or spend Gold Coins to change the stack size, then enter the new count.",
+            "freezeValue": 99
+          },
+          "aob": null
+        },
+        {
+          "id": "terra_ammo",
+          "name": "Infinite Ammo (selected slot)",
+          "category": "combat",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at the ammo stack count in your selected ammo slot (inventory or ammo bar). Enter that number.",
+            "narrowPrompt": "Fire a few shots to reduce the stack, then enter the new count shown on the ammo slot.",
+            "freezeValue": 999
+          },
+          "aob": null
         }
       ]
     },
@@ -417,7 +560,7 @@
       "source": "STEAM",
       "gameId": "1794680",
       "title": "Vampire Survivors",
-      "_comment": "Vampire Survivors stores Gold (permanent upgrade currency) and in-run gold as i32 values. HP is shown as a whole number on the HUD. Note: the game runs under Godot/Electron, so process memory is accessible. Community trainers confirm i32 for coins and HP.",
+      "_comment": "Vampire Survivors is a Unity IL2CPP game (since v1.6), exe VampireSurvivors.exe (NOT Godot/Electron). Permanent Gold + in-run gold are i32; HP is f32. Values live in the managed IL2CPP heap, so guided scan (enter the on-screen value once) is the reliable approach.",
       "cheats": [
         {
           "id": "vs_coins",
@@ -444,6 +587,19 @@
             "narrowPrompt": "Take damage from an enemy so your HP drops, then enter the new value.",
             "freezeValue": 500,
             "_comment": "Vampire Survivors HP is stored as f32 in most versions. Freezing at 500 keeps you well above death regardless of damage scaling."
+          },
+          "aob": null
+        },
+        {
+          "id": "vs_run_gold",
+          "name": "Lots of Gold (This Run)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at the gold counter shown during your run (top area of the screen). Enter that exact number.",
+            "narrowPrompt": "Pick up some gold coins in-run to increase the count, then enter the new number shown.",
+            "freezeValue": 99999
           },
           "aob": null
         }
