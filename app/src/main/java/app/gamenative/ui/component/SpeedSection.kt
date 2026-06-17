@@ -1,10 +1,5 @@
 package app.gamenative.ui.component
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -32,6 +27,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,30 +37,62 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import app.gamenative.PrefManager
 import app.gamenative.R
-import app.gamenative.trainer.SpeedHackShm
+import app.gamenative.cheats.SpeedhackControl
+import app.gamenative.trainer.TrainerShm
 import app.gamenative.ui.theme.PluviaTheme
+import kotlinx.coroutines.launch
 
 // Discrete multiplier stops exposed in the UI
 private val SPEED_PRESETS = listOf(0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f)
 
-/** Snap a raw slider value to the nearest preset. */
-private fun snapToPreset(raw: Float): Float =
-    SPEED_PRESETS.minByOrNull { kotlin.math.abs(it - raw) } ?: 1.0f
+/**
+ * Given a persisted multiplier, return the SPEED_PRESETS index whose value is closest
+ * to it (as a Float, ready to seed the slider). Used to re-seed the slider from the
+ * per-game saved speed so reopening the trainer shows the active multiplier instead of
+ * snapping back to 1.0×. Falls back to the 1.0× index if the list somehow has no exact
+ * match for normal speed.
+ */
+private fun nearestPresetIndex(mult: Float): Float {
+    var bestIdx = SPEED_PRESETS.indexOf(1.0f).coerceAtLeast(0)
+    var bestDist = Float.MAX_VALUE
+    SPEED_PRESETS.forEachIndexed { idx, preset ->
+        val dist = kotlin.math.abs(preset - mult)
+        if (dist < bestDist) {
+            bestDist = dist
+            bestIdx = idx
+        }
+    }
+    return bestIdx.toFloat()
+}
 
 /**
  * Speed-hack capability section shown inside TrainerTab.
  * Handles its own not-enabled / not-available gating.
+ *
+ * LIVE: the runtime speed-hack is now UNIVERSAL and ACTIVE. GameNative IIC ships a patched
+ * Wine unix ntdll.so that scales monotonic_counter() — the counter QueryPerformanceCounter /
+ * GetTickCount / interrupt time all derive from — by a live multiplier read from a control
+ * file ([SpeedhackControl]). Moving the slider writes that file; the running game follows
+ * within ~250 ms. The old in-Wine ProxyCtrl.setSpeed bridge (dead on arm64ec) is gone. The
+ * per-game multiplier is also persisted (PrefManager.getSpeedMultiplier) so the slider
+ * remembers its position across menu opens and relaunches.
+ *
+ * Gating: [TrainerShm].available is reused as the "a game is running / engine up" signal —
+ * the speed file is only meaningful while a game is live, so the control is shown under the
+ * same gate the memory scanner uses.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun SpeedSection(
-    speedHackShm: SpeedHackShm?,
+    trainerShm: TrainerShm?,
+    appId: String? = null,
     modifier: Modifier = Modifier,
 ) {
-    val accentColor = PluviaTheme.colors.accentPurple
+    val accentColor = PluviaTheme.colors.accentBrand
     var prefEnabled by remember { mutableStateOf(PrefManager.speedHackEnabled) }
 
     Column(
@@ -82,8 +111,9 @@ internal fun SpeedSection(
                 )
             }
 
-            speedHackShm == null || !speedHackShm.available -> {
-                // Enabled but not loaded
+            trainerShm == null || !trainerShm.available -> {
+                // Enabled but the host engine isn't ready (no game running yet / engine
+                // not loaded). Same gate the memory scanner uses.
                 SpeedMenuSectionHeader(title = stringResource(R.string.speed_not_loaded_title))
                 Text(
                     text = stringResource(R.string.speed_not_loaded_body),
@@ -94,9 +124,10 @@ internal fun SpeedSection(
             }
 
             else -> {
-                // Available — show the multiplier control
+                // Engine available — show the multiplier control. The slider persists its
+                // position per game AND drives the live game clock via the control file.
                 SpeedControlSection(
-                    speedHackShm = speedHackShm,
+                    appId = appId,
                     accentColor = accentColor,
                 )
             }
@@ -133,16 +164,44 @@ private fun SpeedNotEnabledSection(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SpeedControlSection(
-    speedHackShm: SpeedHackShm,
+    appId: String?,
     accentColor: androidx.compose.ui.graphics.Color,
 ) {
-    // Initialise from shm so the UI reflects the current engine state.
-    // Track as index into SPEED_PRESETS so the slider stays clean.
-    val initialValue = snapToPreset(speedHackShm.getMultiplier())
-    var sliderIndex by remember {
-        mutableFloatStateOf(SPEED_PRESETS.indexOf(initialValue).coerceAtLeast(0).toFloat())
+    // The runtime speed-hack is LIVE: the patched ntdll scales the game clock from the control
+    // file written by SpeedhackControl. The UI owns the slider state for persistence (saved per
+    // game in PrefManager, seeded via rememberSaveable(appId) so reopening remembers position)
+    // AND drives the live multiplier — every change both persists and writes the control file.
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    // prefKey is the persistence key. When appId is null we DON'T persist (in-memory only) so two
+    // null-appId games can't share one saved multiplier and silently inherit each other's speed.
+    val prefKey = appId
+    var sliderIndex by rememberSaveable(appId ?: "") {
+        mutableFloatStateOf(nearestPresetIndex(if (prefKey != null) PrefManager.getSpeedMultiplier(prefKey) else 1.0f))
     }
     val currentValue = SPEED_PRESETS[sliderIndex.toInt().coerceIn(0, SPEED_PRESETS.size - 1)]
+
+    // Apply a chosen multiplier: persist it per-game (only when we have a real appId) AND write the
+    // live control file the patched ntdll reads. The file write is dispatched off the main thread
+    // (the slider's onValueChange runs on the UI thread). Centralised so the slider, chips, and
+    // reset all stay consistent.
+    fun apply(mult: Float) {
+        if (prefKey != null) PrefManager.setSpeedMultiplier(prefKey, mult)
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            SpeedhackControl.setMultiplier(context, mult)
+        }
+    }
+
+    // On (re)entry, push the persisted multiplier to the control file so a slider that already
+    // shows e.g. 2× actually drives the game even before the user touches it again. Only when we
+    // have a real appId — a null appId has no persisted value to restore (defaults to 1.0).
+    androidx.compose.runtime.LaunchedEffect(appId) {
+        if (prefKey != null) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                SpeedhackControl.setMultiplier(context, PrefManager.getSpeedMultiplier(prefKey))
+            }
+        }
+    }
 
     SpeedMenuSectionHeader(title = stringResource(R.string.speed_multiplier_label))
 
@@ -168,7 +227,8 @@ private fun SpeedControlSection(
         onValueChange = { raw ->
             val newIndex = raw.toInt().coerceIn(0, SPEED_PRESETS.size - 1)
             sliderIndex = newIndex.toFloat()
-            speedHackShm.setMultiplier(SPEED_PRESETS[newIndex])
+            // Persist + drive the live game clock via the control file.
+            apply(SPEED_PRESETS[newIndex])
         },
         valueRange = 0f..(SPEED_PRESETS.size - 1).toFloat(),
         steps = SPEED_PRESETS.size - 2,
@@ -198,7 +258,7 @@ private fun SpeedControlSection(
                 onClick = {
                     val idx = SPEED_PRESETS.indexOf(preset).coerceAtLeast(0)
                     sliderIndex = idx.toFloat()
-                    speedHackShm.setMultiplier(preset)
+                    apply(preset)
                 },
             )
         }
@@ -211,25 +271,24 @@ private fun SpeedControlSection(
             onClick = {
                 val idx = SPEED_PRESETS.indexOf(1.0f).coerceAtLeast(0)
                 sliderIndex = idx.toFloat()
-                speedHackShm.setMultiplier(1.0f)
+                apply(1.0f)
             },
         )
     }
 
     Spacer(modifier = Modifier.height(8.dp))
-
-    AnimatedVisibility(
-        visible = currentValue != 1.0f,
-        enter = expandVertically() + fadeIn(),
-        exit = shrinkVertically() + fadeOut(),
-    ) {
+    // Live status hint — the speed-hack is active, so reflect the current effect honestly.
+    if (currentValue != 1.0f) {
+        val hint = if (currentValue < 1.0f) {
+            stringResource(R.string.speed_active_slowmo, formatMultiplier(currentValue))
+        } else {
+            stringResource(R.string.speed_active_fast, formatMultiplier(currentValue))
+        }
         Text(
-            text = if (currentValue < 1.0f)
-                stringResource(R.string.speed_hint_slowmo)
-            else
-                stringResource(R.string.speed_hint_fast),
-            style = MaterialTheme.typography.bodySmall,
-            color = accentColor.copy(alpha = 0.8f),
+            text = hint,
+            style = MaterialTheme.typography.bodyMedium,
+            color = accentColor,
+            fontWeight = FontWeight.Medium,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
         )
     }
