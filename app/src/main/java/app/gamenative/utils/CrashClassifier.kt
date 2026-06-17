@@ -58,11 +58,15 @@ object CrashClassifier {
      * @param message     The user-visible message shown in the snackbar.
      * @param actionLabel Label for the snackbar action button, or null for informational only.
      * @param action      Action to run when the button is tapped, or null.
+     * @param diagnosis   Full plain-English explanation of what went wrong and what the
+     *                    auto-fixer does about it.  Shown in a "Why?" dialog when the user
+     *                    wants more detail.  Empty string means no diagnosis available.
      */
     data class CrashSuggestion(
         val message: String,
         val actionLabel: String? = null,
         val action: (() -> Unit)? = null,
+        val diagnosis: String = "",
     )
 
     /**
@@ -117,6 +121,11 @@ object CrashClassifier {
                 message = "This game needs Visual C++ runtime — re-launching may install it automatically",
                 actionLabel = null,
                 action = null,
+                diagnosis = "What happened: a required Microsoft Visual C++ runtime DLL is missing " +
+                    "from the Wine prefix (e.g. vcruntime140.dll or msvcp140.dll). Most Windows " +
+                    "games depend on these to start.\n\n" +
+                    "What the auto-fixer does: installs the Visual C++ runtime via winetricks on " +
+                    "the next launch attempt so the missing DLL is present when the game loads.",
             )
 
             // WMV_CODEC: audio/x-wma is now also caught via WineLogClassifier (was missing here before)
@@ -131,6 +140,14 @@ object CrashClassifier {
                     message = "Intro videos are crashing the game — tap to rename them and skip on next launch",
                     actionLabel = if (action != null) "Rename" else null,
                     action = action,
+                    diagnosis = "What happened: the game's intro or cutscene videos use a Windows " +
+                        "media codec (WMV3 / WMA) that Wine's GStreamer bridge cannot play on " +
+                        "Android. The video decoder hangs or crashes before the game's main " +
+                        "screen appears.\n\n" +
+                        "What the fix does: renames the offending .wmv files to .wmv.bak so Wine " +
+                        "can't find them. The game skips its intro and goes straight to the main " +
+                        "menu on the next launch. No game data is deleted — the rename is " +
+                        "reversible.",
                 )
             }
 
@@ -147,6 +164,43 @@ object CrashClassifier {
                         }
                     }
                 } else null,
+                diagnosis = "What happened: the game tried to load d3dcompiler_47.dll (a shader " +
+                    "compiler that DirectX 11 games use to compile HLSL shaders at runtime), but " +
+                    "Wine couldn't find it in the prefix or in the system paths.\n\n" +
+                    "What the fix does: adds a DLL override entry (WINEDLLOVERRIDES) that tells " +
+                    "Wine to load the native d3dcompiler_47 bundled with GameNative instead of " +
+                    "looking for a Windows copy. This is applied immediately — re-launch the game " +
+                    "after tapping Fix.",
+            )
+
+            FixLadder.FailureClass.D3D12_UNSUPPORTED -> CrashSuggestion(
+                message = "DirectX 12 not supported on this device — tap to switch to DX11 mode",
+                actionLabel = null,
+                action = null,
+                diagnosis = "What happened: the game tried to create a DirectX 12 device, but " +
+                    "your GPU's Vulkan driver doesn't meet the required feature level " +
+                    "(D3D_FEATURE_LEVEL_12). This is common on many Android GPUs when running " +
+                    "newer games via the vkd3d translation layer.\n\n" +
+                    "What the auto-fixer does: adds -dx11 to the game's launch arguments, which " +
+                    "forces most Unreal Engine 4 / 5 games to use their built-in DirectX 11 " +
+                    "renderer. DX11 is then handled by DXVK (DX11 → Vulkan), which is fast and " +
+                    "well-supported. The game runs — often at better performance than DX12 on " +
+                    "mobile GPUs.",
+            )
+
+            FixLadder.FailureClass.STEAM_INIT_FAILED -> CrashSuggestion(
+                message = "Steam session not found — the game couldn't initialise Steam",
+                actionLabel = null,
+                action = null,
+                diagnosis = "What happened: the game called SteamAPI_Init() and it failed, which " +
+                    "means it couldn't find a running or emulated Steam session. Games that " +
+                    "depend on the Steam API to start (even offline features like achievements " +
+                    "or cloud saves) will crash at this point.\n\n" +
+                    "What the auto-fixer does: deploys GameNative's bundled Steam API emulation " +
+                    "(a Goldberg-style replacement) so the game finds a valid session. This works " +
+                    "for games that use the Steam API but are not DRM-wrapped. If the game has " +
+                    "start_protected_game.exe or strong DRM, a real Steam login is required — " +
+                    "enable 'Launch with Steam' in the container settings.",
             )
 
             FixLadder.FailureClass.STEAM_OVERLAY -> CrashSuggestion(
@@ -162,6 +216,13 @@ object CrashClassifier {
                         }
                     }
                 } else null,
+                diagnosis = "What happened: the Steam overlay DLL (GameOverlayRenderer64.dll) " +
+                    "crashed. This overlay hooks into the game's rendering pipeline; under Wine " +
+                    "on Android it sometimes fails to inject cleanly and brings the game down " +
+                    "with it.\n\n" +
+                    "What the fix does: adds a DLL override that tells Wine to ignore " +
+                    "GameOverlayRenderer64 (block it from loading). The Steam overlay will " +
+                    "no longer appear in-game, but everything else continues to work normally.",
             )
 
             FixLadder.FailureClass.EOS_CRASH -> CrashSuggestion(
@@ -177,6 +238,14 @@ object CrashClassifier {
                         }
                     }
                 } else null,
+                diagnosis = "What happened: the Epic Online Services SDK (EOSSDK-Win64-Shipping.dll) " +
+                    "crashed during initialisation. EOS is used for multiplayer, friends lists, " +
+                    "and achievements in Epic-published and third-party games. It doesn't run " +
+                    "reliably under Wine on Android and often faults early at startup.\n\n" +
+                    "What the fix does: blocks EOSSDK-Win64-Shipping from loading via a DLL " +
+                    "override. The game starts without EOS. Multiplayer lobbies and EOS-backed " +
+                    "features will be unavailable, but single-player content and most of the " +
+                    "game will work.",
             )
 
             FixLadder.FailureClass.SEH_ANTICHEAT -> {
@@ -187,25 +256,73 @@ object CrashClassifier {
                         message = "This game may use anti-cheat that blocks Wine — try launching in Steam Offline Mode",
                         actionLabel = null,
                         action = null,
+                        diagnosis = "What happened: Wine raised a structured exception (SEH) very " +
+                            "early in the launch — a pattern strongly associated with kernel-level " +
+                            "anti-cheat software (EAC, BattlEye, Denuvo, etc.) that probes the " +
+                            "process environment for virtualisation/emulation and terminates if it " +
+                            "detects something unexpected.\n\n" +
+                            "What you can try: launch the game in Steam Offline Mode, which " +
+                            "sometimes bypasses online anti-cheat checks. If the game requires " +
+                            "kernel-level anti-cheat to be active, it is unlikely to run under " +
+                            "Wine on Android and may not be supported at this time.",
                     )
                 } else null
             }
 
-            // UNKNOWN_CRASH and BLACK_SCREEN_NOFIX: fall through to CrashClassifier-only patterns
-            else -> null
+            FixLadder.FailureClass.BLACK_SCREEN_NOFIX -> CrashSuggestion(
+                message = "The game started but showed a black screen — we couldn't pinpoint the cause",
+                actionLabel = null,
+                action = null,
+                diagnosis = "What happened: the game process launched and Wine initialised " +
+                    "successfully, but nothing appeared on screen before it stopped. This can be " +
+                    "caused by an unsupported graphics feature, a missing shader cache, a " +
+                    "first-boot setup step that hung, or an intro cutscene that failed silently.\n\n" +
+                    "What you can try: run the auto-fixer from the game's settings — it will " +
+                    "walk through a sequence of known fixes (skip intro videos, disable the Steam " +
+                    "overlay, enable DXVK async shader compilation, and more) to find a " +
+                    "combination that works for this game.",
+            )
+
+            FixLadder.FailureClass.UNKNOWN_CRASH -> CrashSuggestion(
+                message = "The game crashed unexpectedly — we couldn't identify the cause from the log",
+                actionLabel = null,
+                action = null,
+                diagnosis = "What happened: the game exited with a non-zero status but the Wine " +
+                    "debug log didn't contain any of the known error patterns (missing DLLs, " +
+                    "codec failures, anti-cheat exceptions, etc.). The crash may have been " +
+                    "triggered by a timing issue, an unhandled Windows exception inside the " +
+                    "game's own code, or a driver-level fault.\n\n" +
+                    "What you can try: run the auto-fixer from the game's settings — it cycles " +
+                    "through a sequence of common fixes automatically. You can also enable Wine " +
+                    "debug logging in Settings → Advanced and re-launch to capture more detail " +
+                    "for a bug report.",
+            )
+        }
+
+        // ---- Pattern 7 (CrashClassifier-only): Wrong / missing executable ----
+        // Checked before returning the generic UNKNOWN_CRASH / BLACK_SCREEN_NOFIX suggestion
+        // so a more specific message is shown when the exe path is clearly wrong.
+        if (suggestion == null ||
+            failureClass == FixLadder.FailureClass.UNKNOWN_CRASH ||
+            failureClass == FixLadder.FailureClass.BLACK_SCREEN_NOFIX
+        ) {
+            val joined = logLines.joinToString("\n")
+            if (joined.contains(Regex("wine: cannot find|err:module:load_builtin.*\\.exe"))) {
+                return CrashSuggestion(
+                    message = "The game executable may be wrong — check Executable Path in Settings",
+                    actionLabel = null,
+                    action = null,
+                    diagnosis = "What happened: Wine tried to load the game executable but " +
+                        "couldn't find it at the path that is configured in the container. " +
+                        "This typically means the game was installed in a different folder than " +
+                        "expected, or the executable name has changed after an update.\n\n" +
+                        "What to do: open the container's Settings, go to Executable Path, and " +
+                        "browse to the correct .exe file for the game.",
+                )
+            }
         }
 
         if (suggestion != null) return suggestion
-
-        // ---- Pattern 7 (CrashClassifier-only): Wrong / missing executable ----
-        val joined = logLines.joinToString("\n")
-        if (joined.contains(Regex("wine: cannot find|err:module:load_builtin.*\\.exe"))) {
-            return CrashSuggestion(
-                message = "The game executable may be wrong — check Executable Path in Settings",
-                actionLabel = null,
-                action = null,
-            )
-        }
 
         return null
     }

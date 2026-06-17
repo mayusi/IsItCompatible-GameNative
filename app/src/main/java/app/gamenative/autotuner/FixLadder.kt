@@ -5,11 +5,17 @@ import app.gamenative.data.GameSource
 import app.gamenative.gamefixes.GameFixesRegistry
 import app.gamenative.gamefixes.types.DllOverrideFix
 import app.gamenative.utils.ContainerUtils
+import app.gamenative.utils.SteamDrmPreflight
+import app.gamenative.utils.SteamUtils
 import app.gamenative.utils.VideoFileAutoFixer
 import app.gamenative.utils.WineLogClassifier
+import app.gamenative.service.SteamService
 import com.winlator.container.ContainerData
 import com.winlator.core.envvars.EnvVars
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import timber.log.Timber
+import java.io.File
 
 /**
  * FixLadder — ordered rungs of automated fixes the auto-tuner tries when a trial
@@ -201,7 +207,7 @@ object FixLadder {
         Rung(
             id = "dx12_force_dx11",
             description = "Force DX11 render path (-dx11), keep dxvk",
-            appliesToClasses = setOf(FailureClass.D3D12_UNSUPPORTED),
+            appliesToClasses = setOf(FailureClass.D3D12_UNSUPPORTED, FailureClass.BLACK_SCREEN_NOFIX),
             condition = { _, _, baseConfig, _ ->
                 baseConfig.execArgs.isBlank() && (
                     baseConfig.dxwrapper.contains("vkd3d", ignoreCase = true) ||
@@ -220,6 +226,34 @@ object FixLadder {
                     )
                 } catch (e: Exception) {
                     Timber.tag(TAG).e(e, "Rung dx12_force_dx11 failed for $appId")
+                    null
+                }
+            },
+        ),
+
+        // Rung 5b — VKD3D_CONFIG workaround for DX12 titles still failing AFTER dx12_force_dx11.
+        // Positioned after dx12_force_dx11 so the cleaner -dx11 render-path switch is always
+        // tried first (best for UE titles). Only relevant when the container actually runs a
+        // vkd3d (DX12→Vulkan) wrapper. no_upload_hvv avoids host-visible-VRAM upload paths that
+        // crash on some Adreno drivers; nodxr disables DXR (no ray-tracing support) which is a
+        // common black-screen / D3D12-unsupported trigger.
+        Rung(
+            id = "vkd3d_config_workaround",
+            description = "Apply VKD3D_CONFIG workaround (no_upload_hvv, nodxr)",
+            appliesToClasses = setOf(FailureClass.D3D12_UNSUPPORTED, FailureClass.BLACK_SCREEN_NOFIX),
+            condition = { _, _, baseConfig, _ ->
+                baseConfig.dxwrapper.contains("vkd3d", ignoreCase = true)
+            },
+            apply = { _, appId, baseConfig, _, _ ->
+                try {
+                    val value = "no_upload_hvv,nodxr"
+                    val patched = mergeEnvVar(baseConfig, "VKD3D_CONFIG", value)
+                    FixResult(
+                        appliedFix = AppliedFix.WineEnvVar("VKD3D_CONFIG", value),
+                        patchedConfig = patched,
+                    )
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "Rung vkd3d_config_workaround failed for $appId")
                     null
                 }
             },
@@ -265,6 +299,86 @@ object FixLadder {
                 }
             },
         ),
+
+        // Rung 8 — Deploy Goldberg-style Steam API emulation for STEAM_INIT_FAILED crashes.
+        //
+        // LEGIT BOUNDARY: This rung deploys GameNative's own bundled steam_api replacement
+        // (assets/steampipe/steam_api[64].dll) + steam_settings/ + steam_appid.txt. It does
+        // NOT strip DRM, does NOT patch executables, does NOT bundle or invoke Steamless.
+        //
+        // HOW REAL-FOLDER RESOLUTION WORKS:
+        //
+        //   STEAM source  — extractGameIdFromContainerId returns the real Steam appid (Int).
+        //                   SteamService.getAppDirPath(appid) returns the true install directory.
+        //                   SteamUtils.replaceSteamApi(context, appId) already uses that same
+        //                   path internally, so we can delegate to it directly. ✓
+        //
+        //   CUSTOM_GAME   — extractGameIdFromContainerId returns a synthetic folder-hash ID, NOT
+        //                   a Steam appid. SteamService.getAppDirPath would resolve a wrong Steam-
+        //                   library path. The REAL game folder is obtained via
+        //                   CustomGameScanner.getFolderPathFromAppId(appId) — this is what the
+        //                   container's A: drive is mapped to.
+        //                   However, for a custom game we have NO way to infer the correct Steam
+        //                   appid — writing the folder-hash as steam_appid.txt would be wrong and
+        //                   would break emulation rather than fix it. Therefore, for CUSTOM_GAME
+        //                   containers this rung is a SAFE NO-OP: condition() returns false so the
+        //                   rung is never attempted. We do not fabricate appids.
+        //
+        // SUSPEND HANDLING:
+        //   The rung apply lambda is NOT suspend. SteamUtils.replaceSteamApi IS suspend.
+        //   We call it via runBlocking(Dispatchers.IO) — the same pattern used throughout
+        //   ContainerUtils.createNewContainer for other suspend calls inside non-suspend contexts.
+        Rung(
+            id = "steam_emulation_enable",
+            description = "Enable Steam API emulation",
+            appliesToClasses = setOf(FailureClass.STEAM_INIT_FAILED, FailureClass.BLACK_SCREEN_NOFIX),
+            condition = { context, appId, baseConfig, _ ->
+                // Only attempt when not already in real-Steam mode — emulation is incompatible
+                // with launchRealSteam / launchBionicSteam (those have their own Steam session).
+                if (baseConfig.launchRealSteam || baseConfig.launchBionicSteam) return@Rung false
+
+                // CUSTOM_GAME containers: we cannot reliably determine the real Steam appid.
+                // Attempting emulation without the correct appid would produce a broken
+                // steam_appid.txt (folder-hash, not an actual Steam appid). Safe no-op.
+                val source = ContainerUtils.extractGameSourceFromContainerId(appId)
+                if (source != GameSource.STEAM) return@Rung false
+
+                // Resolve the REAL game install folder for the preflight scan.
+                val gameId = runCatching { ContainerUtils.extractGameIdFromContainerId(appId) }.getOrNull()
+                    ?: return@Rung false
+                val realInstallDir = runCatching { SteamService.getAppDirPath(gameId) }.getOrNull()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: return@Rung false
+
+                // Run the preflight detector. We ONLY help games that use the Steam API but
+                // are NOT DRM-wrapped (start_protected_game.exe would require real Steam).
+                val prediction = SteamDrmPreflight.analyze(File(realInstallDir))
+                prediction.needsSteamSession && !prediction.drmWrapped
+            },
+            apply = { context, appId, baseConfig, _, _ ->
+                // Double-check source; condition already guards this, but be explicit.
+                val source = ContainerUtils.extractGameSourceFromContainerId(appId)
+                if (source != GameSource.STEAM) {
+                    // CUSTOM_GAME / other: no real Steam appid known — honest no-op.
+                    Timber.tag(TAG).i("Rung steam_emulation_enable: skipping non-STEAM source $source for $appId")
+                    return@Rung null
+                }
+
+                try {
+                    // SteamUtils.replaceSteamApi is suspend; call it on IO dispatcher.
+                    runBlocking(Dispatchers.IO) {
+                        SteamUtils.replaceSteamApi(context, appId, isOffline = false)
+                    }
+                    FixResult(
+                        appliedFix = AppliedFix.SteamEmulationEnabled,
+                        patchedConfig = baseConfig, // no ContainerData fields need changing
+                    )
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "Rung steam_emulation_enable failed for $appId")
+                    null
+                }
+            },
+        ),
     )
 
     // -------------------------------------------------------------------------
@@ -276,6 +390,12 @@ object FixLadder {
      * 1. Applies to [failureClass].
      * 2. Has not been tried yet (id not in [triedRungIds]).
      * 3. Passes its [Rung.condition] check.
+     *
+     * [preferredRungIds] is an optional learned-prior ordering (e.g. rung ids that
+     * historically fixed this [failureClass] on this device, best-first). When non-empty,
+     * the first preferred rung that is applicable + untried + passes its condition is
+     * returned BEFORE falling back to [LADDER] order. Additive and default-empty, so all
+     * existing callers keep the original LADDER-order behaviour unchanged.
      */
     fun nextRung(
         context: Context,
@@ -283,12 +403,27 @@ object FixLadder {
         baseConfig: ContainerData,
         failureClass: FailureClass,
         triedRungIds: Set<String>,
+        preferredRungIds: List<String> = emptyList(),
     ): Rung? {
-        return LADDER.firstOrNull { rung ->
+        // A rung is eligible if it is untried, applies to this failure class, and passes
+        // its own condition predicate. Used for both the preferred-order and LADDER-order
+        // passes so the two cannot diverge.
+        fun eligible(rung: Rung): Boolean =
             rung.id !in triedRungIds &&
                 failureClass in rung.appliesToClasses &&
                 rung.condition(context, appId, baseConfig, failureClass)
+
+        // Pass 1 — honour the learned prior: try preferred rung ids first, in their given
+        // order, returning the first one that is currently eligible.
+        if (preferredRungIds.isNotEmpty()) {
+            for (preferredId in preferredRungIds) {
+                val rung = LADDER.firstOrNull { it.id == preferredId } ?: continue
+                if (eligible(rung)) return rung
+            }
         }
+
+        // Pass 2 — fall back to LADDER order (unchanged original behaviour).
+        return LADDER.firstOrNull { eligible(it) }
     }
 
     // -------------------------------------------------------------------------

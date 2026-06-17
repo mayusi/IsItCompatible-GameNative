@@ -159,6 +159,12 @@ class AutoTunerEngine(
     private val THERMAL_GATE_TEMP_C = 80
     private val THERMAL_COOLDOWN_SEC = 30
 
+    // Max number of classified-crash fix rungs to chain within a single trial slot.
+    // The fix-retry loop in runTrialWithFixRetry already chains rungs (it adds each
+    // rung.id to triedRungIds and re-enters); this cap is what turns single-shot into
+    // a multi-fix chain. UNKNOWN_CRASH still fails fast (see the guard in that loop).
+    private val CRASH_FIX_CHAIN_MAX = 4
+
     // -------------------------------------------------------------------------
     // Trial controller (UI wires into this)
     // -------------------------------------------------------------------------
@@ -322,6 +328,22 @@ class AutoTunerEngine(
                 container.saveData()
                 Timber.tag(TAG).i("Winner applied and stored in extraData[$extraDataKey] for $appId")
 
+                // LEARN — persist (appId -> winning config) into the device-level tuner memory
+                // so a future sweep of this game can warm-start from it. Best-effort + crash-safe,
+                // exactly like the IIC broadcast directly below: any failure here must NEVER
+                // propagate — the container save above already succeeded.
+                try {
+                    TunerMemory.recordWin(
+                        context = context,
+                        appId = appId,
+                        config = winner.config,
+                        appliedFixes = winner.appliedFixes,
+                        avgFps = winner.avgFps,
+                    )
+                } catch (e: Exception) {
+                    Timber.tag(TAG).w(e, "TunerMemory.recordWin(game) failed (non-fatal) for $appId")
+                }
+
                 // Broadcast the winner to the IIC app so it can store a Tier-1 verified
                 // guide for this game+device. Best-effort + crash-safe: any failure here
                 // must NEVER propagate — the container save above already succeeded.
@@ -388,12 +410,55 @@ class AutoTunerEngine(
         }
 
         // --- Normal coordinate-descent sweep ---
-        val baseline = ContainerUtils.getDefaultContainerData()
+        // WARM START: if we've successfully tuned THIS game before, begin the
+        // coordinate descent from its stored winning config instead of the stock
+        // default. The sweep still explores every dimension from there, so the
+        // result can only match or beat the default-start — it just converges
+        // faster because it starts near a known-good answer. Falls back cleanly
+        // to the default when there's no stored config (TunerMemory returns null).
+        val learnedConfig = try { TunerMemory.bestConfigForGame(context, appId) } catch (e: Exception) { null }
+        // CROSS-GAME WARM START: when this exact game has no stored config, fall back to the
+        // device's best-known good config from ANY prior sweep before dropping to the stock
+        // default. The store is device-local and degrades to null gracefully, so this can only
+        // start the descent nearer a known-good answer — never worse than the default.
+        val baseline = learnedConfig
+            ?: (try { TunerMemory.deviceNearestGoodConfig(context) } catch (e: Exception) { null })
+            ?: ContainerUtils.getDefaultContainerData()
+        if (learnedConfig != null) {
+            Timber.tag(TAG).i("Warm-start: seeding sweep baseline from this game's prior winning config")
+        }
         var currentBest: ContainerData = baseline
         var currentBestResult: TunerResult? = null
 
         val dimensions = SweepPlan.dimensionsForMode(mode)
         var globalTrialIndex = 0
+
+        // --- Trial 0: run the prior winning config first so the sweep is anchored to a
+        // known-good result. Mirrors the probe warm-start. Best-effort + crash-safe: a usable
+        // result seeds currentBest/currentBestResult so later dimensions are compared against it.
+        if (learnedConfig != null) {
+            val warmTrial = TrialDefinition(
+                config = currentBest,
+                description = "Prior winning config",
+                dimId = null,
+                valueLabel = "learned",
+                passIndex = 0,
+            )
+            val warmResult = runTrialWithFixRetry(
+                trialDef = if (executablePath != null) warmTrial.copy(config = warmTrial.config.copy(executablePath = executablePath)) else warmTrial,
+                trialIndex = globalTrialIndex,
+                total = totalEstimated,
+                emit = emit,
+                batteryAvailable = batteryAvailable,
+                maxRetries = CRASH_FIX_CHAIN_MAX,
+            )
+            globalTrialIndex++
+            allResults.add(warmResult)
+            if (warmResult.isUsable) {
+                currentBestResult = warmResult
+                currentBest = warmResult.config
+            }
+        }
 
         // --- First pass: iterate each dimension with multi-run averaging ---
         for (dim in dimensions) {
@@ -487,7 +552,27 @@ class AutoTunerEngine(
         batteryAvailable: Boolean,
     ) {
         val baseline = ContainerUtils.getDefaultContainerData()
-        val probeTrials = SweepPlan.buildProbeTrials(baseline)
+        val archetypeTrials = SweepPlan.buildProbeTrials(baseline)
+        // WARM START: if this game already has a stored winning config, try it
+        // FIRST so a previously-tuned game boots on trial 0 (the early-abort then
+        // ends the whole probe immediately). Falls back to the normal archetype
+        // list when there's no stored config. We only prepend — the archetypes
+        // still run if the learned config no longer boots, so this can't regress.
+        val learnedProbe = try { TunerMemory.bestConfigForGame(context, appId) } catch (e: Exception) { null }
+        val probeTrials = if (learnedProbe != null) {
+            Timber.tag(TAG).i("Warm-start probe: trying this game's prior winning config first")
+            val warmTrial = TrialDefinition(
+                config = learnedProbe,
+                description = "Prior winning config (learned)",
+                dimId = null,
+                valueLabel = "learned",
+                passIndex = 0,
+                isProbe = true,
+            )
+            listOf(warmTrial) + archetypeTrials
+        } else {
+            archetypeTrials
+        }
         val total = probeTrials.size
 
         for ((idx, trial) in probeTrials.withIndex()) {
@@ -506,7 +591,7 @@ class AutoTunerEngine(
                 runsPerConfig = 1,
                 emit = emit,
                 batteryAvailable = batteryAvailable,
-                maxRetries = 2, // PROBE: up to 2 fix retries
+                maxRetries = CRASH_FIX_CHAIN_MAX, // PROBE: chain classified-crash fixes (capped)
             )
             allResults.add(result)
 
@@ -599,7 +684,7 @@ class AutoTunerEngine(
                     runsPerConfig = 1,
                     emit = emit,
                     batteryAvailable = batteryAvailable,
-                    maxRetries = 1, // non-PROBE: 1 fix retry
+                    maxRetries = CRASH_FIX_CHAIN_MAX, // non-PROBE: chain classified-crash fixes (capped)
                 )
                 results.add(result)
                 if (result.isUsable) {
@@ -634,7 +719,7 @@ class AutoTunerEngine(
                     runsPerConfig = runsPerConfig,
                     emit = emit,
                     batteryAvailable = batteryAvailable,
-                    maxRetries = 1, // non-PROBE: 1 fix retry
+                    maxRetries = CRASH_FIX_CHAIN_MAX, // non-PROBE: chain classified-crash fixes (capped)
                 )
                 rawRuns[configIdx].add(rawResult)
                 launchIndex++
@@ -970,6 +1055,12 @@ class AutoTunerEngine(
                     // Sustained render tracking
                     if (currentFps >= TunerResult.SUSTAINED_RENDER_FPS_THRESHOLD) sustainedRenderSec++
 
+                    // PROBE measure early-exit: once boot is confirmed (sustained render >= 5s,
+                    // the exact bootSucceeded bar), stop grinding the full measure window. The
+                    // probe goal only uses avgFps as a survival-time tiebreak, so cutting here
+                    // costs nothing. Gated to PROBE so non-probe FPS measurement is unaffected.
+                    if (mode == SweepMode.PROBE && sustainedRenderSec >= 5) break
+
                     if (blackScreenSustainCounter >= TunerResult.BLACK_SCREEN_SUSTAIN_SEC) {
                         Timber.tag(TAG).w(
                             "Trial $trialIndex BLACK_SCREEN detected during MEASURE: " +
@@ -1044,20 +1135,25 @@ class AutoTunerEngine(
                 triggerTrialExit()
             }
 
-            // 7b. Write FPS summary
+            // 7b. Write FPS summary (fire-and-forget — max/min/avg are read synchronously
+            // from the in-memory FrameRating below, so we no longer wait on the async file write).
             withContext(Dispatchers.Main.immediate) {
                 frameRating?.writeSessionSummary()
             }
-            delay(500) // brief wait for async file write
 
-            // 8. Read FPS data
+            // 8. Read FPS data. The live FrameRating values are authoritative for max/min
+            // (the file lags behind the async write and previously reported maxFps==avgFps
+            // and minFps==0). Use in-memory as primary, the session file only as a fallback.
             val fpsData: FpsSessionData? = withContext(Dispatchers.IO) {
                 FpsSessionReader.read(context)
             }
 
+            // These reads are thread-safe: the GL renderer loop is quiescent at this point
+            // (teardown completes before we reach here), so FrameRating.lastFPS (volatile)
+            // and the Welford accumulators are no longer being mutated.
             val avgFps = fpsData?.avgFps ?: frameRating?.getAvgFPS() ?: 0f
-            val maxFps = fpsData?.maxFps ?: frameRating?.getAvgFPS() ?: 0f
-            val minFps = fpsData?.minFps ?: 0f
+            val maxFps = frameRating?.getMaxFps()?.toFloat() ?: fpsData?.maxFps ?: 0f
+            val minFps = frameRating?.getMinFps()?.toFloat() ?: fpsData?.minFps ?: 0f
             val stdDev = frameRating?.getFpsStdDev() ?: 0f
 
             val gpuTempEnd = GpuTemp.readTempC()
@@ -1188,6 +1284,28 @@ class AutoTunerEngine(
                 FixLadder.classifyFailure(logLines)
             }
 
+            // UNKNOWN fail-fast: a no-signal crash gets at most ONE speculative rung.
+            // Without this guard, raising the chain cap (CRASH_FIX_CHAIN_MAX) would let an
+            // unclassifiable crash blindly march through several speculative DLL-override
+            // rungs. Classified crashes are unaffected — they chain their applicable rungs.
+            if (failureClass == FixLadder.FailureClass.UNKNOWN_CRASH && retryNum >= 1) break
+
+            // Preferred rungs: merge device-level learned prior (TunerMemory) with the
+            // crowd-sourced catalog (CrashFixCatalog), in that precedence order:
+            //   1. TunerMemory  — device-proven, win/loss weighted, best-first
+            //   2. CrashFixCatalog — crowd-proven OTA seed, game-specific then wildcard
+            //   3. LADDER fallback (handled inside FixLadder.nextRung)
+            // Both are additive + null-safe: any exception returns empty so the existing
+            // LADDER-order behaviour is unchanged when either source is unavailable.
+            val localPreferred = try {
+                TunerMemory.preferredRungFor(context, failureClass)
+            } catch (_: Exception) { emptyList<String>() }
+            val catalogPreferred = try {
+                CrashFixCatalog.preferredRungsFor(failureClass, appId)
+            } catch (_: Exception) { emptyList<String>() }
+            // Merge: local first, then catalog entries not already in local list.
+            val preferredRungIds = (localPreferred + catalogPreferred.filter { it !in localPreferred })
+
             // Find the next applicable rung
             val installPath = try {
                 withContext(Dispatchers.IO) {
@@ -1201,6 +1319,7 @@ class AutoTunerEngine(
                 baseConfig = result.config,
                 failureClass = failureClass,
                 triedRungIds = triedRungIds,
+                preferredRungIds = preferredRungIds,
             ) ?: break // no more applicable rungs
 
             triedRungIds.add(rung.id)
@@ -1269,7 +1388,29 @@ class AutoTunerEngine(
                     "Trial $trialIndex fix-retry $retryNum SUCCEEDED: status=${result.status} " +
                         "bootSucceeded=${result.bootSucceeded} fixes=${accumulatedFixes}",
                 )
+                // LEARN — this rung's apply() turned a classified crash into a STABLE/booting
+                // result for this failure class. Record the win keyed on the stable rung.id
+                // (not the lossy label string) so the prior can route it first next time.
+                // Best-effort; never fail the sweep on a memory-IO error.
+                try {
+                    TunerMemory.recordWin(context, failureClass, rung.id)
+                } catch (e: Exception) {
+                    Timber.tag(TAG).w(e, "TunerMemory.recordWin failed (non-fatal)")
+                }
                 break
+            }
+
+            // LEARN (loss) — this rung was applied but the retry still crashed/black-screened
+            // for this failure class. Record a loss so a stale prior decays and self-heals.
+            // Best-effort; never fail the sweep on a memory-IO error.
+            if (result.status == TunerResult.TrialStatus.CRASHED ||
+                result.status == TunerResult.TrialStatus.BLACK_SCREEN
+            ) {
+                try {
+                    TunerMemory.recordLoss(context, failureClass, rung.id)
+                } catch (e: Exception) {
+                    Timber.tag(TAG).w(e, "TunerMemory.recordLoss failed (non-fatal)")
+                }
             }
         }
 

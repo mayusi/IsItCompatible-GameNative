@@ -43,4 +43,13 @@ sealed class AppliedFix {
     data class LaunchArg(val arg: String) : AppliedFix() {
         override fun label(): String = "Launch arg: $arg"
     }
+
+    /**
+     * Goldberg-style Steam API emulation was deployed against the game's install folder.
+     * Covers: steam_api[64].dll replacement + steam_settings/ + steam_appid.txt.
+     * Only applied for Steam-source games whose DRM check confirmed they are NOT DRM-wrapped.
+     */
+    object SteamEmulationEnabled : AppliedFix() {
+        override fun label(): String = "Steam API emulation enabled"
+    }
 }

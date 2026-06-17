@@ -10,15 +10,11 @@ import android.provider.Settings
 import androidx.core.content.ContextCompat
 import app.gamenative.PluviaApp
 import app.gamenative.PrefManager
-import app.gamenative.data.AppInfo
 import app.gamenative.data.GameSource
 import app.gamenative.data.LibraryItem
-import app.gamenative.enums.Marker
 import app.gamenative.events.AndroidEvent
 import app.gamenative.service.DownloadService
 import app.gamenative.service.SteamService
-import app.gamenative.service.SteamService.Companion.INVALID_APP_ID
-import app.gamenative.service.SteamService.Companion.getMainAppDepots
 import com.winlator.container.Container
 import com.winlator.container.ContainerManager
 import java.io.File
@@ -515,27 +511,12 @@ object CustomGameScanner {
                 val steamApp = steamApps[0]
                 if (SteamService.isAppLicensed(steamApp.packageId)) {
                     if (SteamService.getInstalledApp(steamApp.id) == null) {
-                        val preferredLanguage = PrefManager.containerLanguage
-                        val mainDepots = getMainAppDepots(steamApp.id, preferredLanguage)
-                        val mainAppDepots = mainDepots.filter { (_, depot) ->
-                            depot.dlcAppId == INVALID_APP_ID
+                        val dao = SteamService.instance?.appInfoDao
+                        if (dao != null) {
+                            runBlocking {
+                                markSteamGameInstalled(steamApp.id, folderPath, dao)
+                            }
                         }
-                        val mainAppDepotIds = mainAppDepots.keys.sorted()
-
-                        runBlocking {
-                            SteamService.instance?.appInfoDao?.insert(
-                                AppInfo(
-                                    steamApp.id,
-                                    isDownloaded = true,
-                                    downloadedDepots = mainAppDepotIds,
-                                    dlcDepots = emptyList(),
-                                    branch = "public",
-                                    customInstallPath = folderPath
-                                ),
-                            )
-                        }
-
-                        MarkerUtils.addMarker(folderPath, Marker.DOWNLOAD_COMPLETE_MARKER)
                     }
 
                     val idPart = steamApp.id

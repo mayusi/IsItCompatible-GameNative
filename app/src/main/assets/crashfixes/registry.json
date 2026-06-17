@@ -1,0 +1,42 @@
+{
+  "_comment": "Crowd-sourced crash-fix catalog. Schema: fixes[] -> {failureClass, rungId, games, _comment}. games: list of Steam/Epic appIds or [\"*\"] for all games. Upload/contribution side is future work — this file is the seed populated from verified community fixes.",
+  "version": 1,
+  "fixes": [
+    {
+      "failureClass": "D3D12_UNSUPPORTED",
+      "rungId": "dx12_force_dx11",
+      "games": ["*"],
+      "_comment": "UE4/UE5 titles that expose a DX12 feature level the device Vulkan driver cannot satisfy. Force -dx11 keeps dxvk (DX11->Vulkan), verified on Lies of P, Remnant 2."
+    },
+    {
+      "failureClass": "STEAM_INIT_FAILED",
+      "rungId": "steam_emulation_enable",
+      "games": ["*"],
+      "_comment": "Games that call SteamAPI_Init() without being DRM-wrapped. Goldberg-style bundled steam_api replacement. Only applied to STEAM source containers (condition guard in FixLadder)."
+    },
+    {
+      "failureClass": "WMV_CODEC",
+      "rungId": "wmv_rename",
+      "games": ["*"],
+      "_comment": "Games with WMV intro/cutscene videos that crash Wine. Renaming them with .bak suffix skips the codec path."
+    },
+    {
+      "failureClass": "STEAM_OVERLAY",
+      "rungId": "steam_overlay_disable",
+      "games": ["*"],
+      "_comment": "Steam overlay (GameOverlayRenderer64.dll) crashes or hangs on some titles. DLL override n,b disables injection."
+    },
+    {
+      "failureClass": "EOS_CRASH",
+      "rungId": "eos_disable",
+      "games": ["*"],
+      "_comment": "Epic Online Services SDK crash on init. Override EOSSDK-Win64-Shipping with n,b to disable EOS at load time."
+    },
+    {
+      "failureClass": "D3D_COMPILER",
+      "rungId": "d3dcompiler_override",
+      "games": ["*"],
+      "_comment": "Missing or incompatible d3dcompiler_47. Native-first override (n,b) picks up the bundled copy."
+    }
+  ]
+}
