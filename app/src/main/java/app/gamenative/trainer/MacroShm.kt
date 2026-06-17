@@ -2,6 +2,9 @@ package app.gamenative.trainer
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.ByteOrder
@@ -169,6 +172,32 @@ class MacroShm private constructor(
         _available = false
     }
 
+    /**
+     * Poll the magic field up to [CONNECT_ATTEMPTS] times at [CONNECT_RETRY_DELAY_MS]
+     * intervals waiting for the native shim to write MACRO_SHM_MAGIC.
+     *
+     * Sets and returns [available]. Safe to call multiple times (no-op once true).
+     *
+     * Mirrors TrainerShm.connect() so the two engines are initialised symmetrically.
+     */
+    suspend fun connect(): Boolean = withContext(Dispatchers.IO) {
+        if (_available) return@withContext true
+        repeat(CONNECT_ATTEMPTS) { attempt ->
+            val magic = buf.getInt(OFF_MAGIC)
+            if (magic == MACRO_SHM_MAGIC) {
+                _available = true
+                Log.d(TAG, "connect: macro shim ready (attempt ${attempt + 1}/$CONNECT_ATTEMPTS)")
+                return@withContext true
+            }
+            if (attempt < CONNECT_ATTEMPTS - 1) {
+                Log.d(TAG, "connect: magic not ready (0x${magic.toString(16)}) — retrying in ${CONNECT_RETRY_DELAY_MS}ms")
+                delay(CONNECT_RETRY_DELAY_MS)
+            }
+        }
+        Log.w(TAG, "connect: shim did not write MACRO_SHM_MAGIC after $CONNECT_ATTEMPTS attempts")
+        false
+    }
+
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
@@ -187,6 +216,10 @@ class MacroShm private constructor(
     companion object {
 
         private const val TAG = "MacroShm"
+
+        // connect() retry policy — mirrors TrainerShm.connect()
+        private const val CONNECT_ATTEMPTS = 5
+        private const val CONNECT_RETRY_DELAY_MS = 200L
 
         /* ---- Wire constants (mirror macro_protocol.h) ---- */
         const val MACRO_SHM_MAGIC: Int     = 0x4D43524F   // "MCRO"
@@ -246,19 +279,21 @@ class MacroShm private constructor(
 
                 val instance = MacroShm(buf, raf)
 
-                /* Check magic — if zero the file is fresh (shim hasn't written yet);
-                 * that's fine, we write our config and the shim will read it on start. */
+                /* Check magic — only MACRO_SHM_MAGIC counts as the shim being live.
+                 * A zero magic means the file is fresh (shim hasn't written yet);
+                 * we keep the file mapped so pre-game config writes still work,
+                 * but available stays false until connect() sees the sentinel. */
                 val magic = buf.getInt(OFF_MAGIC)
-                instance._available = (magic == 0 || magic == MACRO_SHM_MAGIC)
+                instance._available = (magic == MACRO_SHM_MAGIC)
 
-                if (!instance._available) {
+                if (magic != 0 && magic != MACRO_SHM_MAGIC) {
                     Log.w(TAG, "macro.mem magic mismatch (0x${magic.toString(16)}); " +
-                            "expected 0x${MACRO_SHM_MAGIC.toString(16)} or 0")
+                            "expected 0x${MACRO_SHM_MAGIC.toString(16)}")
                     raf.close()
                     return null
                 }
 
-                Log.d(TAG, "MacroShm ready (magic=${if (magic == 0) "fresh" else "MCRO"})")
+                Log.d(TAG, "MacroShm mapped (magic=${if (magic == 0) "fresh — waiting for shim" else "MCRO — available"})")
                 instance
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to create macro shm — macro feature disabled", e)

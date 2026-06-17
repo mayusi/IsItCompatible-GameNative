@@ -1,6 +1,7 @@
 {
   "version": 1,
   "_comment": "Cheat-table library for GameNative IIC. Each table is keyed to a game by store source + id (same identity scheme as gamefixes/registry.json). On Box64 memory addresses are NOT stable across runs, so a cheat is a RECIPE that drives the in-process memory engine (scan -> narrow -> freeze), NOT a hardcoded address. The schema is forward-compatible with AOB pattern auto-resolution (the optional 'aob' block on a cheat) so one-tap cheats can be added later without a format change. Ship seed tables here; OTA-update by committing this file (no app release needed) — fetched from https://raw.githubusercontent.com/mayusi/IsItCompatible-GameNative/main/cheattables/registry.json",
+  "_promote_user_imports": "FLYWHEEL: users can import Cheat Engine .CT tables on-device (CheatTab -> 'Import Cheat Engine table (.CT)'). CtImporter.kt converts a .CT into the SAME table JSON shape used in the 'tables' array below, and CheatTableUserStore.kt persists it at filesDir/cheattables_user/<SOURCE_gameId>.json. To PROMOTE a verified user table into this shared catalog (so every install gets it via OTA, no app release): take that per-game user JSON file (it is already one element of this 'tables' array — CheatTableUserStore.serialize() emits the identical structure: source/gameId/title/cheats[]/recipe/chain/aob), paste it as a new object into 'tables' here, verify the chain/aob on-device, then commit this file. No server, no new format. This keeps the OTA catalog growing from real user imports.",
   "tables": [
     {
       "source": "STEAM",

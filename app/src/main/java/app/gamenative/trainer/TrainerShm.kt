@@ -57,6 +57,19 @@ class TrainerShm private constructor(
     var available: Boolean = false
         private set
 
+    /**
+     * The GAME process pid the engine should read/write (cross-process retarget, v4).
+     * 0 = self (the in-app self-test path). The UI sets this via [setTargetPid] once
+     * the game pid is discovered ([TrainerEngine.findGamePid]). Every memory-touching
+     * command writes this into cmd_target_pid (OFF_CMD_TARGET_PID) before bumping
+     * cmd_seq, so the native worker retargets /proc/<pid>/mem on each command.
+     */
+    @Volatile
+    private var targetPid: Int = 0
+
+    /** Set the game process pid the engine should operate on (0 = self). */
+    fun setTargetPid(pid: Int) { targetPid = pid }
+
     /** Live scan progress (0..100) updated while a SCAN_NEW / SCAN_NEXT is in flight. */
     private val _progress = MutableStateFlow(0)
     val progress: StateFlow<Int> = _progress.asStateFlow()
@@ -191,7 +204,14 @@ class TrainerShm private constructor(
 
     /**
      * TCMD_READ — read one address.
-     * Returns the raw bits, or null on error / unavailable.
+     * Returns the raw bits, or null on error / timeout / unavailable.
+     *
+     * IMPORTANT (the read()-error-path fix): a non-READY status (e.g. TST_ERROR
+     * when the address became unreadable) MUST yield null — NOT a stale resp_value.
+     * The predicate therefore returns the decoded value ONLY on TST_READY and null
+     * otherwise, and [runCommand] returns that (flattening, since timeout already
+     * gives null). Callers like diyAdjust rely on null meaning "genuine read
+     * failure — skip this address" rather than treating garbage as the value 0.
      */
     suspend fun read(addr: Long, vtype: Int): Long? = withContext(Dispatchers.IO) {
         runCommand(
@@ -201,9 +221,64 @@ class TrainerShm private constructor(
             value = 0L,
             timeoutMs = TIMEOUT_SHORT_MS,
         ) { status ->
-            status == TrainerProto.TST_READY
-        }?.let { _ ->
-            shm.getLong(OFF_RESP_VALUE)
+            if (status == TrainerProto.TST_READY) shm.getLong(OFF_RESP_VALUE) else null
+        }
+    }
+
+    /**
+     * TCMD_READ_BYTES — read a raw byte window of [len] bytes starting at [addr]
+     * from the target process. Returns the bytes, or null on error / unavailable /
+     * a short read.
+     *
+     * The worker pread()s the bytes into cmd_pattern[] and sets resp_count to the
+     * number of bytes actually read; we copy exactly resp_count bytes back. Used by
+     * [app.gamenative.cheats.AobCapture] to fingerprint the bytes around a scanned
+     * address so it can synthesise an ASLR-proof AOB signature.
+     *
+     * [len] must be in 1..[TrainerProto.TRAINER_PATTERN_CAP]; out-of-range returns null.
+     */
+    suspend fun readBytes(addr: Long, len: Int): ByteArray? = withContext(Dispatchers.IO) {
+        if (len <= 0 || len > TrainerProto.TRAINER_PATTERN_CAP) {
+            return@withContext null
+        }
+        mutex.withLock {
+            val buf = shm
+
+            val version = buf.getInt(OFF_PROTO_VERSION)
+            if (version != 0 && version != TrainerProto.TRAINER_PROTO_VERSION) {
+                Log.w(TAG, "readBytes: proto version mismatch (got $version)")
+                return@withLock null
+            }
+
+            val oldRespSeq = buf.getInt(OFF_RESP_SEQ)
+
+            // Byte count travels in cmd_pattern_len (the field AOB_SCAN uses too).
+            buf.putInt(OFF_CMD, TrainerProto.TCMD_READ_BYTES)
+            buf.putInt(OFF_CMD_PATTERN_LEN, len)
+            buf.putLong(OFF_CMD_ADDR, addr)
+
+            // Cross-process retarget: tell the worker which game pid to read from.
+            buf.putInt(OFF_CMD_TARGET_PID, targetPid)
+
+            val newCmdSeq = buf.getInt(OFF_CMD_SEQ) + 1
+            buf.putInt(OFF_CMD_SEQ, newCmdSeq)
+
+            val deadline = System.currentTimeMillis() + TIMEOUT_SHORT_MS
+            while (System.currentTimeMillis() < deadline) {
+                delay(POLL_INTERVAL_MS)
+                val curRespSeq = buf.getInt(OFF_RESP_SEQ)
+                if (curRespSeq != oldRespSeq) {
+                    val status = buf.getInt(OFF_RESP_STATUS)
+                    if (status != TrainerProto.TST_READY) return@withLock null
+                    val n = buf.getInt(OFF_RESP_COUNT).coerceIn(0, len)
+                    if (n <= 0) return@withLock null
+                    val out = ByteArray(n)
+                    for (i in 0 until n) out[i] = buf.get(OFF_CMD_PATTERN + i)
+                    return@withLock out
+                }
+            }
+            Log.w(TAG, "readBytes: timeout waiting for resp_seq (${TIMEOUT_SHORT_MS}ms)")
+            null
         }
     }
 
@@ -383,6 +458,10 @@ class TrainerShm private constructor(
             }
         }
 
+        // Cross-process retarget (v4): tell the worker which game pid to operate on.
+        // Must be written BEFORE bumping cmd_seq so the worker sees it atomically.
+        buf.putInt(OFF_CMD_TARGET_PID, targetPid)
+
         // Bump cmd_seq — this is the "ring the doorbell" step for the worker
         val newCmdSeq = buf.getInt(OFF_CMD_SEQ) + 1
         buf.putInt(OFF_CMD_SEQ, newCmdSeq)
@@ -427,8 +506,12 @@ class TrainerShm private constructor(
         buf.putLong(OFF_CMD_ADDR, addr)
         buf.putLong(OFF_CMD_VALUE, value)
 
+        // Cross-process retarget (v4): write the game pid before ringing the doorbell.
+        buf.putInt(OFF_CMD_TARGET_PID, targetPid)
+
         val newCmdSeq = buf.getInt(OFF_CMD_SEQ) + 1
         buf.putInt(OFF_CMD_SEQ, newCmdSeq)
+        Log.i(TAG, "runScanCommand[DIAG]: wrote cmd=$cmd vtype=$vtype filter=$filter targetPid=$targetPid newCmdSeq=$newCmdSeq")
 
         val deadline = System.currentTimeMillis() + TIMEOUT_SCAN_MS
         // The worker bumps resp_seq repeatedly during a scan with status
@@ -528,6 +611,9 @@ class TrainerShm private constructor(
         for (i in mask.indices) {
             buf.put(OFF_CMD_MASK + i, mask[i])
         }
+
+        // Cross-process retarget (v4): write the game pid before ringing the doorbell.
+        buf.putInt(OFF_CMD_TARGET_PID, targetPid)
 
         // Bump cmd_seq — "ring the doorbell" — must happen AFTER all param writes
         val newCmdSeq = buf.getInt(OFF_CMD_SEQ) + 1
@@ -646,6 +732,9 @@ class TrainerShm private constructor(
         internal const val OFF_OWNER_PID = 576
         // owner_heartbeat @ 580 (int32) — native increments every ~50ms while alive (v3)
         internal const val OFF_OWNER_HEARTBEAT = 580
+        // cmd_target_pid @ 584 (int32) — cross-process retarget pid (0 = self); UI writes
+        // it before every memory-touching command (v4). Must match trainer_protocol.h.
+        const val OFF_CMD_TARGET_PID = 584
         // cmd_pattern_len @ 768 (int32) — active AOB signature length (<= TRAINER_PATTERN_CAP)
         private const val OFF_CMD_PATTERN_LEN = 768
         // cmd_patch_len   @ 772 (int32) — reserved for TCMD_PATCH
@@ -726,7 +815,7 @@ class TrainerShm private constructor(
 object TrainerProto {
 
     // ---- Wire constants ----
-    const val TRAINER_PROTO_VERSION: Int = 3
+    const val TRAINER_PROTO_VERSION: Int = 5
     const val TRAINER_SHM_SIZE: Int = 4096
     const val TRAINER_RESULT_CAP: Int = 64
     const val TRAINER_FREEZE_CAP: Int = 32
@@ -763,6 +852,9 @@ object TrainerProto {
     const val TCMD_PATCH: Int = 10
     /** RESERVED — restore bytes saved by a prior PATCH; cmd_addr == 0 restores all. */
     const val TCMD_RESTORE: Int = 11
+    /** Read a raw byte window: cmd_addr = start, cmd_pattern_len = byte count; worker
+     *  writes the bytes into cmd_pattern[] and sets resp_count = bytes read. */
+    const val TCMD_READ_BYTES: Int = 12
 
     // ---- enum trainer_filter ----
     const val TFLT_EXACT: Int = 0

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "_comment": "FLiNG-style trainer catalog for GameNative IIC. Each entry points at a downloadable proxy dinput8.dll trainer for a game. The app downloads the matching trainer on demand, verifies sha256, and stages it. OTA-update by committing this file (fetched from https://raw.githubusercontent.com/mayusi/IsItCompatible-GameNative/main/flingtrainers/registry.json). Trainers are user-/community-sourced, version-specific, and show their OWN in-game number-key overlay.",
+  "_schema": "Each object in 'trainers' has: source (STEAM|GOG|EPIC|AMAZON|CUSTOM_GAME — same identity scheme as cheattables/registry.json), gameId (the store appId string; for EPIC use the catalogId), title, gameVersion (the game build this matches or 'latest'), options (array of human-readable cheat labels the trainer exposes), url (https direct-download URL to the trainer dinput8.dll), sha256 (lowercase hex sha256 of the exact dll bytes — the app REJECTS a download whose hash does not match), sizeBytes (int byte length, used as the download cap alongside a hard 32MB ceiling), proxyName (always 'dinput8' — FLiNG trainers are a proxy dinput8.dll), notes (install/usage notes shown in the UI).",
+  "_how_to_populate": "We do NOT bundle copyrighted trainers and ship no seed entries here — adding a fabricated URL would 404 and break the Download button. To add a trainer: host the trainer's dinput8.dll at a stable HTTPS URL, compute its sha256 (`sha256sum dinput8.dll`) and byte size, add one object to the 'trainers' array below with source+gameId matching the game, then commit this file. Every install picks it up within 24h via the OTA sync — no app release needed. Until an entry exists for a game, the UI falls back to the manual 'Load FLiNG trainer (.dll)' import.",
+  "_example_entry_DO_NOT_SHIP_WITH_FAKE_URL": {
+    "source": "STEAM",
+    "gameId": "367520",
+    "title": "Example Game Trainer",
+    "gameVersion": "latest",
+    "options": ["Infinite Health", "Infinite Stamina", "Infinite Money"],
+    "url": "https://example.com/path/to/real/dinput8.dll",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "sizeBytes": 524288,
+    "proxyName": "dinput8",
+    "notes": "Press Num1..Num9 in-game to toggle. Version-specific — match the game build."
+  },
+  "trainers": []
+}

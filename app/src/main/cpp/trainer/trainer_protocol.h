@@ -38,8 +38,19 @@
  * v2: added TCMD_AOB_SCAN (+ reserved TCMD_PATCH/TCMD_RESTORE) and the pattern
  *     param block (cmd_pattern/cmd_mask/cmd_pattern_len/cmd_patch_len) at off 768.
  * v3: added owner_pid/owner_heartbeat at off 576 for single-owner arbitration
- *     (fixes the multi-worker race where every command timed out). */
-#define TRAINER_PROTO_VERSION 3u
+ *     (fixes the multi-worker race where every command timed out).
+ * v4: added cmd_target_pid at off 584 — the CROSS-PROCESS retarget pid. The
+ *     engine now reads/writes the GAME process via /proc/<cmd_target_pid>/mem
+ *     (was /proc/self/mem). cmd_target_pid==0 means "self" (the in-app self-test
+ *     still works). Carved 4 bytes from the reserved pad so cmd_pattern_len stays
+ *     at off 768 and every later offset is UNCHANGED. OFF_CMD_TARGET_PID=584.
+ * v5: added TCMD_READ_BYTES (=12) — read a raw byte window from the game's memory
+ *     into cmd_pattern[]. Reuses cmd_addr (start address) + cmd_pattern_len (byte
+ *     count, capped at TRAINER_PATTERN_CAP); the worker pread()s into cmd_pattern
+ *     and sets resp_count = bytes read. NO layout change — only a new command id —
+ *     so every offset is UNCHANGED. Used by AobCapture to snapshot the bytes
+ *     around a scanned address and synthesise an ASLR-proof AOB signature. */
+#define TRAINER_PROTO_VERSION 5u
 
 /* The mmap'd region is one page (4096) — plenty for the control block plus a
  * bounded result window. Results beyond RESULT_CAP are summarised by count. */
@@ -94,6 +105,12 @@ enum trainer_cmd {
                            * mprotect/verify failure. */
     TCMD_RESTORE    = 11, /* restore bytes saved by a prior PATCH at cmd_addr; cmd_addr==0 =>
                            * restore ALL outstanding patches. resp_status=TST_READY. */
+    TCMD_READ_BYTES = 12, /* read a raw byte window: cmd_addr = start address,
+                           * cmd_pattern_len = byte count (clamped to TRAINER_PATTERN_CAP).
+                           * Worker pread()s the bytes into cmd_pattern[] and sets
+                           * resp_count = bytes read; resp_status=TST_READY on success,
+                           * TST_ERROR (resp_error=EIO) on a failed/short read. Used by the
+                           * "Save this cheat" AOB-capture flow to fingerprint an address. */
 };
 
 /* ---- SCAN_NEXT filter modes (cmd_filter) ---- */
@@ -157,8 +174,16 @@ struct trainer_shm {
     uint32_t owner_pid;                      /* off 576 : CAS 0->pid; sole responder */
     uint32_t owner_heartbeat;                /* off 580 : monotonic tick from the owner */
 
+    /* --- cross-process retarget (UI writes; off 584, v4) ---
+     * The pid of the GAME process whose /proc/<pid>/mem the engine reads/writes.
+     * The Android side discovers the game pid (TrainerEngine.nativeFindGamePid)
+     * and writes it here BEFORE bumping cmd_seq for any memory-touching command.
+     * 0 means "self" — the engine falls back to /proc/self/mem so the in-app
+     * self-test (g_target_pid==0) keeps working byte-for-byte as before. */
+    uint32_t cmd_target_pid;                 /* off 584 : retarget pid (0 = self) */
+
     /* --- AOB pattern param block (UI writes; off fixed at OFF_CMD_PATTERN=768) --- */
-    uint8_t  _pad_to_pattern[768u - 584u];  /* off 584 : reserved gap (184 bytes) */
+    uint8_t  _pad_to_pattern[768u - 588u];  /* off 588 : reserved gap (180 bytes) */
     uint32_t cmd_pattern_len;               /* off 768 : active signature length (<= CAP) */
     uint32_t cmd_patch_len;                 /* off 772 : reserved (TCMD_PATCH) */
     uint8_t  cmd_pattern[TRAINER_PATTERN_CAP]; /* off 776 : signature/patch bytes */
@@ -186,6 +211,7 @@ struct trainer_shm {
  *   OFF_RESULTS       = 64  (int64[TRAINER_RESULT_CAP])  ; ends at 576
  *   OFF_OWNER_PID       = 576  (int32)  ; CAS 0->pid arbitration
  *   OFF_OWNER_HEARTBEAT = 580  (int32)
+ *   OFF_CMD_TARGET_PID  = 584  (int32)  ; cross-process retarget pid (0 = self)
  *   OFF_CMD_PATTERN_LEN = 768  (int32)
  *   OFF_CMD_PATCH_LEN   = 772  (int32)
  *   OFF_CMD_PATTERN     = 776  (uint8[TRAINER_PATTERN_CAP=256])  ; ends at 1032

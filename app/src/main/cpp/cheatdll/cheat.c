@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include "crt_msvcrt_shim.h"  /* route libc onto Wine-builtin msvcrt.dll (no UCRT apisets / _CRT_INIT) */
 
 #define POLL_MS      400
 #define FREEZE_MS    16
@@ -34,6 +35,29 @@
  * We resolve the game dir from the host exe path at startup. */
 static char g_ctrl_path[MAX_PATH];
 static char g_out_path[MAX_PATH];
+
+/* DETERMINISTIC BACKSTOP channel (the reliable channel the Kotlin side uses).
+ *
+ * The next-to-exe paths above only work when the Android side knows the exe's
+ * subfolder (e.g. ".../Game/release/"). It usually does NOT, because most games
+ * launch their exe from a subdir (bin/x64/release/Binaries) while Kotlin only
+ * holds the install ROOT — so the two sides never meet and every scan times out.
+ *
+ * To make BOTH sides agree WITHOUT Kotlin guessing the exe subdir, we ALSO mirror
+ * the whole control/output interaction into a fixed Wine path: C:\ProxyCheat\.
+ * That maps to a STABLE Android path the Kotlin side can always compute from the
+ * container alone:
+ *     Wine    C:\ProxyCheat\cheat_ctrl.txt
+ *     Android <container.rootDir>/.wine/drive_c/ProxyCheat/cheat_ctrl.txt
+ * No exe-subdir knowledge required on either side.
+ *
+ * poll_ctrl reads BOTH the next-to-exe ctrl file AND the backstop ctrl file
+ * (de-duped globally by content), and out_log/scan summaries append to BOTH out
+ * files. The next-to-exe path is kept so DMC3-style root-exe games keep working
+ * exactly as before; the backstop is what makes subfolder-exe games work. */
+#define BACKSTOP_DIR  "C:\\ProxyCheat"
+static char g_ctrl_path2[MAX_PATH];
+static char g_out_path2[MAX_PATH];
 
 /* candidate set from the last scan (heap-allocated lazily — 64MB at full cap) */
 static uintptr_t *g_cand   = NULL;
@@ -97,9 +121,18 @@ static uintptr_t dmc3_actor(void);   /* fwd decl (defined below) */
  *     valbits  : raw 32-bit value bits (for lit) OR hex maxoff (for max)
  *   chainoff=<id>   : disable the slot with that id
  *   chainclear      : disable all chain slots
+ *   freezeabs=<hexaddr>=<val>=<slot> : DIY multi-slot freeze — stores an
+ *                     already-resolved absolute-address freeze into a chain slot
+ *                     (id = DIY_SLOT_BASE+slot) so every selected address freezes.
  * =========================================================================== */
-#define CHAIN_CAP        32u
+#define CHAIN_CAP        64u
 #define CHAIN_OFFS_MAX   8u
+/* DIY absolute-address freezes are routed through the SAME chain table using a
+ * reserved id range so the existing chain_lock/chains_apply/chains_clear multi-slot
+ * machinery freezes every selected address each tick (the old single g_freeze_addr
+ * only held the last of N). DIY_SLOT_BASE+index keeps them clear of catalog ids
+ * (which derive from a string hash masked to [0,0x7FFF]). */
+#define DIY_SLOT_BASE    0x10000
 
 typedef struct {
     int      active;
@@ -113,6 +146,8 @@ typedef struct {
     uintptr_t maxoff;       /* when use_max */
     LONG      litbits;      /* raw value bits when !use_max */
     int       id;
+    int       is_abs;       /* 1 => already-resolved: write litbits to abs_addr each tick */
+    uintptr_t abs_addr;     /* absolute target address when is_abs */
 } chain_slot_t;
 
 static chain_slot_t g_chains[CHAIN_CAP];
@@ -127,9 +162,11 @@ static void chain_install(char *args);
 static void chain_remove(int id);
 static void chains_clear(void);
 
-static void out_log(const char *msg)
+/* Append msg to a single out file (best-effort; missing path is a no-op). */
+static void out_log_to(const char *path, const char *msg)
 {
-    HANDLE h = CreateFileA(g_out_path, FILE_APPEND_DATA, FILE_SHARE_READ,
+    if (!path || path[0] == '\0') return;
+    HANDLE h = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ,
                            NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) return;
     SetFilePointer(h, 0, NULL, FILE_END);
@@ -137,35 +174,294 @@ static void out_log(const char *msg)
     CloseHandle(h);
 }
 
-/* ---- safe accessors (MinGW: no SEH; use IsBad* probes) ---- */
+/* Append to BOTH the next-to-exe out file AND the fixed backstop out file, so the
+ * Android side sees every ack/scan-summary on whichever channel it can reach
+ * (the backstop is the reliable one when the exe lives in a subfolder). */
+static void out_log(const char *msg)
+{
+    out_log_to(g_out_path,  msg);
+    out_log_to(g_out_path2, msg);
+}
+
+/* ===========================================================================
+ * SPEED HACK — in-process IAT time hook (runs INSIDE the game).
+ *
+ * The OLD LD_PRELOAD libspeedhack.so approach deadlocked the Box64/Android
+ * dynamic linker at launch (the linker calls clock_gettime before init), so it
+ * was deleted. This is the correct, proven approach: hook the Windows timing
+ * functions the game already imports, from INSIDE the already-loaded dinput8.dll.
+ *
+ * WHAT WE HOOK — the host EXE's Import Address Table (IAT) entries for:
+ *     QueryPerformanceCounter   (kernel32)  — the modern high-res timer
+ *     GetTickCount64            (kernel32)
+ *     GetTickCount              (kernel32)
+ *     timeGetTime               (winmm)
+ * We walk GetModuleHandle(NULL)'s PE import descriptors, find those thunks by
+ * name, VirtualProtect the IAT page writable, and overwrite the function pointer
+ * with our wrapper. The game then calls OUR function for every timing read.
+ *
+ * TIME SCALING (monotonic anchor) — when the multiplier last changed we capture
+ * an anchor pair (base_real, base_virtual). Each call returns:
+ *     virtual = base_virtual + (real_now - base_real) * multiplier
+ * Because base_virtual carries forward the already-elapsed scaled time, changing
+ * the multiplier never makes the clock jump backwards — scaled time stays
+ * MONOTONIC across multiplier changes. QPC is scaled in its own counter units;
+ * the tick timers are scaled in milliseconds.
+ *
+ * DEFAULT-LAUNCH SAFETY (the paramount constraint) — the hook is GATED behind
+ * the first time speed != 1.0 is requested. A default launch (speed never
+ * touched, or set to exactly 1.0) installs NOTHING: the IAT is byte-for-byte
+ * unchanged and game startup cannot be affected. Once installed at multiplier
+ * 1.0 the wrappers are still an exact pass-through (virtual == real).
+ *
+ * DEFENSIVE — if the host IAT imports ZERO of these timers (some DX12/UE/Unity
+ * titles resolve them dynamically via GetProcAddress) we log one line and
+ * silently no-op. We never crash or block the game. No GetProcAddress/loaded-DLL
+ * fallback this pass (out of scope).
+ * =========================================================================== */
+
+#define SPEED_MIN  0.1f
+#define SPEED_MAX  10.0f
+
+/* Real (unhooked) function pointers, captured from the IAT slot we overwrite so
+ * the wrappers always call the genuine implementation. */
+typedef BOOL    (WINAPI *pfnQPC)(LARGE_INTEGER *);
+typedef ULONGLONG (WINAPI *pfnGTC64)(void);
+typedef DWORD   (WINAPI *pfnGTC)(void);
+typedef DWORD   (WINAPI *pfnTGT)(void);
+
+static pfnQPC   g_real_qpc   = NULL;
+static pfnGTC64 g_real_gtc64 = NULL;
+static pfnGTC   g_real_gtc   = NULL;
+static pfnTGT   g_real_tgt   = NULL;
+
+/* Multiplier + per-clock monotonic anchors. The poll thread updates these under
+ * g_speed_cs; the wrappers (called from the game's own threads) read them under
+ * the same lock. clock_gettime-style anchoring keeps each clock independent. */
+static CRITICAL_SECTION g_speed_cs;
+static int     g_speed_cs_init = 0;
+static volatile LONG g_speed_installed = 0;   /* hook installed? (gate) */
+static float   g_speed_mult = 1.0f;
+
+/* QPC anchors are in raw counter units; tick anchors are in milliseconds. */
+static LONGLONG   g_qpc_base_real = 0, g_qpc_base_virt = 0;
+static ULONGLONG  g_t64_base_real = 0, g_t64_base_virt = 0;
+static DWORD      g_tgt_base_real = 0, g_tgt_base_virt = 0;   /* timeGetTime */
+static DWORD      g_gtc_base_real = 0, g_gtc_base_virt = 0;   /* GetTickCount */
+
+static void speed_lock(void)   { if (g_speed_cs_init) EnterCriticalSection(&g_speed_cs); }
+static void speed_unlock(void) { if (g_speed_cs_init) LeaveCriticalSection(&g_speed_cs); }
+
+/* ---- the wrappers the IAT will point at ---- */
+static BOOL WINAPI hook_QPC(LARGE_INTEGER *out)
+{
+    if (!g_real_qpc) return FALSE;
+    LARGE_INTEGER real; real.QuadPart = 0;
+    BOOL ok = g_real_qpc(&real);
+    if (!ok) return ok;
+    speed_lock();
+    LONGLONG virt = g_qpc_base_virt + (LONGLONG)((double)(real.QuadPart - g_qpc_base_real) * (double)g_speed_mult);
+    speed_unlock();
+    if (out) out->QuadPart = virt;
+    return ok;
+}
+
+static ULONGLONG WINAPI hook_GTC64(void)
+{
+    if (!g_real_gtc64) return 0;
+    ULONGLONG real = g_real_gtc64();
+    speed_lock();
+    ULONGLONG virt = g_t64_base_virt + (ULONGLONG)((double)(real - g_t64_base_real) * (double)g_speed_mult);
+    speed_unlock();
+    return virt;
+}
+
+static DWORD WINAPI hook_GTC(void)
+{
+    if (!g_real_gtc) return 0;
+    DWORD real = g_real_gtc();
+    speed_lock();
+    /* DWORD subtraction wraps correctly modulo 2^32, matching GetTickCount semantics. */
+    DWORD virt = g_gtc_base_virt + (DWORD)((double)(real - g_gtc_base_real) * (double)g_speed_mult);
+    speed_unlock();
+    return virt;
+}
+
+static DWORD WINAPI hook_TGT(void)
+{
+    if (!g_real_tgt) return 0;
+    DWORD real = g_real_tgt();
+    speed_lock();
+    DWORD virt = g_tgt_base_virt + (DWORD)((double)(real - g_tgt_base_real) * (double)g_speed_mult);
+    speed_unlock();
+    return virt;
+}
+
+/* Re-anchor every clock to "now" so that virtual time is continuous when the
+ * multiplier changes (no backward jump). Must be called with g_speed_cs held. */
+static void speed_reanchor_locked(void)
+{
+    if (g_real_qpc)   { LARGE_INTEGER li; li.QuadPart = 0; if (g_real_qpc(&li)) {
+                          g_qpc_base_virt += (LONGLONG)((double)(li.QuadPart - g_qpc_base_real) * (double)g_speed_mult);
+                          g_qpc_base_real  = li.QuadPart; } }
+    if (g_real_gtc64) { ULONGLONG r = g_real_gtc64();
+                          g_t64_base_virt += (ULONGLONG)((double)(r - g_t64_base_real) * (double)g_speed_mult);
+                          g_t64_base_real  = r; }
+    if (g_real_gtc)   { DWORD r = g_real_gtc();
+                          g_gtc_base_virt += (DWORD)((double)(r - g_gtc_base_real) * (double)g_speed_mult);
+                          g_gtc_base_real  = r; }
+    if (g_real_tgt)   { DWORD r = g_real_tgt();
+                          g_tgt_base_virt += (DWORD)((double)(r - g_tgt_base_real) * (double)g_speed_mult);
+                          g_tgt_base_real  = r; }
+}
+
+/* Patch one IAT slot: if *slot currently equals one of the timer functions we
+ * care about, save the real pointer and overwrite the slot with our wrapper.
+ * Returns 1 if this slot was a hooked timer. Matching is BY NAME (passed in). */
+static int speed_patch_slot(const char *impname, void **slot)
+{
+    void *wrapper = NULL;
+    if      (strcmp(impname, "QueryPerformanceCounter") == 0) { g_real_qpc   = (pfnQPC)*slot;   wrapper = (void*)hook_QPC; }
+    else if (strcmp(impname, "GetTickCount64")          == 0) { g_real_gtc64 = (pfnGTC64)*slot; wrapper = (void*)hook_GTC64; }
+    else if (strcmp(impname, "GetTickCount")            == 0) { g_real_gtc   = (pfnGTC)*slot;   wrapper = (void*)hook_GTC; }
+    else if (strcmp(impname, "timeGetTime")             == 0) { g_real_tgt   = (pfnTGT)*slot;   wrapper = (void*)hook_TGT; }
+    else return 0;
+
+    DWORD oldp = 0;
+    if (VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldp)) {
+        *slot = wrapper;
+        VirtualProtect(slot, sizeof(void*), oldp, &oldp);
+    }
+    return 1;
+}
+
+/* Walk the host EXE's PE import table and hook every matching timer thunk.
+ * Returns the number of slots hooked (0 => no timer imports found). */
+static int speed_install_hooks(void)
+{
+    HMODULE base = GetModuleHandleW(NULL);
+    if (!base) return 0;
+    BYTE *image = (BYTE *)base;
+
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)image;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(image + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+
+    IMAGE_DATA_DIRECTORY imp = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (imp.VirtualAddress == 0 || imp.Size == 0) return 0;
+
+    IMAGE_IMPORT_DESCRIPTOR *desc = (IMAGE_IMPORT_DESCRIPTOR *)(image + imp.VirtualAddress);
+    int hooked = 0;
+    for (; desc->Name != 0; desc++) {
+        /* OriginalFirstThunk holds the name table (by-name vs by-ordinal flags);
+         * FirstThunk is the IAT we patch. Walk them in lockstep. */
+        IMAGE_THUNK_DATA *oft = desc->OriginalFirstThunk
+            ? (IMAGE_THUNK_DATA *)(image + desc->OriginalFirstThunk)
+            : (IMAGE_THUNK_DATA *)(image + desc->FirstThunk);
+        IMAGE_THUNK_DATA *ft = (IMAGE_THUNK_DATA *)(image + desc->FirstThunk);
+        for (; oft->u1.AddressOfData != 0; oft++, ft++) {
+            if (oft->u1.Ordinal & IMAGE_ORDINAL_FLAG) continue;   /* by-ordinal: no name to match */
+            IMAGE_IMPORT_BY_NAME *ibn = (IMAGE_IMPORT_BY_NAME *)(image + oft->u1.AddressOfData);
+            hooked += speed_patch_slot((const char *)ibn->Name, (void **)&ft->u1.Function);
+        }
+    }
+    return hooked;
+}
+
+/* Apply a requested multiplier. Installs the hook ON FIRST non-1.0 request only
+ * (the gate); thereafter just re-anchors so the change is monotonic. Safe to call
+ * with mult == 1.0 before any install — that is a complete no-op (the paramount
+ * default-launch safety guarantee). */
+static void speed_set(float mult)
+{
+    if (mult < SPEED_MIN) mult = SPEED_MIN;
+    if (mult > SPEED_MAX) mult = SPEED_MAX;
+
+    /* GATE: never touch the game's IAT until the user actually asks for a
+     * non-default speed. A 1.0 request before install stays a pure no-op. */
+    if (!InterlockedCompareExchange(&g_speed_installed, 0, 0)) {
+        if (mult == 1.0f) {
+            out_log("[speed] 1.0 requested before install — no-op (default-safe)\r\n");
+            return;
+        }
+        int n = speed_install_hooks();
+        char m[160];
+        if (n == 0) {
+            out_log("[speed] no QPC imports found, hook inactive\r\n");
+            /* Mark installed so we don't re-walk the IAT every change; the
+             * wrappers were never written, so this remains a no-op. */
+            InterlockedExchange(&g_speed_installed, 1);
+            return;
+        }
+        snprintf(m, sizeof(m), "[speed] hook installed (%d timer import(s) patched)\r\n", n);
+        out_log(m);
+        InterlockedExchange(&g_speed_installed, 1);
+    }
+
+    speed_lock();
+    /* Re-anchor at the OLD multiplier so already-elapsed virtual time carries
+     * forward, THEN switch to the new multiplier. */
+    speed_reanchor_locked();
+    g_speed_mult = mult;
+    speed_unlock();
+
+    char m[96];
+    snprintf(m, sizeof(m), "[speed] multiplier = %.3f\r\n", mult);
+    out_log(m);
+}
+
+/* ---- safe accessors ----
+ * MinGW has no SEH, so the old IsBadReadPtr/IsBadWritePtr probes FAULT (instead of
+ * returning a safe non-zero) when the page is being torn down — which crashed the
+ * game during mission-transition reallocs. We replace them with a VirtualQuery range
+ * check that mirrors the writable-region filter already used inside do_scan: require
+ * MEM_COMMIT, require a readable/writable protection, and exclude PAGE_GUARD /
+ * PAGE_NOACCESS. VirtualQuery never faults, so this is SEH-free-safe. */
+static int addr_ok(uintptr_t addr, size_t n)
+{
+    if (addr < 0x10000) return 0;
+    uintptr_t a   = addr;
+    uintptr_t end = addr + n;          /* one past the last byte we will touch */
+    while (a < end) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQuery((LPCVOID)a, &mbi, sizeof(mbi)) != sizeof(mbi)) return 0;
+        /* Mirror do_scan's region filter: committed, readable/writable, not guard. */
+        int ok = (mbi.State == MEM_COMMIT) &&
+                 (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                                 PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                                 PAGE_EXECUTE_WRITECOPY)) &&
+                 !(mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS));
+        if (!ok) return 0;
+        uintptr_t region_end = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+        if (region_end <= a) return 0;   /* paranoia: no forward progress */
+        a = region_end;
+    }
+    return 1;
+}
 static int rd_f32(uintptr_t a, float *o)
 {
-    if (a < 0x10000) return 0;
-    if (IsBadReadPtr((const void *)a, 4)) return 0;
+    if (!addr_ok(a, 4)) return 0;
     *o = *(volatile float *)a; return 1;
 }
 static int wr_f32(uintptr_t a, float v)
 {
-    if (a < 0x10000) return 0;
-    if (IsBadWritePtr((void *)a, 4)) return 0;
+    if (!addr_ok(a, 4)) return 0;
     *(volatile float *)a = v; return 1;
 }
 static int rd_i32(uintptr_t a, int32_t *o)
 {
-    if (a < 0x10000) return 0;
-    if (IsBadReadPtr((const void *)a, 4)) return 0;
+    if (!addr_ok(a, 4)) return 0;
     *o = *(volatile int32_t *)a; return 1;
 }
 static int rd_ptr(uintptr_t a, uintptr_t *o)
 {
-    if (a < 0x10000) return 0;
-    if (IsBadReadPtr((const void *)a, sizeof(uintptr_t))) return 0;
+    if (!addr_ok(a, sizeof(uintptr_t))) return 0;
     *o = *(volatile uintptr_t *)a; return 1;
 }
 static int wr_i32(uintptr_t a, int32_t v)
 {
-    if (a < 0x10000) return 0;
-    if (IsBadWritePtr((void *)a, 4)) return 0;
+    if (!addr_ok(a, 4)) return 0;
     *(volatile int32_t *)a = v; return 1;
 }
 
@@ -227,6 +523,138 @@ static void do_scan(int is_int, int32_t iv, float fv)
     uint32_t dump = g_cand_n < 12 ? g_cand_n : 12;
     for (uint32_t i = 0; i < dump; i++) {
         snprintf(m, sizeof(m), "[scan]   cand[%u]=0x%llx\r\n", i, (unsigned long long)g_cand[i]);
+        out_log(m);
+    }
+}
+
+/* ===========================================================================
+ * AOB (array-of-bytes / signature) SCAN — the engine gap CT tables need.
+ *
+ * Cheat-Engine .CT "AOB"/AA-script cheats locate an address by scanning the
+ * process for a byte signature with wildcards (e.g. "48 8B 05 ?? ?? ?? ?? 89"),
+ * then applying a signed offset. We expose this as:
+ *
+ *   aobscan=<id>|<pattern-hex-with-??-wildcards>|<offset>
+ *
+ * <pattern> is space-separated hex bytes; "??" / "?" / "*" is a wildcard byte
+ * (any value). <offset> is a signed decimal byte offset added to the match base
+ * to produce the resolved address (CE applies the same +offset after the AA
+ * "aobscanmodule" finds the signature).
+ *
+ * REGION WALK — this REUSES the exact VirtualQuery region-enumeration + filter
+ * that do_scan/do_snapshot use (committed + readable + non-guard, skip >256MB
+ * buffers), so we don't introduce a second, divergent enumerator. The only
+ * difference vs do_scan is the inner test (byte-pattern + mask match instead of
+ * a 4-byte == compare) and that we read EXECUTABLE pages too (code signatures
+ * live in PAGE_EXECUTE_READ regions), which addr_ok already permits.
+ *
+ * SAFETY — bounded exactly like do_scan: cap total scanned regions, skip giant
+ * (>256MB) regions, and never read past a region end. VirtualQuery told us the
+ * region is committed+readable so a plain pointer compare loop within it is safe
+ * (no per-byte fault probe needed — same reasoning as do_scan's memcpy loop).
+ *
+ * RESULT — written to cheat_out.txt (BOTH channels via out_log) as a line the
+ * Kotlin side polls, mirroring the [scan]/[next] round-trip:
+ *     [aob] id=<id> found=0x<addr>     (first match, +offset applied)
+ *     [aob] id=<id> notfound           (no match in any scanned region)
+ * The id echoes the caller's token so concurrent/parallel aob requests are
+ * disambiguated on the read side.
+ * =========================================================================== */
+#define AOB_PATTERN_MAX 256u   /* max signature length in bytes */
+
+/* Parse a space-separated hex pattern with wildcards into pat[] + mask[].
+ * mask byte 0xFF = must-match, 0x00 = wildcard. Returns the byte count, or 0 on
+ * a malformed/empty/oversized pattern. */
+static uint32_t aob_parse(const char *s, unsigned char *pat, unsigned char *mask)
+{
+    uint32_t n = 0;
+    const char *p = s;
+    while (*p && n < AOB_PATTERN_MAX) {
+        while (*p == ' ' || *p == '\t') p++;   /* skip whitespace between tokens */
+        if (*p == '\0') break;
+        /* read one token up to the next whitespace */
+        char tok[8]; int t = 0;
+        while (*p && *p != ' ' && *p != '\t' && t < (int)sizeof(tok) - 1) tok[t++] = *p++;
+        tok[t] = '\0';
+        if (t == 0) break;
+        if (tok[0] == '?' || tok[0] == '*') {
+            pat[n] = 0x00; mask[n] = 0x00;     /* wildcard byte */
+        } else {
+            /* require exactly two hex digits */
+            char *endp = NULL;
+            long v = strtol(tok, &endp, 16);
+            if (endp == tok || *endp != '\0' || v < 0 || v > 0xFF) return 0;
+            pat[n] = (unsigned char)v; mask[n] = 0xFF;
+        }
+        n++;
+    }
+    return n;
+}
+
+/* Scan committed/readable regions for the first match of (pat,mask), applying the
+ * signed offset. Writes the [aob] result line(s). REUSES do_scan's region walk. */
+static void do_aobscan(const char *id, const char *pattern, long offset)
+{
+    unsigned char pat[AOB_PATTERN_MAX], mask[AOB_PATTERN_MAX];
+    uint32_t plen = aob_parse(pattern, pat, mask);
+    char m[256];
+    if (plen == 0) {
+        snprintf(m, sizeof(m), "[aob] id=%s notfound (bad pattern)\r\n", id);
+        out_log(m);
+        return;
+    }
+
+    SYSTEM_INFO si; GetSystemInfo(&si);
+    uintptr_t addr = (uintptr_t)si.lpMinimumApplicationAddress;
+    uintptr_t end  = (uintptr_t)si.lpMaximumApplicationAddress;
+    const size_t REGION_MAX = (size_t)256 * 1024 * 1024;   /* same cap as do_scan */
+    const uint32_t REGIONS_MAX = 200000u;                  /* bound region count too */
+    uint32_t regions = 0;
+    uint64_t scanned = 0;
+    uintptr_t found = 0;
+
+    MEMORY_BASIC_INFORMATION mbi;
+    while (addr < end && !found && regions < REGIONS_MAX) {
+        if (VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)) != sizeof(mbi)) break;
+        uintptr_t base = (uintptr_t)mbi.BaseAddress;
+        size_t    rsz  = mbi.RegionSize;
+
+        /* Mirror do_scan's filter, but ALSO accept readable/executable code pages
+         * (signatures usually point at code) — addr_ok permits the same set. */
+        int readable = (mbi.State == MEM_COMMIT) &&
+                       (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                                       PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                                       PAGE_EXECUTE_WRITECOPY)) &&
+                       !(mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS));
+        if (readable && rsz >= plen && rsz <= REGION_MAX) {
+            regions++;
+            scanned += rsz;
+            const unsigned char *q = (const unsigned char *)base;
+            size_t last = rsz - plen;            /* last start offset that still fits */
+            for (size_t off = 0; off <= last; off++) {
+                uint32_t k = 0;
+                for (; k < plen; k++) {
+                    if (mask[k] && q[off + k] != pat[k]) break;
+                }
+                if (k == plen) {                 /* full match */
+                    found = base + off;
+                    break;
+                }
+            }
+        }
+        addr = base + rsz;
+        if (rsz == 0) break;
+    }
+
+    if (found) {
+        uintptr_t resolved = (uintptr_t)((intptr_t)found + offset);
+        snprintf(m, sizeof(m), "[aob] id=%s found=0x%llx (match=0x%llx off=%ld regions=%u scannedMB=%llu)\r\n",
+                 id, (unsigned long long)resolved, (unsigned long long)found, offset,
+                 regions, (unsigned long long)(scanned >> 20));
+        out_log(m);
+    } else {
+        snprintf(m, sizeof(m), "[aob] id=%s notfound (regions=%u scannedMB=%llu)\r\n",
+                 id, regions, (unsigned long long)(scanned >> 20));
         out_log(m);
     }
 }
@@ -338,27 +766,11 @@ static void do_next(int32_t iv, float fv)
 /* ---- command file handling ---- */
 static char g_last_cmd[256] = {0};
 
-static void poll_ctrl(void)
+/* Execute one command line (already newline-trimmed). Factored out of poll_ctrl
+ * so it can be driven from BOTH the next-to-exe ctrl file and the backstop ctrl
+ * file by the same dispatcher. */
+static void exec_cmd(char *buf)
 {
-    HANDLE h = CreateFileA(g_ctrl_path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) return;
-
-    char buf[256]; DWORD got = 0;
-    BOOL ok = ReadFile(h, buf, sizeof(buf) - 1, &got, NULL);
-    CloseHandle(h);
-    if (!ok || got == 0) return;
-    buf[got] = '\0';
-
-    /* De-dupe by CONTENT, not size — "scani=43" and "nexti=68" are both 8 bytes,
-     * so a size-only check silently dropped the narrow command (real bug). */
-    if (strcmp(buf, g_last_cmd) == 0) return;   /* unchanged content */
-    strncpy(g_last_cmd, buf, sizeof(g_last_cmd) - 1);
-    g_last_cmd[sizeof(g_last_cmd) - 1] = '\0';
-
-    /* trim trailing newline */
-    char *nl = strpbrk(buf, "\r\n"); if (nl) *nl = '\0';
-
     char m[200];
     snprintf(m, sizeof(m), "[ctrl] got: %s\r\n", buf);
     out_log(m);
@@ -469,11 +881,61 @@ static void poll_ctrl(void)
         snprintf(m, sizeof(m), "[orbscan] want=%d actor=0x%llx sd=0x%llx hits=%d\r\n",
                  want, (unsigned long long)actor, (unsigned long long)sd, hits);
         out_log(m);
+    } else if (strncmp(buf, "aobscan=", 8) == 0) {
+        /* aobscan=<id>|<pattern-hex-with-??>|<offset>
+         * Find the first match of <pattern> across committed/readable memory
+         * (reusing do_scan's region walk), apply the signed byte <offset>, and
+         * write "[aob] id=<id> found=0x<addr>" / "[aob] id=<id> notfound" to the
+         * out file so the Kotlin side can resolve a CT-table AOB cheat's address. */
+        char *p = buf + 8;
+        char *bar1 = strchr(p, '|');
+        char *bar2 = bar1 ? strchr(bar1 + 1, '|') : NULL;
+        if (bar1 && bar2) {
+            *bar1 = '\0'; *bar2 = '\0';
+            const char *id      = p;             /* caller's id token */
+            const char *pattern = bar1 + 1;      /* hex bytes + ?? wildcards */
+            long offset         = strtol(bar2 + 1, NULL, 10);  /* signed decimal */
+            do_aobscan(id, pattern, offset);
+        } else {
+            out_log("[aob] id=? notfound (malformed aobscan command)\r\n");
+        }
     } else if (strncmp(buf, "chain=", 6) == 0) {
         chain_install(buf + 6);
     } else if (strncmp(buf, "chainoff=", 9) == 0) {
         chain_remove((int)strtol(buf + 9, NULL, 10));
         out_log("[chain] removed\r\n");
+    } else if (strncmp(buf, "freezeabs=", 10) == 0) {
+        /* freezeabs=<hexaddr>=<val>=<slot> : DIY multi-slot freeze. Stores an
+         * absolute-address freeze into a chain slot marked already-resolved, so
+         * chains_apply writes <val> to <hexaddr> each tick. <val> is decimal for
+         * i32 or a float literal "12.5" for f32 (a '.' selects f32). */
+        char *p = buf + 10;
+        unsigned long long a = strtoull(p, &p, 16);
+        const char *vstr = (*p == '=') ? p + 1 : p;
+        chain_slot_t c; memset(&c, 0, sizeof(c));
+        if (strchr(vstr, '.')) {
+            c.vtype = 2;
+            union { float f; LONG l; } u; u.f = (float)atof(vstr); c.litbits = u.l;
+        } else {
+            c.vtype = 0;
+            c.litbits = (LONG)strtol(vstr, NULL, 10);
+        }
+        /* slot index is the trailing =<slot> field */
+        const char *eq = strrchr(vstr, '=');
+        int idx = eq ? (int)strtol(eq + 1, NULL, 10) : 0;
+        c.id = DIY_SLOT_BASE + idx;
+        c.is_abs = 1;
+        c.abs_addr = (uintptr_t)a;
+        c.active = 1;
+        chain_lock();
+        int slot = -1;
+        for (uint32_t i = 0; i < CHAIN_CAP; i++) if (g_chains[i].active && g_chains[i].id == c.id) { slot = (int)i; break; }
+        if (slot < 0) for (uint32_t i = 0; i < CHAIN_CAP; i++) if (!g_chains[i].active) { slot = (int)i; break; }
+        if (slot >= 0) g_chains[slot] = c;
+        chain_unlock();
+        snprintf(m, sizeof(m), "[chain] freezeabs addr=0x%llx vtype=%d slot=%d (id=%d)\r\n",
+                 a, c.vtype, slot, c.id);
+        out_log(m);
     } else if (strncmp(buf, "chainclear", 10) == 0) {
         chains_clear();
         out_log("[chain] cleared all\r\n");
@@ -493,12 +955,59 @@ static void poll_ctrl(void)
         InterlockedExchange(&g_dmc3_dt_on, buf[7] == '1' ? 1 : 0);
         snprintf(m, sizeof(m), "[ctrl] dmc3 DT freeze = %c\r\n", buf[7]);
         out_log(m);
+    } else if (strncmp(buf, "speed=", 6) == 0) {
+        /* speed=<float> : scale the game's clock by <float>. The hook is GATED —
+         * it only patches the IAT the first time a non-1.0 value arrives, so a
+         * default launch (speed never set, or set to 1.0) leaves the game's
+         * startup byte-for-byte unchanged. */
+        speed_set((float)atof(buf + 6));
     } else if (strncmp(buf, "freezeoff", 9) == 0) {
         InterlockedExchange(&g_freeze_on, 0);
         InterlockedExchange(&g_dmc3_hp_on, 0);
         InterlockedExchange(&g_dmc3_dt_on, 0);
         out_log("[ctrl] freeze off (all)\r\n");
     }
+}
+
+/* Read one ctrl file, applying the GLOBAL content de-dup, and dispatch it.
+ * Returns 1 if a NEW command was consumed (so the caller can skip the other
+ * file this tick — both channels carry the same command, we want it once). */
+static int poll_ctrl_path(const char *path)
+{
+    if (!path || path[0] == '\0') return 0;
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+
+    char buf[256]; DWORD got = 0;
+    BOOL ok = ReadFile(h, buf, sizeof(buf) - 1, &got, NULL);
+    CloseHandle(h);
+    if (!ok || got == 0) return 0;
+    buf[got] = '\0';
+
+    /* De-dupe by CONTENT, not size — "scani=43" and "nexti=68" are both 8 bytes,
+     * so a size-only check silently dropped the narrow command (real bug).
+     * The de-dup key is GLOBAL across both ctrl files, so identical content in
+     * the next-to-exe file and the backstop file is executed exactly once. */
+    if (strcmp(buf, g_last_cmd) == 0) return 0;   /* unchanged content */
+    strncpy(g_last_cmd, buf, sizeof(g_last_cmd) - 1);
+    g_last_cmd[sizeof(g_last_cmd) - 1] = '\0';
+
+    /* trim trailing newline */
+    char *nl = strpbrk(buf, "\r\n"); if (nl) *nl = '\0';
+
+    exec_cmd(buf);
+    return 1;
+}
+
+static void poll_ctrl(void)
+{
+    /* Backstop FIRST: it is the reliable channel the Android side writes to
+     * regardless of the exe subdir. If it carried a new command we're done for
+     * this tick; otherwise fall back to the next-to-exe file (DMC3-style root
+     * exes, or any path the Android side resolved directly). */
+    if (poll_ctrl_path(g_ctrl_path2)) return;
+    poll_ctrl_path(g_ctrl_path);
 }
 
 /* Resolve the DMC3 live player actor base via the verified chain.
@@ -551,8 +1060,13 @@ static void chains_apply(void)
     for (uint32_t i = 0; i < CHAIN_CAP; i++) {
         chain_slot_t *c = &g_chains[i];
         if (!c->active) continue;
-        uintptr_t addr = chain_resolve(c);
+        /* DIY freezes are already-resolved: write litbits straight to abs_addr. */
+        uintptr_t addr = c->is_abs ? c->abs_addr : chain_resolve(c);
         if (!addr) continue;
+        /* Gate the write on addr_ok: if the resolved cell is not currently a
+         * committed, writable, non-guard page (e.g. mid-realloc on a mission
+         * transition) skip this tick — the chain re-resolves next tick. */
+        if (!addr_ok(addr, 4)) continue;
         if (c->use_max) {
             /* write current = max field (max sits at addr - valoff + maxoff) */
             uintptr_t maxaddr = addr - c->valoff + c->maxoff;
@@ -642,11 +1156,32 @@ static DWORD WINAPI cheat_thread(LPVOID arg)
     snprintf(g_ctrl_path, sizeof(g_ctrl_path), "%s\\cheat_ctrl.txt", exe);
     snprintf(g_out_path,  sizeof(g_out_path),  "%s\\cheat_out.txt",  exe);
 
-    if (!g_chain_cs_init) { InitializeCriticalSection(&g_chain_cs); g_chain_cs_init = 1; }
+    /* Resolve the DETERMINISTIC BACKSTOP paths (C:\ProxyCheat\). This is the
+     * channel the Android side relies on because it can compute the matching
+     * Android path (<container.rootDir>/.wine/drive_c/ProxyCheat/) WITHOUT knowing
+     * which subfolder the exe launched from. CreateDirectoryA is harmless if it
+     * already exists. If creation fails we leave g_*_path2 empty so out_log_to /
+     * poll_ctrl_path treat the backstop as absent and only the next-to-exe path
+     * is used (preserving the old DMC3-style behaviour). */
+    if (CreateDirectoryA(BACKSTOP_DIR, NULL) || GetLastError() == ERROR_ALREADY_EXISTS) {
+        snprintf(g_ctrl_path2, sizeof(g_ctrl_path2), "%s\\cheat_ctrl.txt", BACKSTOP_DIR);
+        snprintf(g_out_path2,  sizeof(g_out_path2),  "%s\\cheat_out.txt",  BACKSTOP_DIR);
+    } else {
+        g_ctrl_path2[0] = '\0';
+        g_out_path2[0]  = '\0';
+    }
 
+    if (!g_chain_cs_init) { InitializeCriticalSection(&g_chain_cs); g_chain_cs_init = 1; }
+    if (!g_speed_cs_init) { InitializeCriticalSection(&g_speed_cs); g_speed_cs_init = 1; }
+
+    /* The "[cheat] engine up" line is the LIVENESS HANDSHAKE the Android side
+     * polls for (on the backstop out file) before declaring the engine available.
+     * Record both the exe gamedir and the chosen backstop dir so failures are
+     * diagnosable from either out file. out_log writes to BOTH out files. */
     char m[256];
-    snprintf(m, sizeof(m), "[cheat] engine up pid=%lu gamedir=%s\r\n",
-             (unsigned long)GetCurrentProcessId(), exe);
+    snprintf(m, sizeof(m), "[cheat] engine up pid=%lu gamedir=%s backstop=%s\r\n",
+             (unsigned long)GetCurrentProcessId(), exe,
+             g_out_path2[0] ? BACKSTOP_DIR : "(none)");
     out_log(m);
 
     int poll_accum = 0;

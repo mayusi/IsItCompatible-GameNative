@@ -1,6 +1,13 @@
 package app.gamenative.ui.component
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.view.KeyEvent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -32,8 +39,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -49,6 +58,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -64,11 +74,17 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import app.gamenative.R
+import app.gamenative.cheats.AobCapture
 import app.gamenative.cheats.Cheat
 import app.gamenative.cheats.CheatExecutor
+import app.gamenative.cheats.CheatTable
 import app.gamenative.cheats.CheatTableRegistry
+import app.gamenative.cheats.CheatTableUserStore
+import app.gamenative.cheats.CheatUiState
+import app.gamenative.trainer.TrainerProto
 import app.gamenative.trainer.TrainerShm
 import app.gamenative.ui.theme.PluviaTheme
+import app.gamenative.ui.util.SnackbarManager
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -151,7 +167,7 @@ fun CheatTab(
     modifier: Modifier = Modifier,
     proxyCtrl: app.gamenative.cheats.ProxyCtrl? = null,
 ) {
-    val accentColor = PluviaTheme.colors.accentPurple
+    val accentColor = PluviaTheme.colors.accentBrand
     val scope = rememberCoroutineScope()
 
     // ---- Progress from trainer engine during scans ----
@@ -188,8 +204,11 @@ fun CheatTab(
 
         // ---- No cheat table — offer the DIY scanner instead ----
         if (!CheatTableRegistry.hasTableFor(appId)) {
-            if (proxyCtrl == null) {
-                // Proxy engine not loaded — can't run DIY scans
+            // The DIY scanner is driven by the host-side TrainerShm engine (reads the
+            // game's /proc/<pid>/mem cross-process). Gate on it being loaded + connected
+            // to the game — NOT on the dead in-Wine proxyCtrl, which never loads on arm64ec.
+            if (trainerShm == null || !trainerShm.available) {
+                // Host engine not loaded/connected — can't run DIY scans
                 CheatSectionHeader(stringResource(R.string.cheat_engine_not_loaded_title))
                 Text(
                     text = "Enable the Trainer in Settings and relaunch this game to make your own cheats.",
@@ -201,7 +220,13 @@ fun CheatTab(
                 Spacer(modifier = Modifier.height(8.dp))
                 CheatDisclaimer()
             } else {
-                DiyCheatMaker(proxyCtrl = proxyCtrl, accentColor = accentColor)
+                DiyCheatMaker(appId = appId, trainerShm = trainerShm, accentColor = accentColor)
+                Spacer(modifier = Modifier.height(12.dp))
+                // Let the user import a Cheat Engine .CT table even when no bundled table exists.
+                CheatImportRow(appId = appId, accentColor = accentColor)
+                Spacer(modifier = Modifier.height(12.dp))
+                // Load a real FLiNG trainer's dinput8.dll (shows its own in-game menu).
+                FlingTrainerRow(appId = appId, accentColor = accentColor)
                 Spacer(modifier = Modifier.height(8.dp))
                 CheatDisclaimer()
             }
@@ -501,6 +526,16 @@ fun CheatTab(
             Spacer(modifier = Modifier.height(4.dp))
         }
 
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Import a Cheat Engine .CT table to ADD to this game's cheat list.
+        CheatImportRow(appId = appId, accentColor = accentColor)
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Load a real FLiNG trainer's dinput8.dll (shows its own in-game menu).
+        FlingTrainerRow(appId = appId, accentColor = accentColor)
+
         Spacer(modifier = Modifier.height(8.dp))
 
         CheatDisclaimer()
@@ -521,9 +556,15 @@ private enum class DiyState {
     Scanning,
     /** First scan returned results; user needs to narrow or freeze. */
     Scanned,
-    /** User initiated unknown-value flow; snapshot taken; direction buttons shown. */
+    /**
+     * DEPRECATED unknown-INITIAL-value "direction mode". The host engine has no
+     * all-memory snapshot primitive (see CheatExecutor.diySnapshot), so this is no
+     * longer reachable from the UI. The value is RETAINED only so the scan-persistence
+     * holder ([CheatUiState.DiyScan]) can round-trip a stale snapshot without crashing;
+     * it renders the normal results UI (folded into the Scanned/Narrowing branch).
+     */
     UnknownMode,
-    /** Narrowing after a scan or unknown-value snapshot. */
+    /** Narrowing after a scan. */
     Narrowing,
     /** Addresses frozen; cheat is active. */
     Frozen,
@@ -550,36 +591,72 @@ private val DIY_GOALS = listOf(
  * containers crashes Compose ("Vertically scrollable component was measured with an
  * infinity maximum height"). Use plain Column/Row with bounded heights only.
  *
- * DIY addresses are NOT persisted across relaunches; Box64 ASLR makes them stale,
- * so all state lives in local remember{} vars only (not CheatUiState).
+ * DIY scan state SURVIVES a QuickMenu close/reopen within a single game session:
+ * the load-bearing scanner vars are seeded from / persisted to [CheatUiState]'s
+ * per-appId DiyScan holder (the host engine keeps the matched addresses across
+ * reopen, so the user can scan -> close -> play -> reopen -> narrow). It is NOT
+ * persisted across relaunches — Box64 ASLR makes addresses stale, so the holder
+ * is cleared per launch via CheatUiState.clearGame(appId).
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DiyCheatMaker(
-    proxyCtrl: app.gamenative.cheats.ProxyCtrl,
+    appId: String,
+    trainerShm: TrainerShm,
     accentColor: androidx.compose.ui.graphics.Color,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
 
-    // ---- Value-type toggle: "i32" or "f32" ----
-    var vtype by remember { mutableStateOf("i32") }
+    // Restore the last scan snapshot for this game (null if no active scan).
+    val restored = remember(appId) { CheatUiState.getDiyScan(appId) }
 
-    // ---- Goal chip selection (-1 = none) ----
+    // ---- Value-type toggle: "i32" or "f32" ----
+    var vtype by remember { mutableStateOf(restored?.vtype ?: "i32") }
+
+    // ---- Goal chip selection (-1 = none; transient, not restored) ----
     var selectedGoalIndex by remember { mutableIntStateOf(-1) }
 
-    // ---- Scanner state machine ----
-    var diyState by remember { mutableStateOf(DiyState.Idle) }
-    var candidateCount by remember { mutableIntStateOf(0) }
-    var candidateAddresses by remember { mutableStateOf(LongArray(0)) }
+    // ---- Scanner state machine (seeded from holder so reopen is narrow-ready) ----
+    var diyState by remember {
+        mutableStateOf(
+            restored?.let { runCatching { DiyState.valueOf(it.stateName) }.getOrNull() } ?: DiyState.Idle,
+        )
+    }
+    var candidateCount by remember { mutableIntStateOf(restored?.count ?: 0) }
+    var candidateAddresses by remember { mutableStateOf(restored?.addresses ?: LongArray(0)) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
 
     // ---- Input fields ----
-    var scanValue by remember { mutableStateOf("") }
+    var scanValue by remember { mutableStateOf(restored?.scanValue ?: "") }
     var narrowValue by remember { mutableStateOf("") }
     var freezeValue by remember { mutableStateOf("") }
+    // Feature 1: one-shot Set / Increase / Decrease inputs (coexist with Freeze).
+    var setValue by remember { mutableStateOf("") }
+    var adjustValue by remember { mutableStateOf("") }
 
-    // Helper: reset to Idle and clear all state
+    // Feature 2: "Save this cheat" dialog state + a transient result banner.
+    var showSaveDialog by remember { mutableStateOf(false) }
+    var saveResultMsg by remember { mutableStateOf<String?>(null) }
+    // Last cheat saved (for the Share / Export action).
+    var savedCheat by remember { mutableStateOf<Cheat?>(null) }
+
+    val context = LocalContext.current
+
+    // Persist the scan snapshot on every state transition so reopen restores it
+    // (and clear it when there's no active scan). This avoids editing each call site.
+    LaunchedEffect(diyState, candidateCount, candidateAddresses) {
+        when (diyState) {
+            DiyState.Scanned, DiyState.Narrowing, DiyState.Frozen, DiyState.UnknownMode ->
+                CheatUiState.setDiyScan(
+                    appId,
+                    CheatUiState.DiyScan(diyState.name, candidateCount, candidateAddresses, vtype, scanValue),
+                )
+            else -> CheatUiState.clearDiyScan(appId)
+        }
+    }
+
+    // Helper: reset to Idle and clear all state (incl. the persisted snapshot)
     fun startOver() {
         diyState = DiyState.Idle
         candidateCount = 0
@@ -588,6 +665,10 @@ private fun DiyCheatMaker(
         scanValue = ""
         narrowValue = ""
         freezeValue = ""
+        setValue = ""
+        adjustValue = ""
+        saveResultMsg = null
+        CheatUiState.clearDiyScan(appId)
     }
 
     Column(
@@ -672,7 +753,7 @@ private fun DiyCheatMaker(
                             if (scanValue.isNotBlank()) {
                                 diyState = DiyState.Scanning
                                 scope.launch {
-                                    val r = CheatExecutor.diyFirstScan(proxyCtrl, vtype, scanValue)
+                                    val r = CheatExecutor.diyFirstScan(trainerShm, vtype, scanValue)
                                     diyState = if (!r.ok) {
                                         errorMsg = r.error ?: "Scan failed"
                                         DiyState.Error
@@ -688,25 +769,11 @@ private fun DiyCheatMaker(
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Can't see a number?",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = "Tip: pick a goal chip above to set the right number type, then scan. " +
+                        "After scanning, change the value in-game and Narrow until 1 address is left.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                     modifier = Modifier.padding(horizontal = 8.dp),
-                )
-                CheatTextButton(
-                    label = "I can't see a number — use direction mode",
-                    accentColor = accentColor,
-                    modifier = Modifier.padding(horizontal = 8.dp),
-                    onClick = {
-                        diyState = DiyState.Scanning
-                        scope.launch {
-                            val ok = CheatExecutor.diySnapshot(proxyCtrl)
-                            diyState = if (ok) DiyState.UnknownMode else {
-                                errorMsg = "Could not take memory snapshot — make sure the game is running"
-                                DiyState.Error
-                            }
-                        }
-                    },
                 )
             }
 
@@ -732,97 +799,14 @@ private fun DiyCheatMaker(
             }
 
             // ------------------------------------------------------------------
-            // UnknownMode — snapshot taken; show direction buttons
+            // Scanned / Narrowing — show result count, offer narrow / freeze /
+            // set / adjust / save. UnknownMode is FOLDED IN here: the old all-memory
+            // "direction mode" snapshot is unsupported by the host engine (see
+            // CheatExecutor.diySnapshot), so the enum value is retained ONLY for the
+            // scan-persistence holder's round-trip (CheatUiState.DiyScan) and renders
+            // the normal results UI rather than a dead branch.
             // ------------------------------------------------------------------
-            DiyState.UnknownMode -> {
-                Text(
-                    text = "Snapshot taken. Now cause the value to change in the game (take damage, spend money, etc.), then tap which direction it moved:",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(horizontal = 8.dp),
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.padding(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    CheatActionButton(
-                        label = "Value went UP",
-                        enabled = true,
-                        accentColor = accentColor,
-                        onClick = {
-                            diyState = DiyState.Scanning
-                            scope.launch {
-                                val r = CheatExecutor.diyNarrowDirection(proxyCtrl, "up")
-                                diyState = if (!r.ok) {
-                                    errorMsg = r.error ?: "Scan failed"
-                                    DiyState.Error
-                                } else {
-                                    candidateCount = r.count
-                                    candidateAddresses = r.addresses
-                                    DiyState.Narrowing
-                                }
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                    CheatActionButton(
-                        label = "Value went DOWN",
-                        enabled = true,
-                        accentColor = accentColor,
-                        onClick = {
-                            diyState = DiyState.Scanning
-                            scope.launch {
-                                val r = CheatExecutor.diyNarrowDirection(proxyCtrl, "down")
-                                diyState = if (!r.ok) {
-                                    errorMsg = r.error ?: "Scan failed"
-                                    DiyState.Error
-                                } else {
-                                    candidateCount = r.count
-                                    candidateAddresses = r.addresses
-                                    DiyState.Narrowing
-                                }
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-                CheatActionButton(
-                    label = "Value changed (either direction)",
-                    enabled = true,
-                    accentColor = accentColor,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp),
-                    onClick = {
-                        diyState = DiyState.Scanning
-                        scope.launch {
-                            val r = CheatExecutor.diyNarrowDirection(proxyCtrl, "changed")
-                            diyState = if (!r.ok) {
-                                errorMsg = r.error ?: "Scan failed"
-                                DiyState.Error
-                            } else {
-                                candidateCount = r.count
-                                candidateAddresses = r.addresses
-                                DiyState.Narrowing
-                            }
-                        }
-                    },
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                CheatTextButton(
-                    label = stringResource(R.string.cheat_start_over_button),
-                    accentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 8.dp),
-                    onClick = { startOver() },
-                )
-            }
-
-            // ------------------------------------------------------------------
-            // Scanned / Narrowing — show result count, offer narrow or freeze
-            // ------------------------------------------------------------------
-            DiyState.Scanned, DiyState.Narrowing -> {
+            DiyState.Scanned, DiyState.Narrowing, DiyState.UnknownMode -> {
                 val tooMany = candidateCount > CheatExecutor.MAX_DIY_FREEZE
 
                 // Match count badge
@@ -858,8 +842,9 @@ private fun DiyCheatMaker(
                 } else if (tooMany) {
                     // Too many — narrow with exact value
                     Spacer(modifier = Modifier.height(4.dp))
+                    // Clear step hint: what to do right after a scan.
                     Text(
-                        text = "Now change the value in the game — take damage or spend money — then type the new number and tap Narrow.",
+                        text = "Now change the value in-game (take damage, spend money), then type the new number and tap Narrow.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.padding(horizontal = 8.dp),
@@ -877,7 +862,7 @@ private fun DiyCheatMaker(
                                 if (narrowValue.isNotBlank()) {
                                     diyState = DiyState.Scanning
                                     scope.launch {
-                                        val r = CheatExecutor.diyNarrow(proxyCtrl, vtype, narrowValue)
+                                        val r = CheatExecutor.diyNarrow(trainerShm, vtype, narrowValue)
                                         diyState = if (!r.ok) {
                                             errorMsg = r.error ?: "Narrow failed"
                                             DiyState.Error
@@ -907,15 +892,19 @@ private fun DiyCheatMaker(
                         onClick = { startOver() },
                     )
                 } else {
-                    // Small enough — show freeze section
+                    // Small enough — show the action section: Freeze, Set, Increase,
+                    // Decrease, and (when narrowed to 1) Save this cheat.
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Good — enter the value you want to lock in (e.g. 999 for max health) and tap Freeze.",
+                        text = "Freeze, Set, or Save this cheat. " +
+                            "Freeze locks the value; Set/Increase/Decrease change it once.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.padding(horizontal = 8.dp),
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    // ---- Freeze (lock) ----
                     Column(modifier = Modifier.padding(horizontal = 8.dp)) {
                         CheatInputRow(
                             value = freezeValue,
@@ -929,7 +918,7 @@ private fun DiyCheatMaker(
                                     diyState = DiyState.Scanning
                                     scope.launch {
                                         val ok = CheatExecutor.diyFreeze(
-                                            proxyCtrl, vtype, candidateAddresses, freezeValue,
+                                            trainerShm, vtype, candidateAddresses, freezeValue,
                                         )
                                         diyState = if (ok) DiyState.Frozen else {
                                             errorMsg = "Freeze failed — try starting over"
@@ -940,6 +929,115 @@ private fun DiyCheatMaker(
                             },
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // ---- Set value once (one-shot; coexists with Freeze) ----
+                    Column(modifier = Modifier.padding(horizontal = 8.dp)) {
+                        CheatInputRow(
+                            value = setValue,
+                            onValueChange = { setValue = it },
+                            hint = "Set value once (e.g. 999)",
+                            buttonLabel = "Set value",
+                            enabled = true,
+                            accentColor = accentColor,
+                            onAction = {
+                                if (setValue.isNotBlank()) {
+                                    val v = setValue
+                                    scope.launch {
+                                        val r = CheatExecutor.diySet(trainerShm, candidateAddresses, vtype, v)
+                                        saveResultMsg = if (r.ok) "Set ${r.count} address(es)" else (r.error ?: "Set failed")
+                                        saveResultMsg?.let { SnackbarManager.show(it) }
+                                    }
+                                }
+                            },
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // ---- Increase / Decrease by a delta (one-shot) ----
+                    Column(modifier = Modifier.padding(horizontal = 8.dp)) {
+                        CheatInputRow(
+                            value = adjustValue,
+                            onValueChange = { adjustValue = it },
+                            hint = "Amount to add / subtract",
+                            buttonLabel = "Increase by",
+                            enabled = true,
+                            accentColor = accentColor,
+                            onAction = {
+                                if (adjustValue.isNotBlank()) {
+                                    val d = adjustValue
+                                    scope.launch {
+                                        val r = CheatExecutor.diyAdjust(trainerShm, candidateAddresses, vtype, d, isIncrease = true)
+                                        saveResultMsg = if (r.ok) "Increased ${r.count} address(es)" else (r.error ?: "Increase failed")
+                                        saveResultMsg?.let { SnackbarManager.show(it) }
+                                    }
+                                }
+                            },
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        CheatActionButton(
+                            label = "Decrease by",
+                            enabled = true,
+                            accentColor = accentColor,
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = {
+                                if (adjustValue.isNotBlank()) {
+                                    val d = adjustValue
+                                    scope.launch {
+                                        val r = CheatExecutor.diyAdjust(trainerShm, candidateAddresses, vtype, d, isIncrease = false)
+                                        saveResultMsg = if (r.ok) "Decreased ${r.count} address(es)" else (r.error ?: "Decrease failed")
+                                        saveResultMsg?.let { SnackbarManager.show(it) }
+                                    }
+                                }
+                            },
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // ---- Save this cheat (permanent, ASLR-proof via AOB) ----
+                    if (candidateCount == 1) {
+                        CheatActionButton(
+                            label = "Save this cheat",
+                            enabled = true,
+                            accentColor = accentColor,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp),
+                            onClick = { showSaveDialog = true },
+                        )
+                    } else {
+                        Text(
+                            text = "Narrow to 1 address to save this as a permanent one-tap cheat.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                            modifier = Modifier.padding(horizontal = 8.dp),
+                        )
+                    }
+
+                    // ---- Share / Export the last saved cheat ----
+                    savedCheat?.let { sc ->
+                        Spacer(modifier = Modifier.height(4.dp))
+                        CheatTextButton(
+                            label = "Share / Export saved cheat",
+                            accentColor = accentColor,
+                            modifier = Modifier.padding(horizontal = 8.dp),
+                            onClick = { shareCheat(context, appId, sc) },
+                        )
+                    }
+
+                    saveResultMsg?.let { msg ->
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = accentColor,
+                            modifier = Modifier.padding(horizontal = 8.dp),
+                        )
+                    }
+
                     Spacer(modifier = Modifier.height(4.dp))
                     CheatTextButton(
                         label = stringResource(R.string.cheat_start_over_button),
@@ -982,7 +1080,7 @@ private fun DiyCheatMaker(
                         .padding(horizontal = 8.dp),
                     onClick = {
                         scope.launch {
-                            proxyCtrl.clearAll()
+                            CheatExecutor.diyClearAll(trainerShm)
                             startOver()
                         }
                     },
@@ -1008,7 +1106,216 @@ private fun DiyCheatMaker(
                 )
             }
         }
+
+        // ---- Save-this-cheat dialog (Feature 2c) ----
+        if (showSaveDialog) {
+            DiySaveCheatDialog(
+                defaultName = DIY_GOALS.getOrNull(selectedGoalIndex)?.label ?: "My cheat",
+                defaultFreeze = freezeValue.ifBlank { setValue },
+                accentColor = accentColor,
+                onDismiss = { showSaveDialog = false },
+                onConfirm = { name, freezeStr ->
+                    showSaveDialog = false
+                    if (candidateAddresses.isNotEmpty()) {
+                        val addr = candidateAddresses[0]
+                        scope.launch {
+                            val freezeRaw = encodeFreezeRaw(freezeStr, vtype)
+                            val cheat = AobCapture.capture(trainerShm, addr, vtype, name, freezeRaw)
+                            val toStore = cheat ?: AobCapture.buildGuidedFallback(name, vtype, freezeRaw)
+                            val ok = persistUserCheat(context, appId, toStore)
+                            saveResultMsg = when {
+                                !ok -> "Could not save cheat"
+                                cheat != null -> "Saved — appears as a one-tap cheat next session."
+                                else -> "No unique signature — saved as a guided cheat (you'll re-scan next session)."
+                            }
+                            if (ok) savedCheat = toStore
+                            saveResultMsg?.let { SnackbarManager.show(it) }
+                        }
+                    }
+                },
+            )
+        }
     }
+}
+
+/**
+ * Encode a user freeze value string into the raw-bits Long stored in a [Cheat]'s
+ * recipe.freezeValue, per the DIY [vtype] ("f32" packs the low-32 IEEE bits;
+ * everything else parses as a Long). Returns null for an unparseable/blank value.
+ */
+private fun encodeFreezeRaw(value: String, vtype: String): Long? {
+    val t = value.trim()
+    if (t.isEmpty()) return null
+    return when (vtype.trim().lowercase()) {
+        "f32", "float" -> t.toFloatOrNull()?.let { TrainerProto.floatToRawBits(it) }
+        "f64", "double" -> t.toDoubleOrNull()?.let { TrainerProto.doubleToRawBits(it) }
+        else -> t.toLongOrNull()
+    }
+}
+
+/**
+ * Persist a synthesised user [cheat] for [appId]'s game: resolve (source, gameId)
+ * from the compound appId (same scheme [runCtImport] uses), merge into any existing
+ * user table, then [CheatTableRegistry.importUserTable] so it appears as a one-tap
+ * cheat immediately (and survives the session). Returns true on success.
+ */
+private fun persistUserCheat(context: Context, appId: String, cheat: Cheat): Boolean {
+    val source = try {
+        app.gamenative.utils.ContainerUtils.extractGameSourceFromContainerId(appId)
+    } catch (e: Exception) {
+        return false
+    }
+    val gameId = try {
+        app.gamenative.utils.ContainerUtils.extractGameIdFromContainerId(appId).toString()
+    } catch (e: Exception) {
+        return false
+    }
+
+    val existing = CheatTableRegistry.tableForAppId(appId)
+    val title = existing?.title?.ifBlank { null } ?: "My cheats ($gameId)"
+    val mergedCheats = buildList {
+        add(cheat)
+        existing?.cheats?.forEach { c -> if (none { it.id == c.id }) add(c) }
+    }
+    val table = CheatTable(source = source, gameId = gameId, title = title, cheats = mergedCheats)
+    return CheatTableRegistry.importUserTable(context, table)
+}
+
+/**
+ * Export a single saved [cheat] as its registry-table-entry JSON and surface it via
+ * an Android share sheet (with a clipboard fallback). The JSON is the substance —
+ * a user can submit it to the community catalog (PR/issue to cheattables/registry.json).
+ */
+private fun shareCheat(context: Context, appId: String, cheat: Cheat) {
+    val source = try {
+        app.gamenative.utils.ContainerUtils.extractGameSourceFromContainerId(appId)
+    } catch (e: Exception) {
+        return
+    }
+    val gameId = try {
+        app.gamenative.utils.ContainerUtils.extractGameIdFromContainerId(appId).toString()
+    } catch (e: Exception) {
+        return
+    }
+    val table = CheatTable(source = source, gameId = gameId, title = cheat.name, cheats = listOf(cheat))
+    val json = CheatTableUserStore.serialize(table).toString(2)
+    val note = "Submit this to the community catalog (PR/issue to cheattables/registry.json):\n\n$json"
+
+    try {
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "GameNative cheat: ${cheat.name}")
+            putExtra(Intent.EXTRA_TEXT, note)
+        }
+        context.startActivity(
+            Intent.createChooser(send, "Share cheat").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    } catch (e: Exception) {
+        // Fallback: copy to clipboard so the user can paste it anywhere.
+        try {
+            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("GameNative cheat", note))
+            SnackbarManager.show("Cheat JSON copied to clipboard")
+        } catch (_: Exception) {}
+    }
+}
+
+/**
+ * Dialog to name a cheat + confirm its freeze value before saving. Reuses the
+ * existing input styling (BasicTextField in a rounded bordered box). Bounded height
+ * — safe inside the QuickMenu's scroll.
+ */
+@Composable
+private fun DiySaveCheatDialog(
+    defaultName: String,
+    defaultFreeze: String,
+    accentColor: androidx.compose.ui.graphics.Color,
+    onDismiss: () -> Unit,
+    onConfirm: (name: String, freeze: String) -> Unit,
+) {
+    var name by remember { mutableStateOf(defaultName) }
+    var freeze by remember { mutableStateOf(defaultFreeze) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = { onConfirm(name.ifBlank { "My cheat" }, freeze) }) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+        title = { Text("Save this cheat") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "It will reappear as a one-tap cheat next session (re-found by its memory signature).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                DialogInputField(
+                    value = name,
+                    onValueChange = { name = it },
+                    hint = "Cheat name",
+                    accentColor = accentColor,
+                    numeric = false,
+                )
+                DialogInputField(
+                    value = freeze,
+                    onValueChange = { freeze = it },
+                    hint = "Freeze value (e.g. 999)",
+                    accentColor = accentColor,
+                    numeric = true,
+                )
+            }
+        },
+    )
+}
+
+/** A single bordered BasicTextField row used inside dialogs (reuses CheatInputRow styling). */
+@Composable
+private fun DialogInputField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    hint: String,
+    accentColor: androidx.compose.ui.graphics.Color,
+    numeric: Boolean,
+) {
+    val shape = RoundedCornerShape(10.dp)
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = if (numeric) KeyboardType.Decimal else KeyboardType.Text,
+            imeAction = ImeAction.Done,
+        ),
+        textStyle = TextStyle(
+            color = MaterialTheme.colorScheme.onSurface,
+            fontFamily = if (numeric) FontFamily.Monospace else FontFamily.Default,
+        ),
+        cursorBrush = SolidColor(accentColor),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(40.dp)
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .border(width = 1.dp, color = accentColor.copy(alpha = 0.4f), shape = shape)
+            .padding(horizontal = 12.dp),
+        decorationBox = { inner ->
+            Box(contentAlignment = Alignment.CenterStart) {
+                if (value.isEmpty()) {
+                    Text(
+                        text = hint,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    )
+                }
+                inner()
+            }
+        },
+    )
 }
 
 /**
@@ -1650,6 +1957,508 @@ private fun OneTapCheatRow(
             // be reached for aob_freeze or aob_patch cheats, but guard defensively.
             else -> Unit
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cheat Engine (.CT) table import
+// ---------------------------------------------------------------------------
+
+/**
+ * Import row + result dialog for Cheat Engine `.CT` tables.
+ *
+ * Realistic "incorporate FLiNG": FLiNG trainers are compiled `.exe` and can't be parsed —
+ * but the same cheats are shared as Cheat Engine `.CT` XML, which [app.gamenative.cheats.CtImporter]
+ * parses into our [Cheat] schema (pointer-chain + static + simple-AOB map; AA-script / Lua /
+ * double / string are skipped with reasons).
+ *
+ * Flow: SAF picker (ACTION_OPEN_DOCUMENT, .CT/.xml) -> read bytes -> CtImporter.import ->
+ * persist via CheatTableRegistry.importUserTable (user store, merged into the catalog) ->
+ * show a result dialog ("Imported N, skipped M (reasons)"). The imported table then appears
+ * in this same tab on the next open (and immediately, since importUserTable invalidates the cache).
+ *
+ * Self-contained: requires only [appId] (to key the table) and a Context (for the user store).
+ */
+@Composable
+private fun CheatImportRow(
+    appId: String?,
+    accentColor: androidx.compose.ui.graphics.Color,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var reading by remember { mutableStateOf(false) }
+    var resultDialog by remember { mutableStateOf<CtImportDialogState?>(null) }
+
+    // SAF picker — ACTION_OPEN_DOCUMENT for .CT / .xml. CE tables have no registered MIME,
+    // so we request the broad set and rely on CtImporter to validate the content.
+    val picker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        reading = true
+        scope.launch {
+            val state = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCtImport(context, appId, uri)
+            }
+            reading = false
+            resultDialog = state
+        }
+    }
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        CheatActionButton(
+            label = stringResource(R.string.cheat_import_button),
+            enabled = appId != null && !reading,
+            accentColor = accentColor,
+            onClick = {
+                // Broad type set: octet-stream/xml/plain — CE .CT files are XML but vary by source.
+                picker.launch(arrayOf("application/octet-stream", "text/xml", "application/xml", "text/plain", "*/*"))
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp),
+        )
+        // FearLessRevolution surfacing — the big community .CT database (Feature 3).
+        Text(
+            text = stringResource(R.string.cheat_import_hint),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+        )
+        if (appId == null) {
+            Text(
+                text = stringResource(R.string.cheat_import_no_game),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+            )
+        }
+        if (reading) {
+            Text(
+                text = stringResource(R.string.cheat_import_reading),
+                style = MaterialTheme.typography.labelSmall,
+                color = accentColor,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+            )
+        }
+    }
+
+    val dialog = resultDialog
+    if (dialog != null) {
+        AlertDialog(
+            onDismissRequest = { resultDialog = null },
+            confirmButton = {
+                TextButton(onClick = { resultDialog = null }) {
+                    Text(stringResource(R.string.cheat_import_dismiss))
+                }
+            },
+            title = {
+                Text(
+                    if (dialog.failed) stringResource(R.string.cheat_engine_not_loaded_title)
+                    else stringResource(R.string.cheat_import_result_title),
+                )
+            },
+            text = {
+                Column {
+                    if (dialog.failed) {
+                        Text(stringResource(R.string.cheat_import_failed))
+                    } else {
+                        Text(
+                            stringResource(
+                                R.string.cheat_import_result_summary,
+                                dialog.imported,
+                                dialog.skipped.size,
+                            ),
+                        )
+                        if (dialog.skipped.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                stringResource(R.string.cheat_import_skipped_header),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            // Cap the listed reasons so a huge table doesn't overflow the dialog.
+                            dialog.skipped.take(12).forEach { s ->
+                                Text(
+                                    text = "• ${s.description}: ${s.reason}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (dialog.skipped.size > 12) {
+                                Text(
+                                    text = "…and ${dialog.skipped.size - 12} more",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+        )
+    }
+}
+
+/** Transient UI state for the import-result dialog. */
+private data class CtImportDialogState(
+    val failed: Boolean,
+    val imported: Int,
+    val skipped: List<app.gamenative.cheats.CtImporter.SkippedEntry>,
+)
+
+/**
+ * Read the picked .CT [uri], parse it via CtImporter for [appId]'s game, persist it, and return
+ * a [CtImportDialogState]. Runs on an IO dispatcher (caller's responsibility). Never throws.
+ */
+private fun runCtImport(
+    context: android.content.Context,
+    appId: String?,
+    uri: Uri,
+): CtImportDialogState {
+    if (appId == null) return CtImportDialogState(failed = true, imported = 0, skipped = emptyList())
+
+    // Resolve (source, gameId) from the compound appId — same scheme CheatTableRegistry uses.
+    val source = try {
+        app.gamenative.utils.ContainerUtils.extractGameSourceFromContainerId(appId)
+    } catch (e: Exception) {
+        return CtImportDialogState(failed = true, imported = 0, skipped = emptyList())
+    }
+    val gameId = try {
+        app.gamenative.utils.ContainerUtils.extractGameIdFromContainerId(appId).toString()
+    } catch (e: Exception) {
+        return CtImportDialogState(failed = true, imported = 0, skipped = emptyList())
+    }
+
+    // Read the file bytes (capped — CtImporter also enforces its own size cap).
+    val bytes = try {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            input.readBytes()
+        }
+    } catch (e: Exception) {
+        null
+    } ?: return CtImportDialogState(failed = true, imported = 0, skipped = emptyList())
+
+    val existing = app.gamenative.cheats.CheatTableRegistry.tableForAppId(appId)
+    val title = existing?.title?.ifBlank { null } ?: "Imported ($gameId)"
+
+    val result = app.gamenative.cheats.CtImporter.import(bytes, source, gameId, title)
+        ?: return CtImportDialogState(failed = true, imported = 0, skipped = emptyList())
+
+    // Merge the imported cheats with any existing catalog cheats for this game so an import
+    // ADDS to (rather than replaces) the bundled list. De-dup by cheat id.
+    val mergedCheats = buildList {
+        addAll(result.table.cheats)
+        existing?.cheats?.forEach { c -> if (none { it.id == c.id }) add(c) }
+    }
+    val tableToStore = result.table.copy(cheats = mergedCheats)
+
+    val ok = app.gamenative.cheats.CheatTableRegistry.importUserTable(context, tableToStore)
+    return if (ok) {
+        CtImportDialogState(failed = false, imported = result.importedCount, skipped = result.skipped)
+    } else {
+        CtImportDialogState(failed = true, imported = 0, skipped = emptyList())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FLiNG trainer import (load a real FLiNG trainer's dinput8.dll into the game)
+// ---------------------------------------------------------------------------
+
+/**
+ * Import + enable row for a real FLiNG trainer.
+ *
+ * A FLiNG trainer IS a proxy `dinput8.dll`: the user supplies their own `.dll` and the
+ * trainer renders its OWN in-game hotkey overlay (Num1 = infinite health, etc.). We do
+ * NOT bundle copyrighted trainers. Our own engine IS the game's `dinput8.dll` (see
+ * CheatStager) — the proven slot on arm64ec — so the FLiNG trainer is staged next to the
+ * exe as `dinput8.fling.dll` and our proxy chain-loads it in DllMain. Both load together.
+ *
+ * Flow: SAF picker (ACTION_OPEN_DOCUMENT) -> validate PE (MZ) + size -> store under
+ * filesDir/fling_trainers/<appId>/dinput8.dll + flip PrefManager.setFlingTrainerEnabled.
+ * On the next launch, FlingStager.stage drops it into the game folder as dinput8.fling.dll;
+ * our dinput8.dll proxy LoadLibraryW's it. The trainer is shown by the GAME, not by us — so
+ * the copy is explicit that the user uses the trainer's own number-key menu.
+ */
+@Composable
+private fun FlingTrainerRow(
+    appId: String?,
+    accentColor: androidx.compose.ui.graphics.Color,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // Re-read enabled/stored state whenever appId changes; bump [version] to refresh after import/remove/download.
+    var version by remember { mutableIntStateOf(0) }
+    var working by remember { mutableStateOf(false) }
+    // null = no download attempted yet; true/false = result of the last download attempt.
+    var catalogDownloadResult by remember(appId) { mutableStateOf<Boolean?>(null) }
+    val enabled = remember(appId, version) {
+        appId != null && app.gamenative.cheats.FlingStager.hasTrainer(context, appId)
+    }
+
+    // Catalog trainers available for THIS game (bundled seed + OTA-synced).
+    // Derived from the compound appId the same way CheatTableRegistry does its lookup.
+    val catalogTrainers = remember(appId) {
+        if (appId == null) {
+            emptyList()
+        } else {
+            try {
+                val source = app.gamenative.utils.ContainerUtils.extractGameSourceFromContainerId(appId)
+                val gameId = app.gamenative.utils.ContainerUtils.extractGameIdFromContainerId(appId).toString()
+                app.gamenative.cheats.FlingCatalogLoader.trainersFor(source, gameId)
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }
+    }
+
+    val picker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri: Uri? ->
+        if (uri == null || appId == null) return@rememberLauncherForActivityResult
+        working = true
+        scope.launch {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                app.gamenative.cheats.FlingStager.importFromUri(context, appId, uri)
+            }
+            working = false
+            version++
+        }
+    }
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        CheatSectionHeader(stringResource(R.string.fling_section_title))
+
+        Text(
+            text = stringResource(R.string.fling_section_body),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+        )
+
+        // ---- Online catalog: trainers available to DOWNLOAD for this game ----
+        if (appId != null) {
+            Spacer(modifier = Modifier.height(8.dp))
+            CheatSectionHeader(stringResource(R.string.fling_catalog_header))
+            Text(
+                text = stringResource(R.string.fling_catalog_intro),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+            )
+            if (catalogTrainers.isEmpty()) {
+                // Honest copy when there's NO catalog trainer AND none imported:
+                // point the user at the real alternatives instead of a dead end.
+                if (!enabled) {
+                    Text(
+                        text = stringResource(R.string.fling_none_title),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                    )
+                    Text(
+                        text = stringResource(R.string.fling_none_alternatives),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                    )
+                } else {
+                    Text(
+                        text = stringResource(R.string.fling_catalog_none),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                    )
+                }
+            } else {
+                catalogTrainers.forEach { entry ->
+                    FlingCatalogTrainerCard(
+                        entry = entry,
+                        downloaded = enabled,
+                        busy = working,
+                        accentColor = accentColor,
+                        onDownload = {
+                            working = true
+                            scope.launch {
+                                val result = app.gamenative.cheats.FlingStager
+                                    .downloadTrainer(context, appId, entry)
+                                working = false
+                                version++
+                                catalogDownloadResult = result.isSuccess
+                            }
+                        },
+                    )
+                }
+            }
+
+            // One-shot result line after a download attempt.
+            catalogDownloadResult?.let { ok ->
+                Text(
+                    text = if (ok) stringResource(R.string.fling_catalog_download_ok)
+                    else stringResource(R.string.fling_catalog_download_failed),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (ok) accentColor else PluviaTheme.colors.accentDanger,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+            CheatSectionHeader(stringResource(R.string.fling_manual_header))
+        }
+
+        if (enabled) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Lock,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(16.dp),
+                )
+                Text(
+                    text = stringResource(R.string.fling_enabled_status),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = accentColor,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            Text(
+                text = stringResource(R.string.fling_enabled_note),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+            )
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        CheatActionButton(
+            label = if (enabled) stringResource(R.string.fling_replace_button)
+            else stringResource(R.string.fling_import_button),
+            enabled = appId != null && !working,
+            accentColor = accentColor,
+            onClick = {
+                // FLiNG dinput8.dll has no registered MIME; request a broad set and validate by content.
+                picker.launch(arrayOf("application/octet-stream", "application/x-msdownload", "*/*"))
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp),
+        )
+
+        if (enabled) {
+            Spacer(modifier = Modifier.height(4.dp))
+            CheatTextButton(
+                label = stringResource(R.string.fling_remove_button),
+                accentColor = PluviaTheme.colors.accentDanger,
+                modifier = Modifier.padding(horizontal = 8.dp),
+                onClick = {
+                    if (appId != null) {
+                        app.gamenative.cheats.FlingStager.removeTrainer(context, appId)
+                        version++
+                    }
+                },
+            )
+        }
+
+        if (appId == null) {
+            Text(
+                text = stringResource(R.string.cheat_import_no_game),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+            )
+        }
+        if (working) {
+            Text(
+                // A download attempt sets catalogDownloadResult on completion; while a
+                // download is in flight (result still null + a catalog exists) show the
+                // verify-aware message, otherwise the generic manual-import "Reading…".
+                text = if (catalogTrainers.isNotEmpty() && catalogDownloadResult == null) {
+                    stringResource(R.string.fling_catalog_downloading)
+                } else {
+                    stringResource(R.string.cheat_import_reading)
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = accentColor,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+            )
+        }
+    }
+}
+
+/**
+ * One downloadable catalog trainer: title, target game build, the cheats it exposes, notes,
+ * and a Download button. Tapping Download calls [FlingStager.downloadTrainer] (HTTPS fetch +
+ * SHA-256 verify + PE validate + store) — the parent row owns the busy/result state.
+ */
+@Composable
+private fun FlingCatalogTrainerCard(
+    entry: app.gamenative.cheats.TrainerEntry,
+    downloaded: Boolean,
+    busy: Boolean,
+    accentColor: androidx.compose.ui.graphics.Color,
+    onDownload: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f))
+            .border(
+                width = 1.dp,
+                color = accentColor.copy(alpha = 0.25f),
+                shape = RoundedCornerShape(10.dp),
+            )
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Text(
+            text = entry.title.ifEmpty { "FLiNG trainer" },
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = stringResource(R.string.fling_catalog_version, entry.gameVersion),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+        )
+        if (entry.options.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = entry.options.joinToString(" • "),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (entry.notes.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = entry.notes,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            )
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        CheatActionButton(
+            label = if (downloaded) stringResource(R.string.fling_catalog_redownload_button)
+            else stringResource(R.string.fling_catalog_download_button),
+            enabled = !busy,
+            accentColor = accentColor,
+            onClick = onDownload,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 

@@ -44,6 +44,7 @@
 #include <limits.h>
 #include <ctype.h>
 #include <android/log.h>
+#include <jni.h>
 
 #include "trainer_protocol.h"
 
@@ -191,8 +192,72 @@ static pthread_mutex_t  g_patch_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct trainer_shm *g_shm = NULL;
 static size_t g_shm_map_size = 0;
 
-/* /proc/self/mem file descriptor, opened O_RDWR once on init. */
+/* mem file descriptor (O_RDWR). Opened lazily by retarget() on the first
+ * memory-touching command — NOT at init time, because at init we do not yet
+ * know which process (the game) we will be reading. For the in-app self-test
+ * g_target_pid stays 0, so retarget(0) opens /proc/self/mem and the existing
+ * self-test path is byte-for-byte unchanged. */
 static int g_mem_fd = -1;
+
+/* The pid whose /proc/<pid>/mem the engine currently reads/writes.
+ * 0 = self. Updated by retarget() when the Android side writes a new
+ * cmd_target_pid. All maps parsing (parse_maps / parse_maps_aob /
+ * maps_has_module) uses this same pid. */
+static int g_target_pid = 0;
+
+/*
+ * Build "/proc/<pid>/<leaf>" into out, or "/proc/self/<leaf>" when pid==0.
+ * Used uniformly by the mem-fd open and every maps reader so the engine
+ * targets exactly one process (self for the self-test, the game otherwise).
+ */
+static void proc_path(int pid, const char *leaf, char *out, size_t out_sz)
+{
+    if (pid > 0)
+        snprintf(out, out_sz, "/proc/%d/%s", pid, leaf);
+    else
+        snprintf(out, out_sz, "/proc/self/%s", leaf);
+}
+
+/*
+ * retarget(pid) — point the engine at /proc/<pid>/mem (or /proc/self/mem when
+ * pid==0). Idempotent: a no-op when pid is unchanged AND the fd is already
+ * open. Closes the previous fd and opens the new one. Logs ENOENT (process
+ * gone) / EPERM (denied) without aborting — mem_read_safe/mem_write_safe will
+ * then simply fail gracefully (no crash) until a valid pid arrives.
+ *
+ * Called at the TOP of the worker dispatch (before the command switch) for any
+ * memory-touching command, so the engine always operates on the pid the
+ * Android side most recently published in cmd_target_pid.
+ */
+static void retarget(int pid)
+{
+    if (pid < 0) pid = 0;
+
+    /* Already pointed at this pid with a live fd — nothing to do. */
+    if (pid == g_target_pid && g_mem_fd >= 0) return;
+
+    if (g_mem_fd >= 0) {
+        close(g_mem_fd);
+        g_mem_fd = -1;
+    }
+
+    char path[64];
+    proc_path(pid, "mem", path, sizeof(path));
+
+    int fd = open(path, O_RDWR);
+    if (fd < 0) {
+        LOGE("trainer: retarget open '%s' failed: %s (errno=%d)",
+             path, strerror(errno), errno);
+        /* Leave g_mem_fd = -1; keep g_target_pid so we don't thrash. The next
+         * command with the same pid will retry the open. */
+        g_target_pid = pid;
+        return;
+    }
+
+    g_mem_fd      = fd;
+    g_target_pid  = pid;
+    LOGI("trainer: retargeted to %s (mem_fd=%d)", path, g_mem_fd);
+}
 
 /* ---- futex helpers ------------------------------------------------------- */
 
@@ -282,8 +347,12 @@ typedef struct {
  */
 static int parse_maps(maps_region_t **out_regions, int *out_count)
 {
-    FILE *f = fopen("/proc/self/maps", "r");
-    if (!f) { LOGE("trainer: fopen /proc/self/maps: %s", strerror(errno)); return -1; }
+    /* Cross-process retarget: read the GAME's maps (/proc/<g_target_pid>/maps),
+     * or /proc/self/maps when g_target_pid==0 (the in-app self-test). */
+    char maps_path[64];
+    proc_path(g_target_pid, "maps", maps_path, sizeof(maps_path));
+    FILE *f = fopen(maps_path, "r");
+    if (!f) { LOGE("trainer: fopen %s: %s", maps_path, strerror(errno)); return -1; }
 
     int cap   = 512;
     int count = 0;
@@ -582,8 +651,12 @@ static void cmd_scan_new(uint32_t vtype, uint64_t target_value)
  */
 static int parse_maps_aob(maps_region_t **out, int *out_count)
 {
-    FILE *f = fopen("/proc/self/maps", "r");
-    if (!f) { LOGE("trainer: fopen /proc/self/maps (aob): %s", strerror(errno)); return -1; }
+    /* Cross-process retarget: read the GAME's maps (/proc/<g_target_pid>/maps),
+     * or /proc/self/maps when g_target_pid==0 (the in-app self-test). */
+    char maps_path[64];
+    proc_path(g_target_pid, "maps", maps_path, sizeof(maps_path));
+    FILE *f = fopen(maps_path, "r");
+    if (!f) { LOGE("trainer: fopen %s (aob): %s", maps_path, strerror(errno)); return -1; }
 
     int cap   = 512;
     int count = 0;
@@ -909,6 +982,34 @@ static void cmd_read(uintptr_t addr, uint32_t vtype)
         return;
     }
     g_shm->resp_value = val;
+    resp_set_status(TST_READY);
+    resp_bump();
+}
+
+/*
+ * TCMD_READ_BYTES
+ * Read a raw byte window of `len` bytes starting at `addr` from the target
+ * process and place them in g_shm->cmd_pattern[]. Crash-safe (pread on the same
+ * fd as mem_read_safe — never dereferences a foreign pointer). Sets resp_count
+ * to the number of bytes read. Used by the Kotlin AobCapture flow to snapshot
+ * the bytes around a scanned address so it can synthesise a unique AOB signature.
+ */
+static void cmd_read_bytes(uintptr_t addr, uint32_t len)
+{
+    if (len == 0 || len > TRAINER_PATTERN_CAP) {
+        LOGE("trainer: READ_BYTES bad len=%u (max %u)", len, TRAINER_PATTERN_CAP);
+        resp_set_status(TST_ERROR); resp_set_error(EINVAL); resp_bump();
+        return;
+    }
+    ssize_t n = pread(g_mem_fd, g_shm->cmd_pattern, len, (off_t)addr);
+    if (n <= 0) {
+        LOGE("trainer: READ_BYTES 0x%lx len=%u failed: %s",
+             (unsigned long)addr, len, strerror(errno));
+        resp_set_status(TST_ERROR); resp_set_error(EIO); resp_bump();
+        return;
+    }
+    atomic_store_explicit(
+        (atomic_uint *)&g_shm->resp_count, (uint32_t)n, memory_order_relaxed);
     resp_set_status(TST_READY);
     resp_bump();
 }
@@ -1317,9 +1418,21 @@ static void *worker_thread(void *arg)
         uint64_t addr   = g_shm->cmd_addr;   /* 64-bit, plain read after acquire above */
         uint64_t value  = g_shm->cmd_value;
 
-        LOGD("trainer: dispatching cmd=%u vtype=%u addr=0x%llx value=0x%llx",
+        /* Cross-process retarget (v4): the Android side writes the GAME pid into
+         * cmd_target_pid before bumping cmd_seq. Re-point the engine at
+         * /proc/<pid>/mem (or /proc/self/mem when 0) for any memory-touching
+         * command, BEFORE the switch. PING/NOP don't touch memory, so they don't
+         * require a valid fd — but retargeting them is harmless and keeps the
+         * mem fd warm for the next scan, so we do it for everything except NOP. */
+        uint32_t target_pid = atomic_load_explicit(
+            (atomic_uint *)&g_shm->cmd_target_pid, memory_order_relaxed);
+        if (cmd != TCMD_NOP) {
+            retarget((int)target_pid);
+        }
+
+        LOGD("trainer: dispatching cmd=%u vtype=%u addr=0x%llx value=0x%llx target_pid=%u",
              cmd, vtype,
-             (unsigned long long)addr, (unsigned long long)value);
+             (unsigned long long)addr, (unsigned long long)value, target_pid);
 
         switch (cmd) {
             case TCMD_NOP:
@@ -1335,6 +1448,10 @@ static void *worker_thread(void *arg)
                 break;
             case TCMD_READ:
                 cmd_read((uintptr_t)addr, vtype);
+                break;
+            case TCMD_READ_BYTES:
+                /* byte count is carried in cmd_pattern_len (same field AOB uses) */
+                cmd_read_bytes((uintptr_t)addr, g_shm->cmd_pattern_len);
                 break;
             case TCMD_WRITE:
                 cmd_write((uintptr_t)addr, vtype, value);
@@ -1352,10 +1469,25 @@ static void *worker_thread(void *arg)
                 cmd_aob_scan((int64_t)addr);
                 break;
             case TCMD_PATCH:
-                cmd_patch((uintptr_t)addr, (uint32_t)g_shm->cmd_patch_len);
+                /* Code-patching DOES NOT WORK cross-process: mprotect only affects
+                 * the caller's address space, pwrite to a foreign r-x page returns
+                 * EIO, and we cannot flush the game's Box64 dynarec from here. When
+                 * retargeted at the game (g_target_pid != 0) reject PATCH cleanly;
+                 * keep it working for the in-app self path (g_target_pid == 0). */
+                if (g_target_pid != 0) {
+                    LOGE("trainer: TCMD_PATCH rejected — code-patch unsupported cross-process (target_pid=%d)", g_target_pid);
+                    resp_set_status(TST_ERROR); resp_set_error(ENOTSUP); resp_bump();
+                } else {
+                    cmd_patch((uintptr_t)addr, (uint32_t)g_shm->cmd_patch_len);
+                }
                 break;
             case TCMD_RESTORE:
-                cmd_restore((uintptr_t)addr);
+                if (g_target_pid != 0) {
+                    LOGE("trainer: TCMD_RESTORE rejected — code-patch unsupported cross-process (target_pid=%d)", g_target_pid);
+                    resp_set_status(TST_ERROR); resp_set_error(ENOTSUP); resp_bump();
+                } else {
+                    cmd_restore((uintptr_t)addr);
+                }
                 break;
             default:
                 LOGE("trainer: unknown cmd %u — ignoring", cmd);
@@ -1583,17 +1715,16 @@ static bool setup_trainer(void)
     g_shm->cmd_addr = 0;  g_shm->cmd_value = 0; g_shm->resp_value = 0;
     g_shm->cmd_pattern_len = 0; g_shm->cmd_patch_len = 0;
     for (uint32_t i = 0; i < TRAINER_RESULT_CAP; i++) g_shm->results[i] = 0;
+    g_shm->cmd_target_pid = 0;
     g_shm->owner_heartbeat = 0;
     g_shm->proto_version = TRAINER_PROTO_VERSION;
 
-    /* Open /proc/self/mem for safe in-process read/write */
-    g_mem_fd = open("/proc/self/mem", O_RDWR);
-    if (g_mem_fd < 0) {
-        LOGE("trainer: open /proc/self/mem failed: %s", strerror(errno));
-        munmap(g_shm, g_shm_map_size);
-        g_shm = NULL;
-        return false;
-    }
+    /* NOTE: the mem fd is NO LONGER opened here. The engine does not yet know
+     * which process (the game) it will read at init time. retarget() opens
+     * /proc/<cmd_target_pid>/mem lazily on the first memory-touching command
+     * (and /proc/self/mem when cmd_target_pid==0, the in-app self-test). This
+     * is what lets the same engine drive the GAME's address space cross-process
+     * without ptrace/root (same-uid /proc/<pid>/mem access, proven on-device). */
 
     /* Initial status: ready */
     resp_set_status(TST_READY);
@@ -1607,7 +1738,7 @@ static bool setup_trainer(void)
     if (pthread_create(&worker_tid, &attr, worker_thread, NULL) != 0) {
         LOGE("trainer: pthread_create worker failed: %s", strerror(errno));
         pthread_attr_destroy(&attr);
-        close(g_mem_fd); g_mem_fd = -1;
+        /* g_mem_fd is opened lazily by retarget(); it is still -1 here. */
         munmap(g_shm, g_shm_map_size); g_shm = NULL;
         return false;
     }
@@ -1652,7 +1783,7 @@ static bool setup_trainer(void)
  * space holds the game — regardless of what argv looks like (the launcher argv
  * is "wine explorer ..." and contains deny-listed tokens like "explorer").
  */
-static bool maps_has_module(const char *target)
+static bool maps_has_module_pid(int pid, const char *target)
 {
     if (!target || !target[0]) return false;
 
@@ -1663,7 +1794,9 @@ static bool maps_has_module(const char *target)
     for (size_t i = 0; i < tl; i++) tgt[i] = (char)tolower((unsigned char)target[i]);
     tgt[tl] = '\0';
 
-    FILE *f = fopen("/proc/self/maps", "r");
+    char maps_path[64];
+    proc_path(pid, "maps", maps_path, sizeof(maps_path));
+    FILE *f = fopen(maps_path, "r");
     if (!f) return false;
 
     char line[MAPS_LINE_MAX];
@@ -1692,6 +1825,12 @@ static bool maps_has_module(const char *target)
     }
     fclose(f);
     return found;
+}
+
+/* Backwards-compatible self wrapper (used by the in-app activation gate). */
+static bool maps_has_module(const char *target)
+{
+    return maps_has_module_pid(0, target);
 }
 
 /*
@@ -1830,37 +1969,99 @@ static bool should_activate_trainer(void)
     return true;
 }
 
+/*
+ * Constructor — runs automatically when the .so is loaded (System.loadLibrary
+ * or LD_PRELOAD). In the HOST-SIDE cross-process architecture this is a NO-OP:
+ * the engine is started EXPLICITLY by the app via Java_..._nativeStart() AFTER
+ * loadLibrary, so merely loading the .so spawns NO threads and mmaps NO shm.
+ *
+ * Why: the engine no longer runs INSIDE the game (the in-Wine LD_PRELOAD path
+ * is dead on arm64ec). It runs inside the APP process and reaches the game via
+ * /proc/<game-pid>/mem. The old should_activate_trainer() gate would DENY the
+ * app process (its cmdline has no .exe), so we must not gate the start path on
+ * it. We keep the symbols (should_activate_trainer / maps_has_module) for
+ * reference but the constructor does nothing heavy now.
+ */
 __attribute__((constructor))
 static void trainer_init(void)
 {
-    const char *enabled = getenv("TRAINER_ENABLED");
-    if (!enabled || enabled[0] != '1') {
-        /* [DIAG] Log the no-op case so we can see when the trainer was NOT enabled
-         * at game-launch time (the #1 cause of in-game "SCAN ERROR": the user
-         * enabled the trainer AFTER launching, so this .so is a dead no-op and the
-         * Android side talks to a shm no worker is listening on). */
-        char dbgcmd[128]; dbgcmd[0] = '\0';
-        int cfd = open("/proc/self/cmdline", O_RDONLY);
-        if (cfd >= 0) { ssize_t cn = read(cfd, dbgcmd, sizeof(dbgcmd)-1); if (cn > 0) dbgcmd[cn] = '\0'; close(cfd); }
-        LOGI("trainer: [DIAG] NOT enabled (TRAINER_ENABLED=%s) in pid=%d cmdline='%s' — no-op",
-             enabled ? enabled : "(null)", (int)getpid(), dbgcmd);
+    /* Deliberately empty. The app calls nativeStart() to bring up the engine. */
+    (void)should_activate_trainer;  /* silence unused-function warning */
+}
+
+/* ====================================================================== *
+ *  JNI surface — the app drives the engine from app.gamenative.trainer.  *
+ *  TrainerEngine. These are the ONLY exported (default-visibility)        *
+ *  symbols; everything else stays hidden (-fvisibility=hidden in CMake).  *
+ * ====================================================================== */
+
+/*
+ * Java_app_gamenative_trainer_TrainerEngine_nativeStart
+ *
+ * Bring up the engine in THIS (the app) process WITHOUT opening any mem fd and
+ * WITHOUT the should_activate_trainer gate. Idempotent: if setup already
+ * succeeded (g_shm != NULL) this is a no-op. setup_trainer() mmaps the shm,
+ * runs owner-CAS arbitration, and spawns the worker + freeze threads. The mem
+ * fd is opened lazily by retarget() on the first memory command.
+ */
+JNIEXPORT void JNICALL
+Java_app_gamenative_trainer_TrainerEngine_nativeStart(JNIEnv *env, jclass clazz)
+{
+    (void)env; (void)clazz;
+    if (g_shm != NULL) {
+        LOGI("trainer: nativeStart — already running (pid=%d), no-op", (int)getpid());
         return;
     }
-
-    /* FIX 1: Gate activation to the actual game process only.
-     * Every process in the Wine/Box64 tree inherits LD_PRELOAD, so this
-     * constructor runs in wineserver, explorer, services, etc.  We must
-     * only activate the worker in the one process that holds the game's
-     * address space.  should_activate_trainer() encodes the deny-list +
-     * target-exe logic; if it returns false we are NOT the game. */
-    if (!should_activate_trainer()) {
-        /* Already logged inside should_activate_trainer() */
-        return;
-    }
-
-    LOGI("trainer: TRAINER_ENABLED=1 detected, starting up (PID %d)", (int)getpid());
-
+    LOGI("trainer: nativeStart — bringing up engine in app pid=%d", (int)getpid());
     if (!setup_trainer()) {
-        LOGE("trainer: setup failed — running in passthrough mode (game unaffected)");
+        LOGE("trainer: nativeStart — setup_trainer failed");
     }
+}
+
+/*
+ * Java_app_gamenative_trainer_TrainerEngine_nativeFindGamePid
+ *
+ * For each candidate pid in candidatePids, check whether /proc/<pid>/maps
+ * contains a file-mapped region whose basename equals targetExe (case-
+ * insensitive, e.g. "dmc3.exe"). Returns the FIRST matching pid, or -1 if none
+ * match (the game pid often appears late, so the caller polls).
+ *
+ * This is the same authoritative test the old in-process gate used
+ * (maps_has_module), now applied cross-process to find which same-uid child
+ * process is actually running the game's PE.
+ */
+JNIEXPORT jint JNICALL
+Java_app_gamenative_trainer_TrainerEngine_nativeFindGamePid(
+        JNIEnv *env, jclass clazz, jstring targetExe, jintArray candidatePids)
+{
+    (void)clazz;
+    if (targetExe == NULL || candidatePids == NULL) return -1;
+
+    const char *target = (*env)->GetStringUTFChars(env, targetExe, NULL);
+    if (target == NULL) return -1;
+
+    jsize n = (*env)->GetArrayLength(env, candidatePids);
+    jint *pids = (*env)->GetIntArrayElements(env, candidatePids, NULL);
+    if (pids == NULL) {
+        (*env)->ReleaseStringUTFChars(env, targetExe, target);
+        return -1;
+    }
+
+    jint found = -1;
+    for (jsize i = 0; i < n; i++) {
+        int pid = (int)pids[i];
+        if (pid <= 0) continue;
+        if (maps_has_module_pid(pid, target)) {
+            found = pid;
+            LOGI("trainer: nativeFindGamePid — '%s' found in pid=%d", target, pid);
+            break;
+        }
+    }
+    if (found < 0) {
+        LOGD("trainer: nativeFindGamePid — '%s' not found among %d candidate(s)", target, (int)n);
+    }
+
+    (*env)->ReleaseIntArrayElements(env, candidatePids, pids, JNI_ABORT);
+    (*env)->ReleaseStringUTFChars(env, targetExe, target);
+    return found;
 }

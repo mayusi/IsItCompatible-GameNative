@@ -36,6 +36,20 @@ object CheatTableLoader {
         Timber.tag(TAG).d("Loaded ${loadedTables.size} cheat tables")
     }
 
+    /**
+     * Merge in (or refresh) a single user-imported table WITHOUT a full reload, then return
+     * the new merged map. Called right after [CtImporter] persists an import via
+     * [CheatTableUserStore], so the freshly imported table is visible immediately. The user
+     * table wins for its game key (same precedence as a full [load], see [mergeUserTables]).
+     */
+    fun applyUserTable(context: Context, table: CheatTable): Map<Pair<GameSource, String>, CheatTable> {
+        val merged = loadedTables.toMutableMap()
+        merged[table.source to table.gameId] = table
+        loadedTables = merged
+        Timber.tag(TAG).i("Merged user table ${table.source}/${table.gameId}; now ${loadedTables.size} tables")
+        return loadedTables
+    }
+
     private fun load(context: Context): Map<Pair<GameSource, String>, CheatTable> {
         val cacheFile = getCacheFile(context)
         val jsonString: String? = when {
@@ -56,8 +70,35 @@ object CheatTableLoader {
             else -> null
         }
 
-        val resolvedJson = jsonString ?: loadBundled(context) ?: return emptyMap()
-        return parse(resolvedJson)
+        // Base catalog = OTA cache if valid, else bundled. (cache wins over bundled.)
+        val resolvedJson = jsonString ?: loadBundled(context)
+        val catalog = if (resolvedJson != null) parse(resolvedJson) else emptyMap()
+
+        // Then overlay the user store on top — bundled < OTA < user (see mergeUserTables).
+        return mergeUserTables(context, catalog)
+    }
+
+    /**
+     * Overlay user-imported tables (from [CheatTableUserStore]) on top of the [catalog]
+     * (bundled/OTA) map. Precedence: a user table for a game key REPLACES the catalog table
+     * for that same key (bundled < OTA < user). Games without a user import keep their catalog
+     * entry. A failure to read the user store leaves the catalog untouched (defensive).
+     */
+    private fun mergeUserTables(
+        context: Context,
+        catalog: Map<Pair<GameSource, String>, CheatTable>,
+    ): Map<Pair<GameSource, String>, CheatTable> {
+        val userTables = try {
+            CheatTableUserStore.loadAll(context)
+        } catch (e: Exception) {
+            Timber.tag(TAG).w(e, "Failed to load user cheat tables — using catalog only")
+            return catalog
+        }
+        if (userTables.isEmpty()) return catalog
+        val merged = catalog.toMutableMap()
+        merged.putAll(userTables) // user wins per key
+        Timber.tag(TAG).d("Merged ${userTables.size} user table(s) over ${catalog.size} catalog table(s)")
+        return merged
     }
 
     private fun loadBundled(context: Context): String? {
@@ -93,8 +134,10 @@ object CheatTableLoader {
             val cacheFile = getCacheFile(context)
             cacheFile.parentFile?.mkdirs()
             cacheFile.writeText(rawJson, Charsets.UTF_8)
-            loadedTables = parsed
-            Timber.tag(TAG).i("Updated cached registry (${parsed.size} tables)")
+            // Re-overlay user-imported tables so an OTA refresh never drops a user import
+            // (bundled < OTA < user — same precedence as the initial load()).
+            loadedTables = mergeUserTables(context, parsed)
+            Timber.tag(TAG).i("Updated cached registry (${parsed.size} catalog tables; ${loadedTables.size} after user merge)")
             true
         } catch (e: Exception) {
             Timber.tag(TAG).w(e, "Failed to write registry cache")

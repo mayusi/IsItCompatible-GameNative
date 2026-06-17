@@ -230,6 +230,23 @@ object CheatExecutor {
         )
     }
 
+    /**
+     * Convert a [ProxyCtrl.ScanReply] into a [DiyResult], mapping the reason code to a
+     * user-facing message so the UI can distinguish "engine not loaded" (no point
+     * retrying — the DLL never injected for this game) from a real "no matches / slow"
+     * timeout. ok=true carries no error.
+     */
+    private fun ProxyCtrl.ScanReply.toDiyResult(): DiyResult = DiyResult(
+        count     = count,
+        addresses = addresses.toLongArray(),
+        ok        = ok,
+        error     = when (reason) {
+            ProxyCtrl.ScanFailReason.OK            -> null
+            ProxyCtrl.ScanFailReason.NOT_CONNECTED -> "Cheat engine not loaded for this game"
+            ProxyCtrl.ScanFailReason.TIMEOUT       -> "Scan timed out (no matches or engine busy)"
+        },
+    )
+
     // -------------------------------------------------------------------------
     // One-tap AOB cheat
     // -------------------------------------------------------------------------
@@ -651,6 +668,11 @@ object CheatExecutor {
      * @return [DiyResult] with the match count and up to 12 candidate addresses,
      *         or ok=false on parse failure or scanner IO/timeout.
      */
+    @Deprecated(
+        "ProxyCtrl in-Wine scanner is dead on arm64ec (DLL never loads). The DIY " +
+            "scanner UI now drives the host-side engine — use diyFirstScan(trainerShm, ...).",
+        ReplaceWith("diyFirstScan(trainerShm, vtype, enteredValue)"),
+    )
     suspend fun diyFirstScan(
         proxy: ProxyCtrl,
         vtype: String,
@@ -668,12 +690,7 @@ object CheatExecutor {
                 proxy.scanInt(v)
             }
         }
-        return DiyResult(
-            count     = reply.count,
-            addresses = reply.addresses.toLongArray(),
-            ok        = reply.ok,
-            error     = if (!reply.ok) "Scan failed or timed out" else null,
-        )
+        return reply.toDiyResult()
     }
 
     /**
@@ -688,6 +705,10 @@ object CheatExecutor {
      * @param enteredValue The value the target variable now holds.
      * @return Updated [DiyResult]; count should decrease toward 1 with each call.
      */
+    @Deprecated(
+        "ProxyCtrl in-Wine scanner is dead on arm64ec. Use diyNarrow(trainerShm, ...).",
+        ReplaceWith("diyNarrow(trainerShm, vtype, enteredValue)"),
+    )
     suspend fun diyNarrow(
         proxy: ProxyCtrl,
         vtype: String,
@@ -705,12 +726,7 @@ object CheatExecutor {
                 proxy.narrowInt(v)
             }
         }
-        return DiyResult(
-            count     = reply.count,
-            addresses = reply.addresses.toLongArray(),
-            ok        = reply.ok,
-            error     = if (!reply.ok) "Scan failed or timed out" else null,
-        )
+        return reply.toDiyResult()
     }
 
     /**
@@ -723,6 +739,11 @@ object CheatExecutor {
      * @param proxy The [ProxyCtrl] bridge.
      * @return true if the snapshot was acknowledged by the DLL; false on failure.
      */
+    @Deprecated(
+        "ProxyCtrl in-Wine scanner is dead on arm64ec. The host engine has no " +
+            "all-memory snapshot primitive — see diySnapshot(trainerShm).",
+        ReplaceWith("diySnapshot(trainerShm)"),
+    )
     suspend fun diySnapshot(proxy: ProxyCtrl): Boolean = proxy.snapshot()
 
     /**
@@ -741,6 +762,10 @@ object CheatExecutor {
      * @param dir   Direction token: "up", "down", or "changed".
      * @return Updated [DiyResult].
      */
+    @Deprecated(
+        "ProxyCtrl in-Wine scanner is dead on arm64ec. Use diyNarrowDirection(trainerShm, ...).",
+        ReplaceWith("diyNarrowDirection(trainerShm, dir)"),
+    )
     suspend fun diyNarrowDirection(
         proxy: ProxyCtrl,
         dir: String,
@@ -756,12 +781,7 @@ object CheatExecutor {
                 error     = "Unknown direction \"$dir\" — expected \"up\", \"down\", or \"changed\"",
             )
         }
-        return DiyResult(
-            count     = reply.count,
-            addresses = reply.addresses.toLongArray(),
-            ok        = reply.ok,
-            error     = if (!reply.ok) "Scan failed or timed out" else null,
-        )
+        return reply.toDiyResult()
     }
 
     /**
@@ -781,6 +801,10 @@ object CheatExecutor {
      * @return true if at least one freeze command was acknowledged; false if
      *         parsing failed or every freeze call returned false.
      */
+    @Deprecated(
+        "ProxyCtrl in-Wine scanner is dead on arm64ec. Use diyFreeze(trainerShm, ...).",
+        ReplaceWith("diyFreeze(trainerShm, vtype, addresses, freezeValue)"),
+    )
     suspend fun diyFreeze(
         proxy: ProxyCtrl,
         vtype: String,
@@ -790,21 +814,17 @@ object CheatExecutor {
         val capped = addresses.take(MAX_DIY_FREEZE)
         var anyOk = false
 
-        when (vtype.trim().lowercase()) {
+        // Format the value once for the wire. The DLL's freezeabs= parser selects f32
+        // when the value token contains a '.', so f32 must always carry a dot.
+        val valStr: String = when (vtype.trim().lowercase()) {
             "f32" -> {
                 val v = freezeValue.trim().toFloatOrNull()
                 if (v == null) {
                     Log.w(TAG, "diyFreeze: invalid f32 freeze value \"$freezeValue\"")
                     return false
                 }
-                for (addr in capped) {
-                    val ok = proxy.freezeFloatAddr(addr, v)
-                    if (ok) {
-                        anyOk = true
-                    } else {
-                        Log.w(TAG, "diyFreeze: freezeFloatAddr(0x${addr.toString(16).uppercase()}) returned false")
-                    }
-                }
+                // Ensure a decimal point so the DLL treats it as f32 (e.g. "5" -> "5.0").
+                v.toString().let { if (it.contains('.')) it else "$it.0" }
             }
             else -> {
                 val v = freezeValue.trim().toIntOrNull()
@@ -812,14 +832,20 @@ object CheatExecutor {
                     Log.w(TAG, "diyFreeze: invalid i32 freeze value \"$freezeValue\"")
                     return false
                 }
-                for (addr in capped) {
-                    val ok = proxy.freezeIntAddr(addr, v)
-                    if (ok) {
-                        anyOk = true
-                    } else {
-                        Log.w(TAG, "diyFreeze: freezeIntAddr(0x${addr.toString(16).uppercase()}) returned false")
-                    }
-                }
+                v.toString()
+            }
+        }
+
+        // Route every address through its OWN DLL chain slot (freezeabs) so ALL of
+        // them freeze simultaneously — the legacy single g_freeze_addr path only held
+        // the last of N. Await each slot's ack so a sequential overwrite of the
+        // command file doesn't lose an earlier address to the ~400 ms DLL poll.
+        for ((slot, addr) in capped.withIndex()) {
+            val ok = proxy.freezeAbs(addr, valStr, slot)
+            if (ok) {
+                anyOk = true
+            } else {
+                Log.w(TAG, "diyFreeze: freezeAbs(0x${addr.toString(16).uppercase()}, slot=$slot) returned false")
             }
         }
 
@@ -827,8 +853,324 @@ object CheatExecutor {
     }
 
     // -------------------------------------------------------------------------
+    // DIY (make-your-own-cheat) scan flow — TrainerShm (host-side engine) ★ LIVE
+    // -------------------------------------------------------------------------
+    //
+    // These overloads mirror the ProxyCtrl-based diy* signatures above but drive
+    // the WORKING host-side TrainerShm engine (which reads /proc/<gamepid>/mem
+    // cross-process). The DIY scanner UI (DiyCheatMaker) calls THESE — the
+    // ProxyCtrl variants are dead (the in-Wine DLL never loads on arm64ec) and are
+    // retained only for the one-tap pointer_chain path, which is out of scope here.
+    //
+    // RESULT-SHAPE PARITY: every overload returns the SAME DiyResult type the UI
+    // already consumes, so DiyCheatMaker's call sites change only the first arg.
+    //
+    // UNKNOWN-VALUE / SNAPSHOT FLOW — IMPORTANT ENGINE CONSTRAINT:
+    //   The native engine's SCAN_NEW only collects addresses whose value EQUALS
+    //   the entered value (it stores prev_value per match), and SCAN_NEXT's
+    //   directional filters (INCREASED/DECREASED/CHANGED) operate ONLY on that
+    //   existing match set (see libtrainer.c cmd_scan_next: it bails with count==0
+    //   when g_matches is empty). There is NO all-memory snapshot primitive in the
+    //   protocol — unlike the old ProxyCtrl.snapshot() which snapshotted ALL
+    //   memory. So a true "I can't see a number" unknown-INITIAL-value scan is not
+    //   supported by the host engine: diySnapshot returns false with no side
+    //   effect. Directional narrowing IS supported once a value-based first scan
+    //   has built the candidate set, and diyNarrowDirection maps cleanly onto
+    //   scanNext(TFLT_INCREASED/DECREASED/CHANGED).
+    // -------------------------------------------------------------------------
+
+    /**
+     * Start a fresh exact-value DIY scan via the host TrainerShm engine.
+     *
+     * Resets the engine's result set, then runs an exact SCAN_NEW for the entered
+     * value (reusing the same value-encoding the guided [firstScan] uses). The
+     * encoded vtype maps "i32"/"f32"/etc through [vtypeToTvt].
+     *
+     * @param trainerShm   The host-side engine bridge (targets the game pid).
+     * @param vtype        Value-type token ("i32", "f32", "u32", ...).
+     * @param enteredValue User-supplied text representing the current in-game value.
+     * @return [DiyResult] with the match count + candidate addresses, or ok=false
+     *         on parse failure / scan error.
+     */
+    suspend fun diyFirstScan(
+        trainerShm: TrainerShm,
+        vtype: String,
+        enteredValue: String,
+    ): DiyResult {
+        val tvt = vtypeToTvt(vtype)
+        val encoded = encodeValue(enteredValue, vtype)
+            ?: run {
+                Log.w(TAG, "diyFirstScan[DIAG]: encodeValue('$enteredValue', '$vtype') returned NULL — scan NOT issued")
+                return DiyResult(0, LongArray(0), false, "Invalid value")
+            }
+        Log.i(TAG, "diyFirstScan[DIAG]: issuing SCAN_NEW value='$enteredValue' encoded=$encoded tvt=$tvt available=${trainerShm.available}")
+
+        // NOTE: no pre-scan reset() — cmd_scan_new() already frees the prior match
+        // set on the native side (libtrainer.c matches_free at SCAN_NEW entry), so a
+        // separate RESET round-trip is redundant. Issue SCAN_NEW directly.
+        val result = trainerShm.scanNew(encoded, tvt)
+        Log.i(TAG, "diyFirstScan[DIAG]: SCAN_NEW returned success=${result.success} count=${result.count} err=${result.errorMsg}")
+        return result.toDiyResult()
+    }
+
+    /**
+     * Narrow the current DIY result set to addresses whose value now equals
+     * [enteredValue] (exact SCAN_NEXT). Mirrors the guided [narrow].
+     *
+     * @param trainerShm   The host-side engine bridge.
+     * @param vtype        Value-type token (used only to encode [enteredValue];
+     *                     the engine narrows with the type captured at SCAN_NEW).
+     * @param enteredValue The value the target variable now holds.
+     * @return Updated [DiyResult]; count should decrease toward 1 with each call.
+     */
+    suspend fun diyNarrow(
+        trainerShm: TrainerShm,
+        vtype: String,
+        enteredValue: String,
+    ): DiyResult {
+        val encoded = encodeValue(enteredValue, vtype)
+            ?: return DiyResult(0, LongArray(0), false, "Invalid value")
+
+        val result = trainerShm.scanNext(TrainerProto.TFLT_EXACT, encoded)
+        return result.toDiyResult()
+    }
+
+    /**
+     * Unknown-INITIAL-value snapshot for the host engine — NOT SUPPORTED.
+     *
+     * The native protocol has no all-memory snapshot primitive (see the section
+     * comment above): SCAN_NEXT's directional filters require an existing match
+     * set built by a value-based SCAN_NEW. There is therefore nothing to snapshot
+     * before the user has done a first scan. Returns false with no side effect so
+     * the UI can surface a clear "type the on-screen value first" message rather
+     * than silently entering a direction mode that would always yield 0 matches.
+     *
+     * Directional narrowing of an EXISTING result set is still available via
+     * [diyNarrowDirection].
+     */
+    @Suppress("UNUSED_PARAMETER")
+    suspend fun diySnapshot(trainerShm: TrainerShm): Boolean = false
+
+    /**
+     * Narrow the current DIY result set to addresses whose value moved in [dir]
+     * since the last scan pass. Maps onto SCAN_NEXT directional filters, which the
+     * engine evaluates against each match's stored prev_value.
+     *
+     * Accepted [dir] (case-insensitive): "up" -> TFLT_INCREASED, "down" ->
+     * TFLT_DECREASED, "changed" -> TFLT_CHANGED. The cmd_value is ignored by the
+     * engine for these filters, so 0 is passed.
+     *
+     * Requires a prior value-based [diyFirstScan] to have built the candidate set;
+     * if none exists the engine returns count==0 (handled as a normal empty result).
+     *
+     * @param trainerShm The host-side engine bridge.
+     * @param dir        Direction token: "up", "down", or "changed".
+     * @return Updated [DiyResult]; ok=false only on an unrecognised direction or a
+     *         real engine error.
+     */
+    suspend fun diyNarrowDirection(
+        trainerShm: TrainerShm,
+        dir: String,
+    ): DiyResult {
+        val filter = when (dir.trim().lowercase()) {
+            "up"      -> TrainerProto.TFLT_INCREASED
+            "down"    -> TrainerProto.TFLT_DECREASED
+            "changed" -> TrainerProto.TFLT_CHANGED
+            else      -> return DiyResult(
+                count     = 0,
+                addresses = LongArray(0),
+                ok        = false,
+                error     = "Unknown direction \"$dir\" — expected \"up\", \"down\", or \"changed\"",
+            )
+        }
+        val result = trainerShm.scanNext(filter, 0L)
+        return result.toDiyResult()
+    }
+
+    /**
+     * Freeze a set of DIY candidate addresses at an explicit [freezeValue] via the
+     * host engine. At most [MAX_DIY_FREEZE] addresses are processed; excess entries
+     * are ignored. Mirrors the guided [applyFreeze] freeze loop but takes a raw
+     * address list + a user-entered value string (the DIY scanner has no [Cheat]).
+     *
+     * Parses [freezeValue] per [vtype] (reusing [encodeValue]); an unparseable
+     * value returns false immediately without issuing any freeze.
+     *
+     * @param trainerShm  The host-side engine bridge.
+     * @param vtype       Value-type token ("i32", "f32", ...).
+     * @param addresses   Candidate addresses from the last [DiyResult].
+     * @param freezeValue The value to write and hold at each address.
+     * @return true if at least one freeze command was acknowledged; false on parse
+     *         failure or if every freeze call returned false.
+     */
+    suspend fun diyFreeze(
+        trainerShm: TrainerShm,
+        vtype: String,
+        addresses: LongArray,
+        freezeValue: String,
+    ): Boolean {
+        val tvt = vtypeToTvt(vtype)
+        val encoded = encodeValue(freezeValue, vtype)
+        if (encoded == null) {
+            Log.w(TAG, "diyFreeze: invalid $vtype freeze value \"$freezeValue\"")
+            return false
+        }
+
+        val capped = addresses.take(MAX_DIY_FREEZE)
+        var anyOk = false
+        for (addr in capped) {
+            val ok = trainerShm.freeze(addr, encoded, tvt)
+            if (ok) {
+                anyOk = true
+            } else {
+                Log.w(TAG, "diyFreeze: freeze(0x${addr.toString(16).uppercase()}) returned false")
+            }
+        }
+        return anyOk
+    }
+
+    /**
+     * One-shot SET: write [value] to each narrowed [addresses] entry once (no freeze).
+     * Mirrors [diyFreeze]'s cap and parse contract but issues a single WRITE per
+     * address instead of a continuous freeze, so the value can keep changing in-game
+     * afterwards (handy for "give me 999 now, then keep playing normally").
+     *
+     * Caps at [MAX_DIY_FREEZE] addresses. Returns the number of addresses written.
+     *
+     * @param trainerShm The host-side engine bridge.
+     * @param addresses  Candidate addresses from the last [DiyResult].
+     * @param vtype      Value-type token ("i32", "f32", ...).
+     * @param value      The value to write once at each address.
+     */
+    suspend fun diySet(
+        trainerShm: TrainerShm,
+        addresses: LongArray,
+        vtype: String,
+        value: String,
+    ): DiyResult {
+        val tvt = vtypeToTvt(vtype)
+        val encoded = encodeValue(value, vtype)
+            ?: return DiyResult(0, LongArray(0), false, "Invalid value for type $vtype: \"$value\"")
+
+        val capped = addresses.take(MAX_DIY_FREEZE)
+        val written = mutableListOf<Long>()
+        for (addr in capped) {
+            if (trainerShm.write(addr, encoded, tvt)) {
+                written.add(addr)
+            } else {
+                Log.w(TAG, "diySet: write(0x${addr.toString(16).uppercase()}) returned false")
+            }
+        }
+        return DiyResult(
+            count = written.size,
+            addresses = written.toLongArray(),
+            ok = written.isNotEmpty(),
+            error = if (written.isEmpty()) "No address could be written" else null,
+        )
+    }
+
+    /**
+     * One-shot ADJUST: read each address's CURRENT value, add or subtract [delta],
+     * and write the result back. For [isIncrease] == true the delta is added;
+     * otherwise it is subtracted.
+     *
+     * Per-address: read the current value via [TrainerShm.read]; if the read
+     * returns null (genuine read failure — see the read()-null-on-error fix) the
+     * address is SKIPPED rather than written with garbage. For f32 the Long bits
+     * are decoded to Float, adjusted, then re-encoded to the low-32 raw bits; for
+     * integer types a plain Long add/sub is used. Caps at [MAX_DIY_FREEZE].
+     *
+     * @param trainerShm The host-side engine bridge.
+     * @param addresses  Candidate addresses from the last [DiyResult].
+     * @param vtype      Value-type token ("i32", "f32", ...).
+     * @param delta      The amount to add/subtract (parsed per [vtype]).
+     * @param isIncrease true to add [delta], false to subtract it.
+     * @return [DiyResult] whose count is the number of addresses successfully adjusted.
+     */
+    suspend fun diyAdjust(
+        trainerShm: TrainerShm,
+        addresses: LongArray,
+        vtype: String,
+        delta: String,
+        isIncrease: Boolean,
+    ): DiyResult {
+        val tvt = vtypeToTvt(vtype)
+        val isFloat = vtype.trim().lowercase() in setOf("f32", "float")
+
+        // Parse delta per type (float vs integer).
+        val deltaFloat: Float
+        val deltaLong: Long
+        if (isFloat) {
+            deltaFloat = delta.trim().toFloatOrNull()
+                ?: return DiyResult(0, LongArray(0), false, "Invalid delta for type $vtype: \"$delta\"")
+            deltaLong = 0L
+        } else {
+            deltaLong = delta.trim().toLongOrNull()
+                ?: return DiyResult(0, LongArray(0), false, "Invalid delta for type $vtype: \"$delta\"")
+            deltaFloat = 0f
+        }
+
+        val capped = addresses.take(MAX_DIY_FREEZE)
+        val adjusted = mutableListOf<Long>()
+        for (addr in capped) {
+            val current = trainerShm.read(addr, tvt)
+            if (current == null) {
+                // Genuine read failure — DON'T write garbage; skip this address.
+                Log.w(TAG, "diyAdjust: read(0x${addr.toString(16).uppercase()}) returned null — skipping")
+                continue
+            }
+            val newEncoded: Long = if (isFloat) {
+                val cur = TrainerProto.rawBitsToFloat(current)
+                val next = if (isIncrease) cur + deltaFloat else cur - deltaFloat
+                TrainerProto.floatToRawBits(next)
+            } else {
+                val next = if (isIncrease) current + deltaLong else current - deltaLong
+                next
+            }
+            if (trainerShm.write(addr, newEncoded, tvt)) {
+                adjusted.add(addr)
+            } else {
+                Log.w(TAG, "diyAdjust: write(0x${addr.toString(16).uppercase()}) returned false")
+            }
+        }
+        return DiyResult(
+            count = adjusted.size,
+            addresses = adjusted.toLongArray(),
+            ok = adjusted.isNotEmpty(),
+            error = if (adjusted.isEmpty()) "No address could be adjusted" else null,
+        )
+    }
+
+    /**
+     * Clear ALL DIY engine state: drop the result set and remove every frozen
+     * address. Mirrors the old ProxyCtrl.clearAll() the UI's "Stop / Start over"
+     * button used. unfreeze(0L) clears all freezes; reset() drops the result set.
+     */
+    suspend fun diyClearAll(trainerShm: TrainerShm): Boolean {
+        val unfrozen = trainerShm.unfreeze(0L)   // 0 = clear all frozen addresses
+        val reset = trainerShm.reset()
+        return unfrozen && reset
+    }
+
+    // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
+
+    /** Convert a [ScanResult] from TrainerShm into a [DiyResult] for the DIY UI. */
+    private fun ScanResult.toDiyResult(): DiyResult = when {
+        !success -> DiyResult(
+            count     = 0,
+            addresses = LongArray(0),
+            ok        = false,
+            error     = errorMsg ?: "Scan failed (code $errorCode)",
+        )
+        else -> DiyResult(
+            count     = count,
+            addresses = addresses,
+            ok        = true,
+            error     = null,
+        )
+    }
 
     /**
      * Parse a space-separated hex patch string into a [ByteArray].

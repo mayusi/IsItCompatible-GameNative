@@ -69,7 +69,6 @@ import app.gamenative.PrefManager
 import app.gamenative.R
 import app.gamenative.trainer.MacroShm
 import app.gamenative.trainer.ScanResult
-import app.gamenative.trainer.SpeedHackShm
 import app.gamenative.trainer.TrainerProto
 import app.gamenative.trainer.TrainerShm
 import app.gamenative.ui.theme.PluviaTheme
@@ -134,17 +133,17 @@ private object TrainerCapTab {
  * The Trainer tab body, placed inside QuickMenu's content area.
  *
  * [trainerShm] may be null if the trainer engine couldn't be initialised.
- * [speedHackShm] may be null if speed hack is disabled or not yet loaded.
  * [macroShm] may be null if macros are disabled or not yet loaded.
  * [appId] is the compound container id (e.g. "STEAM_271590") used by the Cheats tab
  *          to look up cheat tables.  Null when no game is running.
+ * [proxyCtrl] drives the in-game cheat DLL — used by both the Cheats tab and the
+ *          Speed tab (the speed-hack multiplier command). Null if no game is running.
  * [focusRequester] is the first-item requester used by QuickMenu's LaunchedEffect.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TrainerTab(
     trainerShm: TrainerShm?,
-    speedHackShm: SpeedHackShm?,
     macroShm: MacroShm?,
     appId: String? = null,
     proxyCtrl: app.gamenative.cheats.ProxyCtrl? = null,
@@ -152,7 +151,7 @@ fun TrainerTab(
     modifier: Modifier = Modifier,
 ) {
     val scrollState = rememberScrollState()
-    val accentColor = PluviaTheme.colors.accentPurple
+    val accentColor = PluviaTheme.colors.accentBrand
 
     // Capability tab selection — persists across recompositions while QuickMenu is open
     var selectedCapTab by remember { mutableIntStateOf(TrainerCapTab.MEMORY) }
@@ -236,7 +235,7 @@ fun TrainerTab(
             }
 
             TrainerCapTab.SPEED -> {
-                SpeedSection(speedHackShm = speedHackShm)
+                SpeedSection(trainerShm = trainerShm, appId = appId)
             }
 
             TrainerCapTab.MACROS -> {
@@ -275,7 +274,7 @@ fun TrainerTab(
 private fun TrainerNotEnabledSection(
     focusRequester: FocusRequester? = null,
 ) {
-    val accentColor = PluviaTheme.colors.accentPurple
+    val accentColor = PluviaTheme.colors.accentBrand
 
     QuickMenuSectionHeader(title = stringResource(R.string.trainer_not_enabled_title))
 
@@ -326,7 +325,7 @@ private fun TrainerScannerSection(
     focusRequester: FocusRequester? = null,
 ) {
     val scope = rememberCoroutineScope()
-    val accentColor = PluviaTheme.colors.accentPurple
+    val accentColor = PluviaTheme.colors.accentBrand
 
     // ---- Scan state ----
     var selectedVtypeIndex by remember { mutableIntStateOf(0) }

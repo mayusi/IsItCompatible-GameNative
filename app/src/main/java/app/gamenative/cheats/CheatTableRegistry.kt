@@ -63,6 +63,23 @@ object CheatTableRegistry {
         cachedTables = null
     }
 
+    /**
+     * Persist a user-imported [table] (e.g. from [CtImporter]) and make it live immediately.
+     *
+     * Pipeline: write to [CheatTableUserStore] -> overlay onto [CheatTableLoader.loadedTables]
+     * via [CheatTableLoader.applyUserTable] (user wins per game key) -> [invalidateCache] so the
+     * next [tableForAppId] lookup sees it. Returns true on a successful persist.
+     *
+     * Call from a background coroutine (it does file IO).
+     */
+    fun importUserTable(context: Context, table: CheatTable): Boolean {
+        val saved = CheatTableUserStore.save(context, table)
+        if (!saved) return false
+        CheatTableLoader.applyUserTable(context, table)
+        invalidateCache()
+        return true
+    }
+
     // -------------------------------------------------------------------------
     // Lookup API
     // -------------------------------------------------------------------------

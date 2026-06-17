@@ -15,7 +15,7 @@ import java.nio.ByteOrder
  * known 4-byte sentinel into a direct ByteBuffer (native heap, not moved by GC),
  * then drives the full command chain through TrainerShm:
  *
- *   1. Set env vars  →  System.loadLibrary("trainer")  (constructor activates)
+ *   1. TrainerEngine.loadAndStart() — load + nativeStart() (engine runs in-app)
  *   2. TrainerShm.create(context)  — mmap the same trainer.mem the lib created
  *   3. ping()                      — confirm worker thread is alive
  *   4. scanNew(SENTINEL_1, TVT_I32) — find the sentinel in app memory
@@ -27,8 +27,10 @@ import java.nio.ByteOrder
  *  10. Read back via read() and confirm freeze took effect
  *  11. unfreeze() / reset() cleanup
  *
- * If this passes in-process, the same engine works when LD_PRELOAD'd into Wine,
- * because the scanner and IPC paths are identical — only the calling process differs.
+ * Because the self-test never sets a game target pid, the engine targets
+ * /proc/self/mem (g_target_pid==0). This is the SAME scanner/IPC code that, when
+ * given a game pid via TrainerShm.setTargetPid, reads /proc/<game-pid>/mem — so a
+ * passing self-test validates the cross-process engine too (only the fd differs).
  *
  * GC / SENTINEL SAFETY
  * --------------------
@@ -40,12 +42,12 @@ import java.nio.ByteOrder
  * probe via a zero-capacity slice trick) could be used, but we don't need the raw
  * address because the SCANNER discovers it for us — that's the whole point of the test.
  *
- * OPTION A vs B
- * -------------
- * This implementation uses Option A (pure Kotlin): Os.setenv() is called BEFORE
- * System.loadLibrary("trainer") so the .so's __attribute__((constructor)) sees
- * TRAINER_ENABLED=1 and TRAINER_BASE_PATH at load time. No native code changes
- * are required.
+ * STARTUP
+ * -------
+ * Os.setenv("TRAINER_BASE_PATH", ...) is called BEFORE TrainerEngine.loadAndStart()
+ * so setup_trainer() creates trainer.mem in the same dir TrainerShm.create reads.
+ * The .so constructor is now a no-op; nativeStart() (called by loadAndStart) brings
+ * the engine up explicitly in-process.
  *
  * MULTIPLE LOADS
  * --------------
@@ -195,19 +197,29 @@ object TrainerSelfTest {
         // -----------------------------------------------------------------
         var libLoaded = false
         try {
-            Os.setenv("TRAINER_ENABLED", "1", /* overwrite = */ true)
+            // TRAINER_BASE_PATH still tells libtrainer where to create
+            // <base>/trainer_shm/trainer.mem (matches TrainerShm.create). TRAINER_ENABLED
+            // is no longer consulted by the constructor (which is now a no-op) — the
+            // engine is started EXPLICITLY via TrainerEngine.nativeStart(). We set the
+            // base path before load so setup_trainer() finds the right directory.
             Os.setenv("TRAINER_BASE_PATH", context.filesDir.absolutePath, /* overwrite = */ true)
             Timber.tag(TAG).d(
-                "Env set: TRAINER_ENABLED=1, TRAINER_BASE_PATH=%s",
+                "Env set: TRAINER_BASE_PATH=%s",
                 context.filesDir.absolutePath,
             )
 
-            System.loadLibrary("trainer")
+            // loadAndStart() loads libtrainer.so and calls nativeStart(), which brings
+            // the engine up IN THIS (app) process. With no game pid ever set, the engine
+            // targets /proc/self/mem — exactly the in-process scan this self-test exercises.
+            if (!TrainerEngine.loadAndStart()) {
+                Timber.tag(TAG).e("TrainerEngine.loadAndStart() returned false")
+                return SelfTestReport(libLoaded = false, fatalError = "loadAndStart failed")
+            }
             libLoaded = true
-            Timber.tag(TAG).i("System.loadLibrary(\"trainer\") succeeded")
+            Timber.tag(TAG).i("TrainerEngine.loadAndStart() succeeded")
         } catch (t: Throwable) {
-            Timber.tag(TAG).e(t, "Failed to load libtrainer.so")
-            return SelfTestReport(libLoaded = false, fatalError = "loadLibrary: ${t.message}")
+            Timber.tag(TAG).e(t, "Failed to load/start libtrainer.so")
+            return SelfTestReport(libLoaded = false, fatalError = "loadAndStart: ${t.message}")
         }
 
         // Give the worker thread a moment to finish spawning and bump resp_seq.
@@ -288,15 +300,24 @@ object TrainerSelfTest {
                 fatalError = "scanNew failed: ${scanNew.errorMsg}")
         }
 
-        // Check whether the sentinel address appears in the result window.
-        // The scanner may return up to TRAINER_RESULT_CAP=64 addresses.
-        // We expect at least one result (our buffer), and we expect to recognise it.
-        // We identify the sentinel address by reading back through the scanner's result
-        // and verifying via the SHM read command (or via the count being >= 1).
-        // For the first pass we trust that count >= 1 means the sentinel was found if
-        // the total is small; for production-like verification we try to isolate it.
-        val sentinelFoundInScan = scanNew.count >= 1
-        val sentinelAddr: Long? = if (scanNew.addresses.isNotEmpty()) scanNew.addresses[0] else null
+        // Identify the real sentinel address by iterating the scanNew result window
+        // and reading each candidate address via the SHM read API. Only an address
+        // whose current value equals SENTINEL_1 (still unmodified at this point) is
+        // accepted as the verified sentinel. This avoids false-positives where a
+        // scan match happens to share the same 4-byte bit pattern elsewhere in memory.
+        val sentinel1AsLongCheck = SENTINEL_1.toLong() and 0xFFFF_FFFFL
+        var verifiedSentinelAddr: Long? = null
+        for (addr in scanNew.addresses) {
+            val readVal = try {
+                shm.read(addr, TrainerProto.TVT_I32)
+            } catch (_: Throwable) { null }
+            if (readVal != null && (readVal and 0xFFFF_FFFFL) == sentinel1AsLongCheck) {
+                verifiedSentinelAddr = addr
+                break
+            }
+        }
+        val sentinelFoundInScan = verifiedSentinelAddr != null
+        val sentinelAddr: Long? = verifiedSentinelAddr
 
         Timber.tag(TAG).i(
             "sentinelFoundInScan=%b sentinelAddr=0x%s",
@@ -333,15 +354,30 @@ object TrainerSelfTest {
             scanNext.success, scanNext.count, scanNext.tooMany,
         )
 
-        // After narrowing we expect very few results. scanNextNarrowed = count < scanNewCount.
-        val scanNextNarrowed = scanNext.success && scanNext.count < scanNew.count && scanNext.count >= 1
-
-        // Pick the target address for write/freeze: prefer the narrowed result's first address,
-        // fall back to the scanNew's first address.
-        val targetAddr: Long? = when {
-            scanNext.success && scanNext.addresses.isNotEmpty() -> scanNext.addresses[0]
-            else -> sentinelAddr
+        // Identify the real sentinel by iterating the scanNext result window and
+        // reading each candidate address — accept only the one that holds SENTINEL_2.
+        // This gates sentinelFoundInScan (for the write/freeze criterion) on an actual
+        // identity match rather than a blind count >= 1 check.
+        val sentinel2AsLongCheck = SENTINEL_2.toLong() and 0xFFFF_FFFFL
+        var verifiedTargetAddr: Long? = null
+        if (scanNext.success) {
+            for (addr in scanNext.addresses) {
+                val readVal = try {
+                    shm.read(addr, TrainerProto.TVT_I32)
+                } catch (_: Throwable) { null }
+                if (readVal != null && (readVal and 0xFFFF_FFFFL) == sentinel2AsLongCheck) {
+                    verifiedTargetAddr = addr
+                    break
+                }
+            }
         }
+
+        // scanNextNarrowed = count narrowed AND we found an address that truly holds SENTINEL_2
+        val scanNextNarrowed = scanNext.success && scanNext.count < scanNew.count && verifiedTargetAddr != null
+
+        // Pick the target address for write/freeze: use the verified SENTINEL_2 address,
+        // fall back to the scanNew sentinelAddr if narrowing failed.
+        val targetAddr: Long? = verifiedTargetAddr ?: sentinelAddr
 
         if (targetAddr == null) {
             Timber.tag(TAG).e("No address available for write/freeze step")
