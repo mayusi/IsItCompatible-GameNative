@@ -53,8 +53,15 @@ object PrefManager {
 
     private lateinit var dataStore: DataStore<Preferences>
 
+    @Volatile private var cachedPrefs: Preferences? = null
+
     fun init(context: Context) {
         dataStore = context.datastore
+
+        // Prime the in-memory cache once synchronously so subsequent reads avoid repeated disk I/O.
+        cachedPrefs = runBlocking { dataStore.data.first() }
+        // Keep the cache fresh as writes commit.
+        scope.launch { dataStore.data.collect { cachedPrefs = it } }
 
         // Note: Should remove after a few release versions. we've moved to encrypted values.
         val oldPassword = stringPreferencesKey("password")
@@ -121,8 +128,10 @@ object PrefManager {
         setPref(floatPreferencesKey(key), value)
 
     @Suppress("SameParameterValue")
-    private fun <T> getPref(key: Preferences.Key<T>, defaultValue: T): T = runBlocking {
-        dataStore.data.first()[key] ?: defaultValue
+    private fun <T> getPref(key: Preferences.Key<T>, defaultValue: T): T {
+        val snapshot = cachedPrefs
+        return if (snapshot != null) snapshot[key] ?: defaultValue
+        else runBlocking { dataStore.data.first()[key] ?: defaultValue }
     }
 
     @Suppress("SameParameterValue")
@@ -813,7 +822,11 @@ object PrefManager {
     // Special: Because null value.
     private val CLIENT_ID = longPreferencesKey("client_id")
     var clientId: Long?
-        get() = runBlocking { dataStore.data.first()[CLIENT_ID] }
+        get() {
+            val snapshot = cachedPrefs
+            return if (snapshot != null) snapshot[CLIENT_ID]
+            else runBlocking { dataStore.data.first()[CLIENT_ID] }
+        }
         set(value) {
             scope.launch {
                 dataStore.edit { pref -> pref[CLIENT_ID] = value!! }
@@ -1143,7 +1156,7 @@ object PrefManager {
     // Maximum number of concurrent downloads (8=slow, 16=medium, 24=fast, 32=blazing)
     private val DOWNLOAD_SPEED = intPreferencesKey("download_speed")
     var downloadSpeed: Int
-        get() = getPref(DOWNLOAD_SPEED, 24)
+        get() = getPref(DOWNLOAD_SPEED, 16)
         set(value) {
             setPref(DOWNLOAD_SPEED, value)
         }
@@ -1231,6 +1244,7 @@ object PrefManager {
             return try {
                 Json.decodeFromString<Set<String>>(value)
             } catch (e: Exception) {
+                Timber.w(e, "customGamePaths: failed to decode JSON, returning empty set")
                 emptySet()
             }
         }
@@ -1245,6 +1259,7 @@ object PrefManager {
             return try {
                 Json.decodeFromString<Set<String>>(value)
             } catch (e: Exception) {
+                Timber.w(e, "customGameManualFolders: failed to decode JSON, returning empty set")
                 emptySet()
             }
         }
@@ -1337,16 +1352,28 @@ object PrefManager {
         get() = getPref(USAGE_ANALYTICS_ENABLED, true)
         set(value) { setPref(USAGE_ANALYTICS_ENABLED, value) }
 
-    // Memory-cheat trainer feature — disabled by default; enables LD_PRELOAD of
-    // libtrainer.so and sets TRAINER_ENABLED=1 in the Wine/Box64 environment.
+    // Memory-cheat trainer feature — ENABLED BY DEFAULT in the IIC fork. This is what
+    // stages the proxy cheat engine (dinput8.dll, next to the game exe) and sets
+    // WINEDLLOVERRIDES at launch; without it the engine never injects and
+    // cheats/scanner/speed-hack are all inert. The toggle remains so a user can DISABLE it.
     private val TRAINER_ENABLED = booleanPreferencesKey("trainer_enabled")
     var trainerEnabled: Boolean
-        get() = getPref(TRAINER_ENABLED, false)
+        get() = getPref(TRAINER_ENABLED, true)
         set(value) { setPref(TRAINER_ENABLED, value) }
 
-    // Speed-hack feature — disabled by default; enables LD_PRELOAD of
-    // libspeedhack.so and sets SPEEDHACK_ENABLED=1 in the Wine/Box64 environment.
-    // The multiplier is communicated at runtime via shared memory (SpeedHackShm).
+    // Leaf name of the game exe most recently launched (e.g. "dmc3.exe"), stashed by
+    // BionicProgramLauncherComponent at launch. The host-side cheat engine reads this
+    // to locate the running game process via /proc/<pid>/maps (TrainerEngine.findGamePid).
+    // Empty when no real game exe name could be determined.
+    private val LAST_GAME_TARGET_EXE = stringPreferencesKey("last_game_target_exe")
+    var lastGameTargetExe: String
+        get() = getPref(LAST_GAME_TARGET_EXE, "")
+        set(value) { setPref(LAST_GAME_TARGET_EXE, value) }
+
+    // Speed-hack feature — disabled by default; this is the UI gate for the speed slider.
+    // The hack itself is a patched Wine unix ntdll.so that scales monotonic_counter()
+    // (QueryPerformanceCounter / GetTickCount / interrupt time all derive from it) by the
+    // multiplier in the GN_TIME_SCALE_FILE control file written by SpeedhackControl.
     private val SPEED_HACK_ENABLED = booleanPreferencesKey("speed_hack_enabled")
     var speedHackEnabled: Boolean
         get() = getPref(SPEED_HACK_ENABLED, false)
@@ -1360,6 +1387,19 @@ object PrefManager {
         get() = getPref(MACRO_ENABLED, false)
         set(value) { setPref(MACRO_ENABLED, value) }
 
+    /* FLiNG trainer: per-game "this game has an imported FLiNG dinput8.dll trainer
+     * enabled" flag. The DLL bytes live on disk under filesDir/fling_trainers/<appId>/;
+     * this flag records that the game should have it staged on launch. When true,
+     * FlingStager.stage copies the stored dinput8.dll into the game folder as
+     * dinput8.fling.dll, and our own engine's dinput8.dll proxy chain-loads it in DllMain
+     * (so both load). Key: "fling_enabled_<appId>". Default false. */
+    fun isFlingTrainerEnabled(appId: String): Boolean =
+        getPref(booleanPreferencesKey("fling_enabled_$appId"), false)
+
+    fun setFlingTrainerEnabled(appId: String, enabled: Boolean) {
+        setPref(booleanPreferencesKey("fling_enabled_$appId"), enabled)
+    }
+
     /* Multi-game collection: last-played sub-game exe per appId.
      * Key: "collection_last_exe_<appId>", Value: relative exe path (e.g. "dmc1.exe"). */
     fun getLastPlayedSubGame(appId: String): String? {
@@ -1369,6 +1409,20 @@ object PrefManager {
 
     fun setLastPlayedSubGame(appId: String, exePath: String) {
         setPref(stringPreferencesKey("collection_last_exe_$appId"), exePath)
+    }
+
+    /* Speed-hack: last-applied multiplier per appId/game.
+     * The speed slider lives in a composable that leaves composition when the trainer is
+     * closed, so its remembered value is destroyed and the UI re-seeds to 1.0×. The ACTIVE
+     * multiplier lives in the GN_TIME_SCALE_FILE control file (the patched ntdll reads it);
+     * persisting it here (keyed per game) lets the slider re-seed to — and re-assert — the
+     * last speed when reopened. Default 1.0f (normal speed = the ntdll's near-zero-cost
+     * passthrough). Key: "speed_mult_<appId>". */
+    fun getSpeedMultiplier(appId: String): Float =
+        getPref(floatPreferencesKey("speed_mult_$appId"), 1.0f)
+
+    fun setSpeedMultiplier(appId: String, mult: Float) {
+        setPref(floatPreferencesKey("speed_mult_$appId"), mult)
     }
 
     // ── Self-update prefs (IIC secure updater) ────────────────────────────────
@@ -1440,6 +1494,34 @@ object PrefManager {
             }
         }
     }
+
+    private val SUSTAINED_PERFORMANCE_MODE = booleanPreferencesKey("sustained_performance_mode")
+    /**
+     * When true, the in-game XServer window requests Android's sustained-performance mode
+     * (Window.setSustainedPerformanceMode) so the SoC holds a steady clock instead of
+     * boosting-then-thermal-throttling. Improves frame-time consistency on long sessions.
+     */
+    var sustainedPerformanceMode: Boolean
+        get() = getPref(SUSTAINED_PERFORMANCE_MODE, true)
+        set(value) {
+            setPref(SUSTAINED_PERFORMANCE_MODE, value)
+        }
+
+    // In-game QuickMenu edge-pill affordance — a thin, auto-fading pill on the left
+    // edge that opens the QuickMenu (cheats/trainer/controls) so new users can find
+    // it without the back-gesture. Enabled by default; power users can disable it.
+    private val QUICK_MENU_EDGE_PILL_ENABLED = booleanPreferencesKey("quick_menu_edge_pill_enabled")
+    var quickMenuEdgePillEnabled: Boolean
+        get() = getPref(QUICK_MENU_EDGE_PILL_ENABLED, true)
+        set(value) { setPref(QUICK_MENU_EDGE_PILL_ENABLED, value) }
+
+    // One-time coachmark shown next to the edge pill on first game run, hinting that
+    // the pill opens cheats/trainer/controls. Flipped true after the first show so it
+    // never appears again.
+    private val QUICK_MENU_COACHMARK_SHOWN = booleanPreferencesKey("quick_menu_coachmark_shown")
+    var quickMenuCoachmarkShown: Boolean
+        get() = getPref(QUICK_MENU_COACHMARK_SHOWN, false)
+        set(value) { setPref(QUICK_MENU_COACHMARK_SHOWN, value) }
 
     /**
      * Clears all pending-update fields. Called by [AppUpdateViewModel.dismiss].

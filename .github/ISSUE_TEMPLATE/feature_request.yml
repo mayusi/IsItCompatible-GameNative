@@ -1,5 +1,5 @@
 name: Feature Request
-description: Something you'd like to see in GameNative
+description: Something you'd like to see in GameNative IIC
 title: "[Request]: "
 labels: enhancement
 assignees: []
@@ -7,7 +7,15 @@ body:
   - type: markdown
     attributes:
       value: |
-        This template should only be used for feature requests you would like to see implemented in Pluvia.
+        **This is the feature-request tracker for the GameNative IIC fork** (`app.gamenative.iic`).
+        For requests aimed at the official GameNative app, open an issue at
+        [utkarshdalal/GameNative](https://github.com/utkarshdalal/GameNative/issues).
+
+        IIC-specific areas where requests are most welcome:
+        - New cheat-table entries for additional games
+        - Crash-fix catalog entries (`crashfixes/registry.json`)
+        - Auto-Tuner goals or sweep improvements
+        - Controller / device-profile additions
 
   - type: textarea
     id: describe-the-request
@@ -21,7 +29,7 @@ body:
     id: request-already-searched
     attributes:
       label: New Feature
-      description: Is the request not already posted as an [Issue](https://github.com/oxters168/gamenative/issues?q=is%3Aissue%20state%3Aopen%20label%3Aenhancement) or in the [Project Board](https://github.com/users/oxters168/projects/1)
+      description: Is the request not already posted as an [Issue](https://github.com/mayusi/IsItCompatible-GameNative/issues?q=is%3Aissue%20state%3Aopen%20label%3Aenhancement)?
       options:
         - label: I have searched and did not find my request already listed.
           required: true

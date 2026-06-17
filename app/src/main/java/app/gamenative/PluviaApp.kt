@@ -127,6 +127,24 @@ class PluviaApp : SplitCompatApplication() {
             app.gamenative.cheats.CheatTableRegistry.init(applicationContext)
         }
 
+        // Feature 4b: load the FLiNG trainer catalog (bundled seed + 24h OTA sync) and
+        // schedule its background sync — same pattern as the cheat-table registry above.
+        // The catalog drives on-demand trainer downloads; manual .dll import is the fallback.
+        appScope.launch {
+            app.gamenative.cheats.FlingCatalogLoader.init(applicationContext)
+            app.gamenative.cheats.FlingCatalogSyncWorker.scheduleIfNeeded(applicationContext)
+        }
+
+        // Feature 5: load the crowd-sourced crash-fix catalog (bundled seed + 24h OTA sync).
+        // Warm-starts the auto-fixer so the first user with a known crash gets the winning
+        // fix tried first, without needing a prior device-level TunerMemory win.
+        // CrashFixSyncWorker is triggered inside CrashFixCatalog.init, mirroring
+        // CheatTableRegistry.init -> CheatTableSyncWorker.scheduleIfNeeded.
+        appScope.launch {
+            app.gamenative.autotuner.CrashFixCatalog.init(applicationContext)
+            app.gamenative.autotuner.CrashFixSyncWorker.scheduleIfNeeded(applicationContext)
+        }
+
         // IIC: The upstream Ko-fi "Thank you" nag dialog points at the original project's Ko-fi
         // and is inappropriate for this fork. Suppress it permanently by marking as tipped on
         // every launch (the flag is a boolean pref; setting it here is idempotent and safe).

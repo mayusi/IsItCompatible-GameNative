@@ -31,3 +31,19 @@ fun CharSequence.unaccent(): String {
  * into safe filename components.
  */
 fun String.sanitizeForFilename(): String = REGEX_FILENAME_UNSAFE.replace(this, "_")
+
+/**
+ * Formats an ETA duration (in milliseconds) as a human-readable string.
+ * Shows hours when >= 1h, e.g. "2h 5m", "45m 12s", or "38s".
+ */
+fun formatEtaMs(etaMs: Long): String {
+    val totalSeconds = etaMs / 1000
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    return when {
+        hours > 0 -> "${hours}h ${minutes}m"
+        minutes > 0 -> "${minutes}m ${seconds}s"
+        else -> "${seconds}s"
+    }
+}

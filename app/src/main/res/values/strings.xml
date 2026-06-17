@@ -1,5 +1,10 @@
 ﻿<resources>
     <string name="app_name">GameNative (IIC)</string>
+    <string name="quick_menu_edge_pill_desc">Open quick menu</string>
+    <string name="quick_menu_coachmark_hint">Tap here for cheats, trainer &amp; controls</string>
+    <string name="unpacking">Unpacking…</string>
+    <string name="games_in_this_collection">Games in this collection</string>
+    <string name="play_sub_game_fmt">Play %1$s</string>
     <string name="login_user">User Login</string>
     <string name="login_2fa">Two Factor</string>
     <string name="home">Home</string>
@@ -975,6 +980,23 @@
     <string name="settings_iic_feature_fixes">Per-game auto-fixes (e.g. Devil May Cry HD Collection intro-video crash auto-fixed on launch)</string>
     <string name="settings_iic_feature_storage">External storage works without an SD card (uses Android/data)</string>
     <string name="settings_iic_feature_import">Import / verify existing game files placed in Android/data</string>
+    <string name="settings_iic_autocheck_title">Auto-check for updates</string>
+    <string name="settings_iic_autocheck_subtitle">Check automatically every 12 hours</string>
+
+    <!-- Library backup / export + restore -->
+    <string name="iic_backup_export_title">Export library backup</string>
+    <string name="iic_backup_export_subtitle">Save a manifest of installed games to Downloads (survives uninstall)</string>
+    <string name="iic_backup_export_running">Exporting library…</string>
+    <string name="iic_backup_export_success">Exported %1$d games to Downloads/%2$s</string>
+    <string name="iic_backup_export_failed">Export failed: %1$s</string>
+    <string name="iic_backup_restore_title">Restore library backup</string>
+    <string name="iic_backup_restore_subtitle">Re-link games from a backup file (only relinks files already on disk)</string>
+    <string name="iic_backup_restore_running">Restoring library…</string>
+    <string name="iic_backup_restore_result">Restored %1$d, skipped %2$d (files missing), failed %3$d</string>
+    <string name="iic_backup_restore_confirm_title">Restore library backup?</string>
+    <string name="iic_backup_restore_confirm_body">This re-links games from the backup whose files are still on this device. It never downloads or deletes anything, and won\'t touch correctly-installed games.</string>
+    <string name="iic_backup_restore_confirm_action">Restore</string>
+    <string name="iic_backup_cancel">Cancel</string>
 
     <!-- Import existing game files -->
     <string name="iic_import_title">Import existing game files</string>
@@ -1040,6 +1062,23 @@
     <string name="container_storage_location_external">External</string>
     <string name="container_storage_location_unknown">Unknown location</string>
     <string name="container_storage_unknown_error">Unknown error</string>
+    <!-- FIX A: size-aware destructive confirmation strings -->
+    <string name="container_storage_remove_message_with_size">This removes the container for %1$s and frees internal storage. The game files stay installed, but local settings or saves stored inside the Windows environment may be lost. This frees %2$s.</string>
+    <string name="container_storage_uninstall_message_with_size">This uninstalls %1$s, removes its game files, and deletes the linked container. This frees %2$s.</string>
+    <string name="container_storage_uninstall_game_only_message_with_size">This uninstalls %1$s and removes its game files. No container will be deleted. This frees %2$s.</string>
+    <string name="container_storage_move_confirm_title">Move game?</string>
+    <string name="container_storage_move_confirm_to_external">Move %1$s to external storage? Size: %2$s.</string>
+    <string name="container_storage_move_confirm_to_internal">Move %1$s to internal storage? Size: %2$s.</string>
+    <string name="container_storage_move_confirm_to_external_no_size">Move %1$s to external storage?</string>
+    <string name="container_storage_move_confirm_to_internal_no_size">Move %1$s to internal storage?</string>
+    <string name="container_storage_move_confirm_proceed">Move</string>
+    <!-- FIX B: SD card install setting — clearer title, subtitle, and disabled-state hint -->
+    <string name="settings_interface_sd_card_install_title">Install games to SD card</string>
+    <string name="settings_interface_sd_card_install_subtitle">Games on a removable card survive app reinstalls and uninstalls. (Internal storage is wiped if you uninstall.)</string>
+    <string name="settings_interface_no_sd_card_subtitle">Insert an SD card to enable. Without one, games install to internal storage.</string>
+    <!-- FIX C: Updater advisory strings -->
+    <string name="update_advisory_games_preserved">Your games and settings are kept — updates install over the existing app.</string>
+    <string name="update_advisory_sig_mismatch_warning">This update could not be verified. Installing it would require a fresh reinstall that may remove games stored in internal storage. The update has been blocked to keep you safe.</string>
 
     <!-- Login Screen -->
     <string name="login_app_name">GameNative</string>
@@ -1517,6 +1556,8 @@
     <string name="option_fetch_game_images">Fetch game images</string>
     <string name="option_test_graphics">Test graphics</string>
     <string name="option_auto_tune">Auto-tune config</string>
+    <string name="make_it_work">Make It Work</string>
+    <string name="make_it_work_desc">One-tap compatibility probe — finds a working config automatically</string>
     <string name="option_manage_dlc">Manage DLC</string>
     <string name="option_manage_workshop">Manage Workshop</string>
     <!-- Recommendations -->
@@ -1679,22 +1720,58 @@
     <string name="cheat_scan_busy">Finish or cancel the current cheat scan first.</string>
     <string name="cheat_activate_failed">Activation failed. Try starting over.</string>
 
+    <!-- Cheat-table import (Cheat Engine .CT) -->
+    <string name="cheat_import_button">Import Cheat Engine table (.CT)</string>
+    <string name="cheat_import_hint">The biggest community source is FearLessRevolution.com — download a Cheat Engine .CT table for your game and import it here. (We do not integrate WeMod / Cheat Happens — those are standalone PC apps.)</string>
+    <string name="cheat_import_no_game">Launch a game first to import a cheat table for it.</string>
+    <string name="cheat_import_reading">Reading .CT file…</string>
+    <string name="cheat_import_failed">Could not read that file. Make sure it is a Cheat Engine .CT/.xml table under 2 MB.</string>
+    <string name="cheat_import_result_title">Import complete</string>
+    <string name="cheat_import_result_summary">Imported %1$d cheats, skipped %2$d.</string>
+    <string name="cheat_import_skipped_header">Skipped:</string>
+    <string name="cheat_import_dismiss">OK</string>
+
+    <!-- FLiNG trainer (load a real FLiNG trainer\'s dinput8.dll) -->
+    <string name="fling_section_title">FLiNG trainer (load a .dll)</string>
+    <string name="fling_section_body">FLiNG trainers are a dinput8.dll you provide. Load one here and it shows its OWN on-screen menu in-game — use the number keys (Num1, Num2…) or mapped buttons to toggle cheats. We don\'t bundle trainers; pick your own dinput8.dll. Trainers are tied to a specific game version, and some need to be running before/after the game starts.</string>
+    <string name="fling_import_button">Load FLiNG trainer (dinput8.dll)</string>
+    <string name="fling_replace_button">Replace FLiNG trainer .dll</string>
+    <string name="fling_remove_button">Remove FLiNG trainer</string>
+    <string name="fling_enabled_status">FLiNG trainer loaded</string>
+    <string name="fling_enabled_note">Will be staged on the next launch. In-game, open the trainer\'s own menu with its number keys.</string>
+
+    <!-- FLiNG trainer ONLINE catalog (download a community trainer for this game) -->
+    <string name="fling_catalog_header">Available trainers (download)</string>
+    <string name="fling_catalog_intro">Community-sourced trainers for this game. We verify each download (SHA-256) before it\'s used. Trainers are version-specific and show their OWN in-game number-key menu — match your game build.</string>
+    <string name="fling_catalog_none">No online trainer for this game yet. Use \"Load FLiNG trainer (.dll)\" below to import your own.</string>
+    <!-- Honest "no FLiNG trainer available" copy with real alternatives. -->
+    <string name="fling_none_title">No FLiNG trainer available for this game.</string>
+    <string name="fling_none_alternatives">• Make your own cheat with the scanner above\n• Import a Cheat Engine .CT table (try fearlessrevolution.com)\n• Import your own trainer .dll below</string>
+    <string name="fling_catalog_version">For game build: %1$s</string>
+    <string name="fling_catalog_download_button">Download</string>
+    <string name="fling_catalog_redownload_button">Re-download</string>
+    <string name="fling_catalog_downloading">Downloading + verifying…</string>
+    <string name="fling_catalog_download_ok">Trainer downloaded and verified. It will be staged on the next launch.</string>
+    <string name="fling_catalog_download_failed">Download failed or did not verify. The trainer was not installed. Try again or import your own .dll.</string>
+    <string name="fling_manual_header">Or load your own .dll</string>
+
     <!-- Cheat disclaimer -->
     <string name="cheat_disclaimer">Single-player only. Cheats in online games can get you banned.</string>
 
     <!-- Speed hack strings -->
-    <string name="speed_not_enabled_title">Speed hack temporarily unavailable</string>
-    <string name="speed_not_enabled_body">Speed hack is being reworked. The previous implementation (LD_PRELOAD clock_gettime override) caused game launches to hang inside the dynamic linker. A Wine-side approach is being built that won\'t affect game launches.</string>
-    <string name="speed_enable_toggle">Enable speed hack</string>
-    <string name="speed_enable_note">Currently has no effect — speed scaling is disabled until the rework is complete.</string>
-    <string name="speed_not_loaded_title">Speed hack temporarily unavailable</string>
-    <string name="speed_not_loaded_body">Speed hack is being reworked and is not active in this version. Game launches are unaffected.</string>
+    <string name="speed_not_enabled_title">Game speed control</string>
+    <string name="speed_not_enabled_body">Slow down or speed up the whole game — useful for hard sections, grinding, or precise timing. Works across the entire game via a patched Wine clock; no per-game setup.</string>
+    <string name="speed_enable_toggle">Enable speed control</string>
+    <string name="speed_enable_note">Takes effect immediately while a game is running.</string>
+    <string name="speed_not_loaded_title">Start a game first</string>
+    <string name="speed_not_loaded_body">Launch a game, then open this menu — the speed control adjusts the running game in real time.</string>
     <string name="speed_multiplier_label">Game speed</string>
     <!-- %1$s is the formatted multiplier, e.g. "2×" -->
     <string name="speed_multiplier_value">%1$s</string>
     <string name="speed_reset">Reset</string>
-    <string name="speed_hint_slowmo">Slow motion active</string>
-    <string name="speed_hint_fast">Fast-forward active</string>
+    <!-- %1$s is the formatted multiplier, e.g. "0.5×" / "2×" -->
+    <string name="speed_active_slowmo">Slow motion active — game running at %1$s speed</string>
+    <string name="speed_active_fast">Fast-forward active — game running at %1$s speed</string>
 
     <!-- Macro / Turbo strings -->
     <string name="macro_not_enabled_title">Macros &amp; Turbo disabled</string>
@@ -1738,4 +1815,12 @@
     <string name="macro_preset_a_then_b">A then B</string>
     <string name="macro_preset_mash_x">Mash X</string>
     <string name="macro_preset_y_b_combo">Y+B combo</string>
+
+    <!-- Cheat discoverability (library card badge + game-detail row) -->
+    <string name="cheat_badge_has_cheats">Has Cheats</string>
+    <!-- %1$d = number of one-tap cheats -->
+    <string name="cheat_detail_available_count">Cheats available · %1$d one-tap cheats</string>
+    <string name="cheat_detail_diy_available">DIY cheat scanner available</string>
+    <string name="cheat_detail_dialog_title">Cheats</string>
+    <string name="cheat_detail_dialog_body">Cheats are available in the in-game menu. Enable the Trainer in Settings, launch the game, then open Quick Menu → Cheats.</string>
 </resources>

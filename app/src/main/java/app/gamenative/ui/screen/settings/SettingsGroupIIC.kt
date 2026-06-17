@@ -14,8 +14,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import app.gamenative.ui.theme.IicBrandGradient
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.gamenative.PrefManager
 import app.gamenative.R
@@ -56,6 +59,16 @@ fun SettingsGroupIIC(
     }
 
     SettingsGroup {
+        // ── IIC Edition gradient header ───────────────────────────────────────
+        Text(
+            text = stringResource(R.string.settings_iic_section_title),
+            style = MaterialTheme.typography.titleMedium.copy(
+                fontWeight = FontWeight.SemiBold,
+                brush = Brush.horizontalGradient(colors = IicBrandGradient),
+            ),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+
         // ── Update banner ─────────────────────────────────────────────────────
         val pending = updateState.pendingUpdate
         if (pending != null) {
@@ -85,10 +98,13 @@ fun SettingsGroupIIC(
         SettingsSwitch(
             colors = settingsTileColorsAlt(),
             state = PrefManager.updateAutoCheckEnabled,
-            title = { Text(text = "Auto-check for updates") },
-            subtitle = { Text(text = "Check automatically every 12 hours") },
+            title = { Text(text = stringResource(R.string.settings_iic_autocheck_title)) },
+            subtitle = { Text(text = stringResource(R.string.settings_iic_autocheck_subtitle)) },
             onCheckedChange = { updateVm.setAutoCheck(it) },
         )
+
+        // ── Library backup / export + restore ─────────────────────────────────
+        LibraryBackupSection()
 
         // ── Disclaimer row ────────────────────────────────────────────────────
         SettingsMenuLink(

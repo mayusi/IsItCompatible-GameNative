@@ -108,6 +108,10 @@ class ContainerStorageManagerUiState internal constructor(
     var pendingUninstall by mutableStateOf<ContainerStorageManager.Entry?>(null)
         private set
 
+    /** Non-null while we are waiting for the user to confirm a move action. */
+    var pendingMove by mutableStateOf<Pair<ContainerStorageManager.Entry, ContainerStorageManager.MoveTarget>?>(null)
+        private set
+
     var movingEntryName by mutableStateOf<String?>(null)
         private set
 
@@ -236,7 +240,26 @@ class ContainerStorageManagerUiState internal constructor(
         }
     }
 
-    fun startMove(
+    fun requestMove(entry: ContainerStorageManager.Entry, target: ContainerStorageManager.MoveTarget) {
+        if (isMoving) return
+        if (target == ContainerStorageManager.MoveTarget.EXTERNAL && !ContainerStorageManager.isExternalStorageConfigured()) {
+            SnackbarManager.show(appContext.getString(R.string.container_storage_move_external_disabled))
+            return
+        }
+        pendingMove = entry to target
+    }
+
+    fun dismissMove() {
+        pendingMove = null
+    }
+
+    fun confirmMove() {
+        val (entry, target) = pendingMove ?: return
+        pendingMove = null
+        startMove(entry, target)
+    }
+
+    private fun startMove(
         entry: ContainerStorageManager.Entry,
         target: ContainerStorageManager.MoveTarget,
     ) {
@@ -327,10 +350,20 @@ fun ContainerStorageManagerTransientUi(
         val entryName = entry.displayName.ifBlank {
             stringResource(R.string.container_storage_unknown_container)
         }
+        val sizeBytes = entry.combinedSizeBytes
+        val messageText = if (sizeBytes != null) {
+            stringResource(
+                R.string.container_storage_remove_message_with_size,
+                entryName,
+                StorageUtils.formatBinarySize(sizeBytes),
+            )
+        } else {
+            stringResource(R.string.container_storage_remove_message, entryName)
+        }
         AlertDialog(
             onDismissRequest = state::dismissRemove,
             title = { Text(stringResource(R.string.container_storage_remove_title)) },
-            text = { Text(stringResource(R.string.container_storage_remove_message, entryName)) },
+            text = { Text(messageText) },
             confirmButton = {
                 TextButton(onClick = state::confirmRemove) {
                     Text(
@@ -351,6 +384,27 @@ fun ContainerStorageManagerTransientUi(
         val entryName = entry.displayName.ifBlank {
             stringResource(R.string.container_storage_unknown_container)
         }
+        val sizeBytes = entry.combinedSizeBytes
+        val messageText = if (sizeBytes != null) {
+            stringResource(
+                if (entry.hasContainer) {
+                    R.string.container_storage_uninstall_message_with_size
+                } else {
+                    R.string.container_storage_uninstall_game_only_message_with_size
+                },
+                entryName,
+                StorageUtils.formatBinarySize(sizeBytes),
+            )
+        } else {
+            stringResource(
+                if (entry.hasContainer) {
+                    R.string.container_storage_uninstall_message
+                } else {
+                    R.string.container_storage_uninstall_game_only_message
+                },
+                entryName,
+            )
+        }
         AlertDialog(
             onDismissRequest = state::dismissUninstall,
             title = {
@@ -364,18 +418,7 @@ fun ContainerStorageManagerTransientUi(
                     ),
                 )
             },
-            text = {
-                Text(
-                    stringResource(
-                        if (entry.hasContainer) {
-                            R.string.container_storage_uninstall_message
-                        } else {
-                            R.string.container_storage_uninstall_game_only_message
-                        },
-                        entryName,
-                    ),
-                )
-            },
+            text = { Text(messageText) },
             confirmButton = {
                 TextButton(onClick = state::confirmUninstall) {
                     Text(
@@ -386,6 +429,48 @@ fun ContainerStorageManagerTransientUi(
             },
             dismissButton = {
                 TextButton(onClick = state::dismissUninstall) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+        )
+    }
+
+    state.pendingMove?.let { (entry, target) ->
+        val entryName = entry.displayName.ifBlank {
+            stringResource(R.string.container_storage_unknown_container)
+        }
+        val sizeBytes = entry.combinedSizeBytes
+        val messageText = if (sizeBytes != null) {
+            stringResource(
+                if (target == ContainerStorageManager.MoveTarget.EXTERNAL) {
+                    R.string.container_storage_move_confirm_to_external
+                } else {
+                    R.string.container_storage_move_confirm_to_internal
+                },
+                entryName,
+                StorageUtils.formatBinarySize(sizeBytes),
+            )
+        } else {
+            stringResource(
+                if (target == ContainerStorageManager.MoveTarget.EXTERNAL) {
+                    R.string.container_storage_move_confirm_to_external_no_size
+                } else {
+                    R.string.container_storage_move_confirm_to_internal_no_size
+                },
+                entryName,
+            )
+        }
+        AlertDialog(
+            onDismissRequest = state::dismissMove,
+            title = { Text(stringResource(R.string.container_storage_move_confirm_title)) },
+            text = { Text(messageText) },
+            confirmButton = {
+                TextButton(onClick = state::confirmMove) {
+                    Text(stringResource(R.string.container_storage_move_confirm_proceed))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = state::dismissMove) {
                     Text(stringResource(R.string.cancel))
                 }
             },
@@ -540,10 +625,10 @@ fun ContainerStorageManagerContent(
                             actionsEnabled = !state.isMoving,
                             onOpenGame = onOpenGame,
                             onMoveToExternal = {
-                                state.startMove(entry, ContainerStorageManager.MoveTarget.EXTERNAL)
+                                state.requestMove(entry, ContainerStorageManager.MoveTarget.EXTERNAL)
                             },
                             onMoveToInternal = {
-                                state.startMove(entry, ContainerStorageManager.MoveTarget.INTERNAL)
+                                state.requestMove(entry, ContainerStorageManager.MoveTarget.INTERNAL)
                             },
                             onRemove = { state.requestRemove(entry) },
                             onUninstall = { state.requestUninstall(entry) },

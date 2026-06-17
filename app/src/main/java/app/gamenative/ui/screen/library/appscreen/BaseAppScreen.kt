@@ -30,6 +30,7 @@ import app.gamenative.data.GameSource
 import app.gamenative.data.LibraryItem
 import app.gamenative.gamefixes.CollectionRegistry
 import app.gamenative.gamefixes.CollectionSubGame
+import app.gamenative.ui.screen.library.AppScreenActions
 import app.gamenative.ui.screen.library.AppScreenContent
 import app.gamenative.ui.screen.library.CollectionSubGamesSection
 import app.gamenative.events.AndroidEvent
@@ -917,6 +918,7 @@ abstract class BaseAppScreen {
         onClickPlay: (Boolean) -> Unit,
         onTestGraphics: () -> Unit,
         onAutoTune: () -> Unit = {},
+        onMakeItWork: (() -> Unit)? = null,
         onBack: () -> Unit,
     ) {
         val context = LocalContext.current
@@ -1249,48 +1251,51 @@ abstract class BaseAppScreen {
             hasPartialDownload = hasPartialDownloadState,
             isUpdatePending = isUpdatePendingState,
             downloadInfo = downloadInfo,
-            onDownloadInstallClick = {
-                // For collections, save the sub-game config first, then launch after saveData() completes
-                val collectionSubGame = if (gameCollection != null && isInstalledState) {
-                    val lastExe = PrefManager.getLastPlayedSubGame(appId)
-                    gameCollection.subGames.firstOrNull { it.exePath.equals(lastExe, ignoreCase = true) }
-                        ?: gameCollection.subGames.firstOrNull()
-                } else null
+            actions = AppScreenActions(
+                onDownloadInstallClick = {
+                    // For collections, save the sub-game config first, then launch after saveData() completes
+                    val collectionSubGame = if (gameCollection != null && isInstalledState) {
+                        val lastExe = PrefManager.getLastPlayedSubGame(appId)
+                        gameCollection.subGames.firstOrNull { it.exePath.equals(lastExe, ignoreCase = true) }
+                            ?: gameCollection.subGames.firstOrNull()
+                    } else null
 
-                if (collectionSubGame != null) {
-                    uiScope.launch(Dispatchers.IO) {
-                        val container = ContainerUtils.getOrCreateContainer(context, appId)
-                        container.executablePath = collectionSubGame.exePath
-                        if (collectionSubGame.execArgs.isNotEmpty()) container.execArgs = collectionSubGame.execArgs
-                        container.saveData()
-                        // Persist last-played and trigger launch only after saveData() completes
-                        withContext(Dispatchers.Main) {
-                            PrefManager.setLastPlayedSubGame(appId, collectionSubGame.exePath)
-                            onDownloadInstallClick(context, libraryItem, onClickPlay)
+                    if (collectionSubGame != null) {
+                        uiScope.launch(Dispatchers.IO) {
+                            val container = ContainerUtils.getOrCreateContainer(context, appId)
+                            container.executablePath = collectionSubGame.exePath
+                            if (collectionSubGame.execArgs.isNotEmpty()) container.execArgs = collectionSubGame.execArgs
+                            container.saveData()
+                            // Persist last-played and trigger launch only after saveData() completes
+                            withContext(Dispatchers.Main) {
+                                PrefManager.setLastPlayedSubGame(appId, collectionSubGame.exePath)
+                                onDownloadInstallClick(context, libraryItem, onClickPlay)
+                            }
+                        }
+                    } else {
+                        onDownloadInstallClick(context, libraryItem, onClickPlay)
+                        uiScope.launch {
+                            delay(100)
+                            performStateRefresh(true)
                         }
                     }
-                } else {
-                    onDownloadInstallClick(context, libraryItem, onClickPlay)
+                },
+                onPauseResumeClick = {
+                    isDownloadingState = !isDownloadingState
+                    onPauseResumeClick(context, libraryItem)
+                },
+                onDeleteDownloadClick = {
+                    onDeleteDownloadClick(context, libraryItem)
+                },
+                onUpdateClick = {
+                    onUpdateClick(context, libraryItem)
                     uiScope.launch {
-                        delay(100)
                         performStateRefresh(true)
                     }
-                }
-            },
-            onPauseResumeClick = {
-                isDownloadingState = !isDownloadingState
-                onPauseResumeClick(context, libraryItem)
-            },
-            onDeleteDownloadClick = {
-                onDeleteDownloadClick(context, libraryItem)
-            },
-            onUpdateClick = {
-                onUpdateClick(context, libraryItem)
-                uiScope.launch {
-                    performStateRefresh(true)
-                }
-            },
-            onBack = onBack,
+                },
+                onBack = onBack,
+                onMakeItWork = onMakeItWork,
+            ),
             collectionSlot = collectionSlot,
             optionsMenu = optionsMenu.toTypedArray(),
         )

@@ -118,7 +118,7 @@ internal fun MacroSection(
     macroShm: MacroShm?,
     modifier: Modifier = Modifier,
 ) {
-    val accentColor = PluviaTheme.colors.accentPurple
+    val accentColor = PluviaTheme.colors.accentBrand
     var prefEnabled by remember { mutableStateOf(PrefManager.macroEnabled) }
 
     Column(

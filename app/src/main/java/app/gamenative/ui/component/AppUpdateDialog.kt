@@ -24,8 +24,10 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import app.gamenative.R
 import app.gamenative.update.AppInstallState
 import app.gamenative.update.PendingUpdate
+import androidx.compose.ui.res.stringResource
 
 /**
  * Patch-notes dialog shown when an app self-update is available.
@@ -86,7 +88,30 @@ fun AppUpdateDialog(
                         renderPatchNotes(update.patchNotes),
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    Spacer(Modifier.height(8.dp))
                 }
+
+                // Advisory: reassure the user their games are safe on a normal update.
+                // On a signature-mismatch block, the install button is already disabled
+                // and the Failed state surfaces the block reason — this line reinforces why.
+                val advisoryText = if (installState is AppInstallState.Failed &&
+                    installState.message.contains("signing certificate", ignoreCase = true)
+                ) {
+                    stringResource(R.string.update_advisory_sig_mismatch_warning)
+                } else {
+                    stringResource(R.string.update_advisory_games_preserved)
+                }
+                Text(
+                    advisoryText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (installState is AppInstallState.Failed &&
+                        installState.message.contains("signing certificate", ignoreCase = true)
+                    ) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
 
                 Spacer(Modifier.height(12.dp))
 

@@ -637,7 +637,9 @@ class MainViewModel @Inject constructor(
                     ContainerUtils.getContainer(context, appId)
                 }
                 SteamService.closeApp(context, gameId, isOffline.value) { prefix ->
-                    PathType.from(prefix).toAbsPath(container, gameId, SteamService.userSteamId!!.accountID)
+                    val accountId = SteamService.userSteamId?.accountID
+                        ?: PrefManager.steamUserAccountId.toLong()
+                    PathType.from(prefix).toAbsPath(container, gameId, accountId)
                 }.await()
             } catch (e: CancellationException) {
                 throw e

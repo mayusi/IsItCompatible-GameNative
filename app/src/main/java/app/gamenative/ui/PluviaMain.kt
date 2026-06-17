@@ -1145,9 +1145,25 @@ fun PluviaMain(
                 withDismissAction = msg.persistent,
             )
             if (result == SnackbarResult.ActionPerformed) {
-                // onAction may perform disk I/O (DllOverrideFix, VideoFileAutoFixer) — run on IO.
-                withContext(Dispatchers.IO) {
-                    msg.onAction?.invoke()
+                if (msg.onAction != null) {
+                    // One-tap fix: may perform disk I/O (DllOverrideFix, VideoFileAutoFixer) — run on IO.
+                    withContext(Dispatchers.IO) {
+                        msg.onAction.invoke()
+                    }
+                } else if (msg.diagnosisBody != null) {
+                    // "Why?" tapped: show the full plain-English crash diagnosis in a dialog.
+                    // Runs on Main (we are already in a coroutine on the collector's dispatcher).
+                    withContext(Dispatchers.Main) {
+                        setMessageDialogState(
+                            MessageDialogState(
+                                visible = true,
+                                type = DialogType.CRASH,
+                                title = msg.diagnosisTitle ?: "Why did it crash?",
+                                message = msg.diagnosisBody,
+                                confirmBtnText = context.getString(R.string.ok),
+                            ),
+                        )
+                    }
                 }
             }
         }
@@ -1481,6 +1497,20 @@ fun PluviaMain(
                         onAutoTune = { appId ->
                             autoTunerSetupAppId = appId
                         },
+                        onMakeItWork = { appId ->
+                            // One-tap COMPAT_PROBE: start the engine directly with default params,
+                            // skipping the setup dialog entirely. The ViewModel forces SweepMode.PROBE
+                            // when goal.isFastProbe=true, so passing SweepMode.PROBE here is safe
+                            // but redundant — included for clarity.
+                            autoTunerViewModel.startTuning(
+                                context = context,
+                                appId = appId,
+                                goal = app.gamenative.autotuner.TunerGoal.COMPAT_PROBE,
+                                mode = app.gamenative.autotuner.SweepMode.PROBE,
+                                measurementMode = app.gamenative.autotuner.MeasurementMode.AUTO,
+                            )
+                            navController.navigate(PluviaScreen.AutoTunerProgress.route(appId))
+                        },
                         isOffline = isOffline,
                     )
                 }
@@ -1692,6 +1722,7 @@ fun preLaunchApp(
     val gameId = ContainerUtils.extractGameIdFromContainerId(appId)
 
     CoroutineScope(Dispatchers.IO).launch {
+      try {
         // create container if it does not already exist
         // TODO: combine somehow with container creation in HomeLibraryAppScreen
         val containerManager = ContainerManager(context)
@@ -2027,7 +2058,9 @@ fun preLaunchApp(
 
         // For Steam games, sync save files and check no pending remote operations are running
         val prefixToPath: (String) -> String = { prefix ->
-            PathType.from(prefix).toAbsPath(container, gameId, SteamService.userSteamId!!.accountID)
+            val accountId = SteamService.userSteamId?.accountID
+                ?: PrefManager.steamUserAccountId.toLong()
+            PathType.from(prefix).toAbsPath(container, gameId, accountId)
         }
 
         // Workshop mod sync: check for updates and download if needed
@@ -2391,5 +2424,25 @@ fun preLaunchApp(
             SyncResult.Success,
             -> onSuccess(context, appId)
         }
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        // Normal cancellation (e.g. user backed out / scope cancelled) — propagate.
+        throw e
+      } catch (e: Exception) {
+        // ANY unhandled failure in the launch pipeline (container creation, install,
+        // cloud-save sync, etc.) used to escape this coroutine and leave the loading
+        // spinner stuck forever ("Launching game…" with no way out). Always dismiss
+        // the dialog and surface a failure dialog with the cause.
+        Timber.tag("preLaunchApp").e(e, "Pre-launch pipeline failed for $appId")
+        setLoadingDialogVisible(false)
+        setMessageDialogState(
+            MessageDialogState(
+                visible = true,
+                type = DialogType.SYNC_FAIL,
+                title = context.getString(R.string.install_failed_title),
+                message = e.message ?: "An unexpected error occurred while launching.",
+                dismissBtnText = context.getString(R.string.ok),
+            ),
+        )
+      }
     }
 }

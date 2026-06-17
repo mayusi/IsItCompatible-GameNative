@@ -447,7 +447,7 @@ fun SettingsGroupInterface(
         val downloadSpeedValues = remember { listOf(8, 16, 24, 32) }
         var downloadSpeedValue by rememberSaveable {
             mutableStateOf(
-                downloadSpeedValues.indexOf(PrefManager.downloadSpeed).takeIf { it >= 0 }?.toFloat() ?: 2f
+                downloadSpeedValues.indexOf(PrefManager.downloadSpeed).takeIf { it >= 0 }?.toFloat() ?: 1f
             )
         }
         Column(
@@ -553,11 +553,11 @@ fun SettingsGroupInterface(
         SettingsSwitch(
             colors = settingsTileColorsAlt(),
             enabled = hasSdCard,
-            title = { Text(text = stringResource(R.string.settings_interface_external_storage_title)) },
+            title = { Text(text = stringResource(R.string.settings_interface_sd_card_install_title)) },
             subtitle = {
                 when {
-                    !hasSdCard -> Text(stringResource(R.string.settings_interface_no_sd_internal_required))
-                    else -> Text(stringResource(R.string.settings_interface_external_storage_subtitle))
+                    !hasSdCard -> Text(stringResource(R.string.settings_interface_no_sd_card_subtitle))
+                    else -> Text(stringResource(R.string.settings_interface_sd_card_install_subtitle))
                 }
             },
             state = useExternalStorage && hasSdCard,

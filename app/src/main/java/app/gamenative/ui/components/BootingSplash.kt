@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.gamenative.ui.theme.PluviaTheme
 import app.gamenative.ui.theme.BrandGradient
+import app.gamenative.ui.theme.IicBrandGradient
 import androidx.compose.ui.platform.LocalContext
 import app.gamenative.R
 import kotlin.math.sin
@@ -194,6 +195,16 @@ fun BootingSplash(
                         ),
                     )
                 }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "IIC · Is It Compatible? fork",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 3.sp,
+                        brush = Brush.horizontalGradient(colors = IicBrandGradient),
+                    ),
+                )
 
                 Spacer(modifier = Modifier.height(48.dp))
 

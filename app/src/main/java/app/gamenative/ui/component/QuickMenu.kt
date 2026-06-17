@@ -92,7 +92,7 @@ import androidx.compose.ui.unit.dp
 import app.gamenative.PrefManager
 import app.gamenative.R
 import app.gamenative.trainer.MacroShm
-import app.gamenative.trainer.SpeedHackShm
+import app.gamenative.trainer.TrainerEngine
 import app.gamenative.trainer.TrainerShm
 import app.gamenative.ui.data.PerformanceHudConfig
 import app.gamenative.ui.data.PerformanceHudSize
@@ -105,6 +105,12 @@ import com.winlator.renderer.VulkanRenderer
 import com.winlator.winhandler.ProcessInfo
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
+
+// Host-side trainer: how many times / how long to poll for the game pid after the
+// menu opens. The game's Wine/Box64 process appears a moment after launch, so a few
+// retries with a short delay reliably catches it without blocking the UI.
+private const val TRAINER_PID_POLL_ATTEMPTS = 8
+private const val TRAINER_PID_POLL_DELAY_MS = 400L
 
 object QuickMenuAction {
     const val KEYBOARD = 1
@@ -288,7 +294,7 @@ fun QuickMenu(
                 id = QuickMenuAction.DISABLE_MOUSE,
                 icon = Icons.Filled.Mouse,
                 labelResId = R.string.disable_mouse_input,
-                accentColor = PluviaTheme.colors.accentPurple,
+                accentColor = PluviaTheme.colors.accentBrand,
             )
         )
         add(
@@ -296,7 +302,7 @@ fun QuickMenu(
                 id = QuickMenuAction.KEYBOARD,
                 icon = Icons.Default.Keyboard,
                 labelResId = R.string.keyboard,
-                accentColor = PluviaTheme.colors.accentPurple,
+                accentColor = PluviaTheme.colors.accentBrand,
             )
         )
         add(
@@ -304,7 +310,7 @@ fun QuickMenu(
                 id = QuickMenuAction.INPUT_CONTROLS,
                 icon = Icons.Default.TouchApp,
                 labelResId = R.string.input_controls,
-                accentColor = PluviaTheme.colors.accentPurple,
+                accentColor = PluviaTheme.colors.accentBrand,
             )
         )
         if (hasPhysicalController) {
@@ -313,7 +319,7 @@ fun QuickMenu(
                     id = QuickMenuAction.EDIT_PHYSICAL_CONTROLLER,
                     icon = Icons.Default.Gamepad,
                     labelResId = R.string.edit_physical_controller,
-                    accentColor = PluviaTheme.colors.accentPurple,
+                    accentColor = PluviaTheme.colors.accentBrand,
                 )
             )
         }
@@ -322,7 +328,7 @@ fun QuickMenu(
                 id = QuickMenuAction.EDIT_CONTROLS,
                 icon = Icons.Default.Edit,
                 labelResId = R.string.edit_controls,
-                accentColor = PluviaTheme.colors.accentPurple,
+                accentColor = PluviaTheme.colors.accentBrand,
             )
         )
         add(
@@ -330,7 +336,7 @@ fun QuickMenu(
                 id = QuickMenuAction.TOUCHSCREEN_MODE,
                 icon = Icons.Default.Fingerprint,
                 labelResId = R.string.touchscreen_mode,
-                accentColor = PluviaTheme.colors.accentPurple,
+                accentColor = PluviaTheme.colors.accentBrand,
             )
         )
     }
@@ -374,9 +380,6 @@ fun QuickMenu(
     val trainerShm = remember {
         if (PrefManager.trainerEnabled) TrainerShm.create(context) else null
     }
-    val speedHackShm = remember {
-        if (PrefManager.speedHackEnabled) SpeedHackShm.create(context) else null
-    }
     val macroShm = remember {
         if (PrefManager.macroEnabled) MacroShm.create(context) else null
     }
@@ -388,22 +391,95 @@ fun QuickMenu(
         if (cid != null && PrefManager.trainerEnabled) {
             try {
                 val gid = app.gamenative.utils.ContainerUtils.extractGameIdFromContainerId(cid)
-                app.gamenative.cheats.ProxyCtrl.create(app.gamenative.service.SteamService.getAppDirPath(gid))
+                val installRoot = java.io.File(app.gamenative.service.SteamService.getAppDirPath(gid))
+                // Pass the container root (for the deterministic C:\ProxyCheat backstop —
+                // <rootDir>/.wine/drive_c/ProxyCheat) AND the executablePath (so the
+                // next-to-exe channel agrees with the DLL even for subfolder exes).
+                app.gamenative.cheats.ProxyCtrl.create(
+                    installRoot = installRoot,
+                    containerRootDir = container.rootDir,
+                    executablePath = container.executablePath,
+                )
             } catch (e: Exception) {
                 null
             }
         } else null
     }
 
-    // Establish the trainer IPC connection. TrainerShm.create() only mmaps the
-    // shared file; `available` stays false until a PING round-trips to the native
-    // worker. The worker may need a moment after game launch to claim shm
-    // ownership and start its thread, so connect() retries. Without this the
-    // Cheats tab would never see available==true and every command would time
-    // out (the real "no cheat works" bug). Re-attempt whenever the menu opens.
+    // Verify the in-game DLL is actually LIVE before trusting cheat commands. The DLL
+    // writes "[cheat] engine up" to the backstop out file once its thread starts; until
+    // connect() sees that, scans report NOT_CONNECTED fast instead of a blind 12s timeout.
+    // Re-attempt whenever the menu opens (the DLL may need a moment after launch).
+    LaunchedEffect(proxyCtrl, isVisible) {
+        if (proxyCtrl != null && isVisible && !proxyCtrl.available) {
+            proxyCtrl.connect()
+        }
+    }
+
+    // Establish the trainer IPC connection AND retarget the host-side engine at the
+    // running game process.
+    //
+    // HOST-SIDE ENGINE FLOW (cross-process /proc/<game-pid>/mem):
+    //   1. TrainerEngine.loadAndStart() — load libtrainer.so + nativeStart() INSIDE the
+    //      app process (idempotent). This spawns the worker/freeze threads in-app.
+    //   2. TrainerShm.create() (done above) mmaps the shared file the worker also mmaps.
+    //   3. connect() — PING round-trips to the in-app worker; sets `available`.
+    //   4. Poll TrainerEngine.findGamePid(targetExe) — the game pid appears a moment
+    //      after launch, so retry a few times with a short delay.
+    //   5. shm.setTargetPid(pid) — from then on every TrainerShm command retargets the
+    //      worker at /proc/<pid>/mem, so the existing CheatExecutor scan/freeze paths
+    //      operate on the GAME's address space. (pid 0 = self = self-test; we never set
+    //      that here.)
     LaunchedEffect(trainerShm, isVisible) {
-        if (trainerShm != null && isVisible && !trainerShm.available) {
-            trainerShm.connect()
+        if (trainerShm != null && isVisible && PrefManager.trainerEnabled) {
+            // Bring the engine up in this (app) process.
+            TrainerEngine.loadAndStart()
+
+            // Connect the IPC channel (PING). connect() retries internally.
+            if (!trainerShm.available) {
+                trainerShm.connect()
+            }
+
+            // Resolve the game's leaf exe name (stashed by the launcher; fall back to
+            // the container's executablePath basename).
+            val targetExe = run {
+                val stashed = PrefManager.lastGameTargetExe
+                if (stashed.isNotBlank()) {
+                    stashed
+                } else {
+                    container?.executablePath
+                        ?.substringAfterLast('/')
+                        ?.substringAfterLast('\\')
+                        ?.lowercase()
+                        ?.takeIf { it.endsWith(".exe") }
+                        .orEmpty()
+                }
+            }
+
+            // Poll for the game pid — it appears late after launch. A few retries.
+            if (targetExe.isNotBlank()) {
+                var pid = -1
+                var attempt = 0
+                while (attempt < TRAINER_PID_POLL_ATTEMPTS && pid <= 0) {
+                    pid = TrainerEngine.findGamePid(targetExe)
+                    if (pid <= 0) delay(TRAINER_PID_POLL_DELAY_MS)
+                    attempt++
+                }
+                if (pid > 0) {
+                    trainerShm.setTargetPid(pid)
+                    android.util.Log.i("QuickMenu", "Trainer retargeted at game pid=$pid (exe=$targetExe)")
+                } else {
+                    android.util.Log.w("QuickMenu", "Trainer: game pid for '$targetExe' not found yet")
+                }
+            } else {
+                android.util.Log.w("QuickMenu", "Trainer: no target exe known; engine stays on self")
+            }
+        }
+    }
+
+    LaunchedEffect(macroShm, isVisible) {
+        if (macroShm != null && isVisible) {
+            macroShm.connect()
         }
     }
 
@@ -510,7 +586,7 @@ fun QuickMenu(
                                     icon = Icons.Default.QueryStats,
                                     contentDescriptionResId = R.string.performance_hud,
                                     selected = selectedTab == QuickMenuTab.HUD,
-                                    accentColor = PluviaTheme.colors.accentPurple,
+                                    accentColor = PluviaTheme.colors.accentBrand,
                                     onSelected = {
                                         selectedTab = QuickMenuTab.HUD
                                         PrefManager.quickMenuLastTab = selectedTab
@@ -523,7 +599,7 @@ fun QuickMenu(
                                         icon = Icons.Default.Speed,
                                         contentDescriptionResId = R.string.lsfg_tab_title,
                                         selected = selectedTab == QuickMenuTab.LSFG,
-                                        accentColor = PluviaTheme.colors.accentPurple,
+                                        accentColor = PluviaTheme.colors.accentBrand,
                                         onSelected = {
                                             selectedTab = QuickMenuTab.LSFG
                                             PrefManager.quickMenuLastTab = selectedTab
@@ -537,7 +613,7 @@ fun QuickMenu(
                                         icon = Icons.Default.AutoFixHigh,
                                         contentDescriptionResId = R.string.screen_effects,
                                         selected = selectedTab == QuickMenuTab.EFFECTS,
-                                        accentColor = PluviaTheme.colors.accentPurple,
+                                        accentColor = PluviaTheme.colors.accentBrand,
                                         onSelected = {
                                             selectedTab = QuickMenuTab.EFFECTS
                                             PrefManager.quickMenuLastTab = selectedTab
@@ -550,7 +626,7 @@ fun QuickMenu(
                                     icon = Icons.Default.Gamepad,
                                     contentDescriptionResId = R.string.quick_menu_tab_controller,
                                     selected = selectedTab == QuickMenuTab.CONTROLLER,
-                                    accentColor = PluviaTheme.colors.accentPurple,
+                                    accentColor = PluviaTheme.colors.accentBrand,
                                     onSelected = {
                                         selectedTab = QuickMenuTab.CONTROLLER
                                         PrefManager.quickMenuLastTab = selectedTab
@@ -562,7 +638,7 @@ fun QuickMenu(
                                     icon = Icons.Default.BarChart,
                                     contentDescriptionResId = R.string.task_manager,
                                     selected = selectedTab == QuickMenuTab.TOOLS,
-                                    accentColor = PluviaTheme.colors.accentPurple,
+                                    accentColor = PluviaTheme.colors.accentBrand,
                                     onSelected = { selectedTab = QuickMenuTab.TOOLS },
                                     modifier = Modifier.width(56.dp),
                                     focusRequester = toolsTabFocusRequester,
@@ -571,7 +647,7 @@ fun QuickMenu(
                                     icon = Icons.Default.SmartToy,
                                     contentDescriptionResId = R.string.trainer_tab_title,
                                     selected = selectedTab == QuickMenuTab.TRAINER,
-                                    accentColor = PluviaTheme.colors.accentPurple,
+                                    accentColor = PluviaTheme.colors.accentBrand,
                                     onSelected = {
                                         selectedTab = QuickMenuTab.TRAINER
                                         PrefManager.quickMenuLastTab = selectedTab
@@ -708,7 +784,6 @@ fun QuickMenu(
                                     QuickMenuTab.TRAINER -> {
                                         TrainerTab(
                                             trainerShm = trainerShm,
-                                            speedHackShm = speedHackShm,
                                             macroShm = macroShm,
                                             appId = container?.id,
                                             proxyCtrl = proxyCtrl,
@@ -786,7 +861,7 @@ private fun ToolsQuickMenuTab(
     modifier: Modifier = Modifier,
 ) {
     val scrollState = rememberScrollState()
-    val accentColor = PluviaTheme.colors.accentPurple
+    val accentColor = PluviaTheme.colors.accentBrand
 
     Column(
         modifier = modifier
@@ -841,7 +916,7 @@ private fun PerformanceHudQuickMenuTab(
     focusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier,
 ) {
-    val accentColor = PluviaTheme.colors.accentPurple
+    val accentColor = PluviaTheme.colors.accentBrand
 
     Column(
         modifier = modifier
@@ -1183,7 +1258,7 @@ private fun LsfgQuickMenuTab(
     focusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier,
 ) {
-    val accentColor = PluviaTheme.colors.accentPurple
+    val accentColor = PluviaTheme.colors.accentBrand
     val isEnabled = multiplier >= 2
 
     Column(

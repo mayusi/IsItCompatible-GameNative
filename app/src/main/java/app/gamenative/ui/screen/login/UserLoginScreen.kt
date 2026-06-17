@@ -90,6 +90,8 @@ import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.tooling.preview.PreviewParameterProvider
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import app.gamenative.ui.theme.IicBrandGradient
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -355,15 +357,25 @@ private fun UserLoginScreenContent(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 // Logo
-                Text(
-                    text = stringResource(R.string.login_app_name),
-                    style = MaterialTheme.typography.headlineSmall.copy(
-                        fontWeight = FontWeight.Bold,
-                        brush = Brush.horizontalGradient(
-                            colors = listOf(primaryColor, tertiaryColor),
+                Column {
+                    Text(
+                        text = stringResource(R.string.login_app_name),
+                        style = MaterialTheme.typography.headlineSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            brush = Brush.horizontalGradient(
+                                colors = listOf(primaryColor, tertiaryColor),
+                            ),
                         ),
-                    ),
-                )
+                    )
+                    Text(
+                        text = "IIC Edition",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            letterSpacing = 2.sp,
+                            brush = Brush.horizontalGradient(colors = IicBrandGradient),
+                        ),
+                    )
+                }
 
                 // Privacy Policy Button
                 val uriHandler = LocalUriHandler.current

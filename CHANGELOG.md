@@ -5,6 +5,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **One-Tap Cheats**: proxy-DLL cheat engine (`dinput8.dll`) injected into the game via
+  Wine; bundled catalog of 15 games (Hollow Knight, Hades, DMC3, Skyrim, Terraria, and
+  more) with per-game scan/freeze/patch recipes; one-tap toggles for pointer-chain and
+  AOB-patch cheats; DMC3 Infinite HP/DT verified on device
+- **DIY Cheat Scanner**: free-form in-game value scanner (scan → narrow → freeze) for
+  games without a premade table; supports exact, increased/decreased/changed narrowing;
+  accessible from QuickMenu → Cheats tab
+- **Cheat Catalog OTA**: `cheattables/registry.json` hosted in this repo; the app syncs
+  it in the background so new tables can be added without an app release
+- **Cheats discoverability**: library cards show a gold lightning-bolt "Has Cheats" badge
+  for games covered by the bundled catalog
+- **Crowd-Sourced Crash-Fix OTA**: `crashfixes/registry.json` catalog mapping crash
+  signatures to fix rungs (6 failure classes: D3D12, Steam init, WMV codec, Steam overlay,
+  EOS SDK, D3D compiler); OTA-updatable by committing JSON; pulled by the auto-tuner's
+  crash-fix-retry loop and the post-crash classifier
+- **Auto-Tuner: crash-fix-retry loop**: after a crashed or black-screen trial, the engine
+  classifies the Wine log, looks up a catalog fix, applies it, and retries the config slot
+  automatically (up to 4 fix rungs chained per trial)
+- **One-Tap "Make It Work" button**: full-width CTA on the game-detail screen; launches
+  a COMPAT_PROBE auto-tuner sweep in one tap
+- **Plain-English crash diagnosis**: after a game exits abnormally, a snackbar shows a
+  human-readable message with a one-tap fix action; a "Why?" detail dialog gives a
+  full explanation of what went wrong and what the fix does
+
+---
+
 ## [1.12.0-IIC] — current
 
 _(versionCode 38 — see app/build.gradle.kts)_

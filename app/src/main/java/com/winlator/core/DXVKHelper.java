@@ -64,8 +64,16 @@ public class DXVKHelper {
         envVars.put("DXVK_CONFIG", content);
     }
 
-    public static void setVKD3DEnvVars(Context context, KeyValueSet config, EnvVars envVars) {
+    public static void setVKD3DEnvVars(Context context, KeyValueSet config, EnvVars envVars, String containerId) {
         String featureLevel = config.get("vkd3dFeatureLevel", "12_1");
         envVars.put("VKD3D_FEATURE_LEVEL", featureLevel);
+
+        // Per-container VKD3D pipeline-cache dir — eliminates DX12 cold-start stutter by
+        // persisting compiled pipeline state across launches (the var is declared in
+        // EnvVarInfo but was never set). Isolated per container id so caches don't collide.
+        ImageFs imageFs = ImageFs.find(context);
+        File vkd3dCacheDir = new File(imageFs.cache_path + "/vkd3d-" + containerId);
+        vkd3dCacheDir.mkdirs();
+        envVars.put("VKD3D_SHADER_CACHE_PATH", vkd3dCacheDir.getPath());
     }
 }

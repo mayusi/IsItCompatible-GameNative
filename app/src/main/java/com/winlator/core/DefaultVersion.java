@@ -25,5 +25,5 @@ public abstract class DefaultVersion {
     public static String DEFAULT_GRAPHICS_DRIVER = "vortek";
     public static String WINE_VERSION = com.winlator.core.WineInfo.MAIN_WINE_VERSION.identifier();
     public static String ASYNC = "1";
-    public static String ASYNC_CACHE = "0";
+    public static String ASYNC_CACHE = "1";
 }

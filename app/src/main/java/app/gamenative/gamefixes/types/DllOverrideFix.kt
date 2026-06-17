@@ -41,8 +41,21 @@ class DllOverrideFix(
 
             var added = 0
             for ((dll, mode) in overrides) {
+                // Strip any STALE conflicting form of the SAME de-prefixed DLL. Wine
+                // treats "*name" (strong, forces override even for builtin-backed core
+                // DLLs) and bare "name" (weak) as distinct entries, so a leftover bare
+                // "version=n,b" from a prior launch would coexist with — and undermine —
+                // a freshly-added "*version=n,b". When we add one form, drop the other so
+                // exactly one entry per DLL survives. Match on the de-prefixed name.
+                val conflict = conflictingKey(dll)
+                if (existing.containsKey(conflict)) {
+                    existing.remove(conflict)
+                    Timber.tag("DllOverrideFix").d("Removed stale '$conflict' override (superseded by '$dll') for game $gameId")
+                    added++
+                }
+
                 if (existing.containsKey(dll)) {
-                    // Already present — respect user / prior-fix configuration.
+                    // Already present in the requested form — respect user / prior-fix config.
                     Timber.tag("DllOverrideFix").d("DLL override for '$dll' already present — skipping for game $gameId")
                     continue
                 }
@@ -68,6 +81,14 @@ class DllOverrideFix(
     }
 
     companion object {
+        /**
+         * Given a DLL override key, return the OTHER form for the same de-prefixed DLL:
+         * "version" -> "*version" and "*version" -> "version". Used to find and drop a
+         * stale conflicting entry when adding the opposite form.
+         */
+        fun conflictingKey(dll: String): String =
+            if (dll.startsWith("*")) dll.removePrefix("*") else "*$dll"
+
         /**
          * Parse a WINEDLLOVERRIDES string into a map of dll-name -> mode.
          * Supports ";" as entry separator and "=" as key/value separator.

@@ -29,6 +29,7 @@ internal fun LibraryDetailPane(
     onClickPlay: (Boolean) -> Unit,
     onTestGraphics: () -> Unit,
     onAutoTune: () -> Unit = {},
+    onMakeItWork: (() -> Unit)? = null,
     onBack: () -> Unit,
 ) {
     Surface {
@@ -78,6 +79,7 @@ internal fun LibraryDetailPane(
                 onClickPlay = onClickPlay,
                 onTestGraphics = onTestGraphics,
                 onAutoTune = onAutoTune,
+                onMakeItWork = onMakeItWork,
                 onBack = onBack,
             )
         }

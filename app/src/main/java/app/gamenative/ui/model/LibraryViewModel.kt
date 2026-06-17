@@ -36,6 +36,7 @@ import app.gamenative.ui.enums.SortOption
 import app.gamenative.utils.CustomGameScanner
 import app.gamenative.data.RecommendationRepository
 import app.gamenative.data.RecommendedGame
+import app.gamenative.utils.GameRelinkManager
 import app.gamenative.utils.GameCompatibilityCache
 import app.gamenative.utils.GameCompatibilityService
 import app.gamenative.utils.unaccent
@@ -192,6 +193,25 @@ class LibraryViewModel @Inject constructor(
             cachedRecommendation = RecommendationRepository.getCurrentRecommendation(context)
             if (cachedRecommendation != null) {
                 onFilterApps(paginationCurrentPage)
+            }
+        }
+
+        // Auto-relink storefront games whose files survived on disk (e.g. on a removable
+        // SD/USB volume) but whose DB "installed" row was wiped by a reinstall/DB loss.
+        // Runs at most once per app session, off the UI thread, and cheap when there's
+        // nothing to relink. The store reconcilers emit LibraryInstallStatusChanged, and
+        // we trigger one explicit re-filter so any newly-linked games appear immediately.
+        if (relinkAttempted.compareAndSet(false, true)) {
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val relinked = GameRelinkManager.relinkOrphanGamesOnDisk(context)
+                    if (relinked > 0) {
+                        Timber.tag("LibraryViewModel").i("Auto-relinked $relinked game(s) found on disk")
+                        onFilterApps(paginationCurrentPage)
+                    }
+                } catch (e: Exception) {
+                    Timber.tag("LibraryViewModel").w(e, "Failed to auto-relink orphan games on disk")
+                }
             }
         }
     }
@@ -897,5 +917,11 @@ class LibraryViewModel @Inject constructor(
             response.totalPlayableCount > 0 -> GameCompatibilityStatus.COMPATIBLE
             else -> GameCompatibilityStatus.UNKNOWN
         }
+    }
+
+    companion object {
+        // Ensures the on-disk orphan-game relink scan runs at most once per app session,
+        // even if the library ViewModel is re-created (process-level guard).
+        private val relinkAttempted = java.util.concurrent.atomic.AtomicBoolean(false)
     }
 }

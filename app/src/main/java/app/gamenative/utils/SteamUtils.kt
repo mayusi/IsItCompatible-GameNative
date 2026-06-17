@@ -784,7 +784,9 @@ object SteamUtils {
         }
 
         // Update or modify localconfig.vdf
-        updateOrModifyLocalConfig(imageFs, container, steamAppId.toString(), SteamService.userSteamId!!.accountID.toString())
+        val accountIdStr = SteamService.userSteamId?.accountID?.toString()
+            ?: PrefManager.steamUserAccountId.toString()
+        updateOrModifyLocalConfig(imageFs, container, steamAppId.toString(), accountIdStr)
 
         skipFirstTimeSteamSetup(imageFs.rootDir)
         val appDirPath = SteamService.getAppDirPath(steamAppId)
@@ -796,7 +798,7 @@ object SteamUtils {
         Timber.i("Checking directory: $appDirPath")
 
         autoLoginUserChanges(imageFs)
-        setupLightweightSteamConfig(imageFs, SteamService.userSteamId!!.accountID.toString())
+        setupLightweightSteamConfig(imageFs, accountIdStr)
 
         putBackSteamDlls(appDirPath)
 

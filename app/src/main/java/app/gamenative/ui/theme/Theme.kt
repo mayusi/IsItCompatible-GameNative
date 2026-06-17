@@ -43,6 +43,7 @@ data class PluviaColors(
     val accentSuccess: Color,
     val accentWarning: Color,
     val accentDanger: Color,
+    val accentBrand: Color,
 
     // Surfaces
     val surfacePanel: Color,
@@ -86,6 +87,7 @@ private val DarkPluviaColors = PluviaColors(
     accentSuccess = PluviaSuccess,
     accentWarning = PluviaWarning,
     accentDanger = PluviaDanger,
+    accentBrand = IicTeal,
 
     surfacePanel = PluviaSurface,
     surfaceElevated = PluviaSurfaceElevated,
@@ -103,7 +105,9 @@ private val DarkPluviaColors = PluviaColors(
     compatibilityBadBackground = CompatibilityBadBg,
 )
 
+// BrandGradient = upstream GameNative identity; IicBrandGradient = IIC fork identity (teal→violet).
 val BrandGradient = listOf(PluviaCyan, PluviaPurple, PluviaPink)
+val IicBrandGradient = listOf(IicTeal, IicViolet)
 
 // Light theme placeholder - customize when adding light theme support
 // private val LightPluviaColors = PluviaColors(...)
@@ -132,7 +136,7 @@ private val DarkColorScheme = darkColorScheme(
     background = PluviaBackground,
     onBackground = PluviaForeground,
 
-    surface = PluviaCard,
+    surface = PluviaSurface,
     onSurface = PluviaForeground,
     surfaceVariant = PluviaSecondary,
     onSurfaceVariant = PluviaForegroundMuted,
@@ -153,7 +157,7 @@ private val DarkColorScheme = darkColorScheme(
     scrim = Color.Black.copy(alpha = 0.5f),
     surfaceBright = PluviaSecondary,
     surfaceDim = PluviaBackground,
-    surfaceContainer = PluviaCard,
+    surfaceContainer = PluviaSurface,
     surfaceContainerHigh = PluviaSecondary,
     surfaceContainerHighest = PluviaSecondary.copy(alpha = 0.9f),
     surfaceContainerLow = PluviaBackground,

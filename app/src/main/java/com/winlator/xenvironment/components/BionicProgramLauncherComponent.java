@@ -57,7 +57,6 @@ import app.gamenative.service.SteamService;
 
 public class BionicProgramLauncherComponent extends GuestProgramLauncherComponent {
     private String guestExecutable;
-    private static int pid = -1;
     private String[] bindingPaths;
     private EnvVars envVars;
     private WineInfo wineInfo;
@@ -65,7 +64,6 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
     private String box64Preset = Box86_64Preset.COMPATIBILITY;
     private String fexcorePreset = FEXCorePreset.INTERMEDIATE;
     private Callback<Integer> terminationCallback;
-    private static final Object lock = new Object();
     private boolean wow64Mode = true;
     private final ContentsManager contentsManager;
     private final ContentProfile wineProfile;
@@ -116,9 +114,10 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
             if (pid != -1) {
                 Process.killProcess(pid);
                 Log.d("BionicProgramLauncherComponent", "Stopped process " + pid);
-                List<ProcessHelper.ProcessInfo> subProcesses = ProcessHelper.listSubProcesses();
-                for (ProcessHelper.ProcessInfo subProcess : subProcesses) {
-                    Process.killProcess(subProcess.pid);
+                for (String winePid : ProcessHelper.listRunningWineProcesses()) {
+                    try {
+                        Process.killProcess(Integer.parseInt(winePid));
+                    } catch (NumberFormatException ignored) {}
                 }
                 SteamService.setKeepAlive(false);
             }
@@ -307,34 +306,19 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         ld_preload += ":" + evshimPath;
         ld_preload += ":" + replacePath;
 
-        // ---- Trainer LD_PRELOAD injection ----
-        // libtrainer.so is LD_PRELOAD'd into the whole Wine/Box64 process tree. Even
-        // though its constructor no-ops when not the game process, loading ANY extra
-        // .so into every game launch is a launch-path risk (the speed-hack lib taught
-        // us this the hard way). A nice-to-have feature must NEVER be able to break the
-        // core "launch the game" function. So we ONLY preload libtrainer when the
-        // trainer feature is actually ENABLED. When off (the default), the lib is never
-        // loaded and CANNOT affect game launches at all. (Same gating as libspeedhack.)
-        boolean trainerEnabledForPreload = app.gamenative.PrefManager.INSTANCE.getTrainerEnabled();
-        String trainerLibPath = context.getApplicationInfo().nativeLibraryDir + "/libtrainer.so";
-        if (trainerEnabledForPreload && new File(trainerLibPath).exists()) {
-            ld_preload += ":" + trainerLibPath;
-        }
+        // ---- Trainer is now HOST-SIDE — NO LD_PRELOAD into the game ----
+        // The memory-cheat engine (libtrainer.so) NO LONGER rides into the game's
+        // Wine/Box64 process tree. The in-Wine LD_PRELOAD path is dead on arm64ec
+        // (the loader maps the .so but never runs its code) and previously risked
+        // the launch path. Instead libtrainer is loaded INSIDE the app process
+        // (TrainerEngine.loadAndStart) and reaches the game via /proc/<game-pid>/mem.
+        // So the game preloads NOTHING extra here — launch safety restored.
 
-        // ---- SpeedHack LD_PRELOAD injection ----
-        // libspeedhack.so interposes clock_gettime — a function the entire Wine/Box64/
-        // libc++ stack (and even early process init, e.g. libnetd_client) calls. An
-        // interposed clock_gettime is inherently high-risk: any flaw breaks EVERY game
-        // launch (it did — see the clock_gettime EINVAL crash). So we ONLY preload it
-        // when the speed-hack feature is actually ENABLED. When off (the default), the
-        // lib is never loaded and CANNOT affect game launches at all — a nice-to-have
-        // feature must never be able to break the core function. The multiplier is
-        // communicated via shared memory (SpeedHackShm.kt) at runtime when enabled.
-        boolean speedHackEnabledForPreload = app.gamenative.PrefManager.INSTANCE.getSpeedHackEnabled();
-        String speedHackLibPath = context.getApplicationInfo().nativeLibraryDir + "/libspeedhack.so";
-        if (speedHackEnabledForPreload && new File(speedHackLibPath).exists()) {
-            ld_preload += ":" + speedHackLibPath;
-        }
+        // NOTE: the speed-hack does NOT use LD_PRELOAD. An earlier libspeedhack.so that
+        // interposed clock_gettime deadlocked the Box64/Android linker at launch and was
+        // removed entirely. The speed-hack is now UNIVERSAL: a patched Wine unix ntdll.so
+        // scales monotonic_counter() by the multiplier in the GN_TIME_SCALE_FILE control
+        // file (set below) — no preload, no in-Wine DLL. See the GN_TIME_SCALE_FILE block.
 
         envVars.put("LD_PRELOAD", ld_preload);
 
@@ -356,17 +340,27 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         // at the same base: EVSHIM_BASE_PATH = <app-files-dir>  →  shim builds <base>/gamepad_shm/gamepad.mem
         envVars.put("EVSHIM_BASE_PATH", context.getFilesDir().getAbsolutePath());
 
-        // ---- Trainer env vars ----
-        // TRAINER_BASE_PATH lets libtrainer find/create <base>/trainer_shm/trainer.mem,
-        // matching the path TrainerShm.kt uses on the Android side.
-        // TRAINER_ENABLED=1 activates the worker thread inside libtrainer; without it
-        // the lib loads but immediately returns from its init hook (zero overhead).
-        boolean trainerEnabled = app.gamenative.PrefManager.INSTANCE.getTrainerEnabled();
-        envVars.put("TRAINER_BASE_PATH", context.getFilesDir().getAbsolutePath());
-        envVars.put("TRAINER_ENABLED", trainerEnabled ? "1" : "0");
+        // ---- Universal speed-hack control file (host-side, patched ntdll) ----
+        // The runtime speed-hack is now UNIVERSAL: our patched Wine unix ntdll.so scales
+        // monotonic_counter() (the source QueryPerformanceCounter / GetTickCount / interrupt
+        // time all funnel through) by a live multiplier. The multiplier is read from the file
+        // whose absolute path is GN_TIME_SCALE_FILE — a single float, re-read by the ntdll at
+        // most ~4x/sec. The SpeedSection UI writes that file (SpeedhackControl) when the user
+        // moves the slider; "1.0" / a missing file / unset env = normal speed (near-zero cost
+        // fast passthrough in the ntdll). No LD_PRELOAD, no in-Wine DLL, no per-game patching.
+        // The ntdll runs in the game's process tree under THIS app's uid, so it can fopen the
+        // app-files path directly. Path must match SpeedhackControl.scaleFile(context).
+        envVars.put(
+            "GN_TIME_SCALE_FILE",
+            new File(new File(context.getFilesDir(), "speedhack_shm"), "scale").getAbsolutePath()
+        );
 
-        // FIX 1b: Tell libtrainer which process is the actual game so it activates
-        // ONLY there, not in wineserver/explorer/services that also inherit LD_PRELOAD.
+        // ---- Trainer target-exe stash (host-side engine) ----
+        // No TRAINER_ENABLED / TRAINER_BASE_PATH env vars anymore — the trainer is no
+        // longer LD_PRELOAD'd into the game. We DO still compute the game's leaf exe
+        // name (e.g. "dmc3.exe") below and stash it in PrefManager.lastGameTargetExe so
+        // the host-side engine (TrainerEngine.findGamePid) can locate the running game
+        // process via /proc/<pid>/maps.
         //
         // Source priority:
         //   1. container.getExecutablePath() — the canonical relative path stored on the
@@ -462,22 +456,22 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
                 }
             }
 
-            envVars.put("TRAINER_TARGET_EXE", trainerTargetExe);
+            // Stash the leaf name for the HOST-SIDE engine (no longer an env var into
+            // the game). TrainerEngine.findGamePid reads PrefManager.lastGameTargetExe
+            // to locate the running game process via /proc/<pid>/maps.
+            app.gamenative.PrefManager.INSTANCE.setLastGameTargetExe(trainerTargetExe);
             Log.d("BionicProgramLauncherComponent",
-                  "TRAINER_TARGET_EXE='" + trainerTargetExe + "' (source=" + trainerSource
+                  "lastGameTargetExe='" + trainerTargetExe + "' (source=" + trainerSource
                   + ", containerExePath='" + (container != null ? container.getExecutablePath() : "null")
                   + "', steamAppId='" + steamAppId + "'"
                   + ", guestExecutable='" + guestExecutable + "')");
         }
 
-        // ---- SpeedHack env vars ----
-        // SPEEDHACK_BASE_PATH lets libspeedhack find/create <base>/speedhack_shm/speedhack.mem,
-        // matching the path SpeedHackShm.kt uses on the Android side.
-        // SPEEDHACK_ENABLED=1 activates clock_gettime scaling; without it the lib loads but
-        // is a pure passthrough (zero per-call overhead beyond the function trampoline).
-        boolean speedHackEnabled = app.gamenative.PrefManager.INSTANCE.getSpeedHackEnabled();
-        envVars.put("SPEEDHACK_BASE_PATH", context.getFilesDir().getAbsolutePath());
-        envVars.put("SPEEDHACK_ENABLED", speedHackEnabled ? "1" : "0");
+        // ---- SpeedHack ----
+        // The speed-hack's env wiring (GN_TIME_SCALE_FILE) is set above, next to
+        // EVSHIM_BASE_PATH. It points the patched Wine ntdll at the control file the
+        // SpeedSection UI writes; nothing more is needed here. (The old LD_PRELOAD
+        // libspeedhack.so and the in-Wine version.dll IAT-hook approaches are both dead.)
 
         // ---- Macro / Turbo env vars ----
         // MACRO_ENABLED=1 activates the turbo-fire + input-macro transform inside

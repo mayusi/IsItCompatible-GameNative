@@ -1,0 +1,171 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 420" width="1280" height="420">
+  <defs>
+    <!-- Teal→violet diagonal gradient -->
+    <linearGradient id="grad-main" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#14b8a6"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+    <!-- Radial glow: teal on left, violet on right -->
+    <radialGradient id="glow-left" cx="25%" cy="45%" r="55%">
+      <stop offset="0%" stop-color="#14b8a6" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#14b8a6" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow-right" cx="78%" cy="55%" r="50%">
+      <stop offset="0%" stop-color="#7c3aed" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#7c3aed" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Emblem inner shine -->
+    <linearGradient id="grad-shine" x1="0%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <!-- IIC text gradient (horizontal) -->
+    <linearGradient id="grad-text-iic" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#14b8a6"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+    <!-- Chip stroke gradient -->
+    <linearGradient id="chip-stroke" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#14b8a6"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+    <!-- Underline gradient -->
+    <linearGradient id="underline-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#14b8a6" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#7c3aed" stop-opacity="0.8"/>
+    </linearGradient>
+    <!-- Emblem drop shadow -->
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="12" flood-color="#7c3aed" flood-opacity="0.45"/>
+    </filter>
+    <!-- Glyph glow -->
+    <filter id="glyph-glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Subtle noise texture via feTurbulence -->
+    <filter id="noise" x="0%" y="0%" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch" result="noise"/>
+      <feColorMatrix type="saturate" values="0" in="noise" result="grayNoise"/>
+      <feBlend in="SourceGraphic" in2="grayNoise" mode="overlay" result="blended"/>
+      <feComponentTransfer in="blended">
+        <feFuncA type="linear" slope="1"/>
+      </feComponentTransfer>
+    </filter>
+  </defs>
+
+  <!-- ── Background ── -->
+  <rect width="1280" height="420" fill="#0b1120"/>
+
+  <!-- Subtle noise grain overlay -->
+  <rect width="1280" height="420" fill="#0b1120" filter="url(#noise)" opacity="0.04"/>
+
+  <!-- Radial glows -->
+  <rect width="1280" height="420" fill="url(#glow-left)"/>
+  <rect width="1280" height="420" fill="url(#glow-right)"/>
+
+  <!-- Faint grid lines for depth -->
+  <g stroke="#f8fafc" stroke-width="0.5" opacity="0.04">
+    <line x1="0" y1="105" x2="1280" y2="105"/>
+    <line x1="0" y1="210" x2="1280" y2="210"/>
+    <line x1="0" y1="315" x2="1280" y2="315"/>
+    <line x1="320" y1="0" x2="320" y2="420"/>
+    <line x1="640" y1="0" x2="640" y2="420"/>
+    <line x1="960" y1="0" x2="960" y2="420"/>
+  </g>
+
+  <!-- ── Emblem (scaled ~200×200, left-anchored) ── -->
+  <g transform="translate(52, 100) scale(0.39)">
+    <rect x="28" y="28" width="456" height="456" rx="96" ry="96"
+          fill="url(#grad-main)" filter="url(#shadow)"/>
+    <rect x="28" y="28" width="456" height="456" rx="96" ry="96"
+          fill="url(#grad-shine)"/>
+    <rect x="76" y="76" width="360" height="360" rx="72" ry="72"
+          fill="#0b1120" opacity="0.35"/>
+    <g filter="url(#glyph-glow)">
+      <rect x="118" y="196" width="276" height="148" rx="40" ry="40" fill="#f8fafc"/>
+      <rect x="118" y="304" width="96"  height="80"  rx="28" ry="28" fill="#f8fafc"/>
+      <rect x="298" y="304" width="96"  height="80"  rx="28" ry="28" fill="#f8fafc"/>
+      <rect x="160" y="236" width="52"  height="18"  rx="5"  ry="5"  fill="#0b1120"/>
+      <rect x="177" y="219" width="18"  height="52"  rx="5"  ry="5"  fill="#0b1120"/>
+      <circle cx="332" cy="236" r="8" fill="#0b1120"/>
+      <circle cx="356" cy="252" r="8" fill="#0b1120"/>
+      <circle cx="308" cy="252" r="8" fill="#0b1120"/>
+      <circle cx="332" cy="268" r="8" fill="#0b1120"/>
+      <circle cx="256" cy="252" r="18" fill="#0b1120"/>
+      <polyline points="210,260 238,292 302,216"
+        fill="none" stroke="url(#grad-main)"
+        stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <rect x="28" y="28" width="456" height="456" rx="96" ry="96"
+          fill="none" stroke="url(#grad-main)" stroke-width="3" opacity="0.6"/>
+  </g>
+
+  <!-- ── Text lockup ── -->
+
+  <!-- "GameNative" -->
+  <text
+    x="270" y="178"
+    font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+    font-size="86"
+    font-weight="800"
+    fill="#f8fafc"
+    letter-spacing="-2">GameNative</text>
+
+  <!-- "IIC" gradient -->
+  <text
+    x="275" y="237"
+    font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+    font-size="48"
+    font-weight="600"
+    fill="url(#grad-text-iic)"
+    letter-spacing="10">IIC</text>
+
+  <!-- Separator -->
+  <line x1="358" y1="208" x2="358" y2="244" stroke="#94a3b8" stroke-width="1.5" opacity="0.45"/>
+
+  <!-- Tagline -->
+  <text
+    x="372" y="237"
+    font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+    font-size="20"
+    font-weight="400"
+    fill="#94a3b8">Is It Compatible? fork — run PC games on Android</text>
+
+  <!-- Gradient underline -->
+  <rect x="270" y="251" width="680" height="3" rx="2" fill="url(#underline-grad)"/>
+
+  <!-- ── Feature chip pills (bottom row) ── -->
+
+  <!-- Chip 1: One-tap cheats -->
+  <rect x="270" y="328" width="188" height="46" rx="23" ry="23"
+        fill="#0b1120" stroke="url(#chip-stroke)" stroke-width="1.8"/>
+  <!-- small icon dot -->
+  <circle cx="303" cy="351" r="5" fill="url(#grad-main)"/>
+  <text x="318" y="357"
+    font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+    font-size="17" font-weight="500" fill="#f8fafc">One-tap cheats</text>
+
+  <!-- Chip 2: Smart auto-tuner -->
+  <rect x="474" y="328" width="210" height="46" rx="23" ry="23"
+        fill="#0b1120" stroke="url(#chip-stroke)" stroke-width="1.8"/>
+  <circle cx="507" cy="351" r="5" fill="url(#grad-main)"/>
+  <text x="522" y="357"
+    font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+    font-size="17" font-weight="500" fill="#f8fafc">Smart auto-tuner</text>
+
+  <!-- Chip 3: DIY cheat scanner -->
+  <rect x="700" y="328" width="216" height="46" rx="23" ry="23"
+        fill="#0b1120" stroke="url(#chip-stroke)" stroke-width="1.8"/>
+  <circle cx="733" cy="351" r="5" fill="url(#grad-main)"/>
+  <text x="748" y="357"
+    font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+    font-size="17" font-weight="500" fill="#f8fafc">DIY cheat scanner</text>
+
+  <!-- Thin top/bottom border lines with gradient -->
+  <rect x="0" y="0"   width="1280" height="3" fill="url(#grad-main)" opacity="0.5"/>
+  <rect x="0" y="417" width="1280" height="3" fill="url(#grad-main)" opacity="0.5"/>
+</svg>

@@ -6,6 +6,7 @@ import app.gamenative.PrefManager
 import app.gamenative.data.DownloadInfo
 import app.gamenative.enums.Marker
 import app.gamenative.utils.CdnRankingUtils
+import app.gamenative.utils.DownloadSpeedConfig
 import app.gamenative.utils.MarkerUtils
 import app.gamenative.data.EpicGame
 import app.gamenative.service.StreamingAssembly
@@ -28,6 +29,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.Request
 import org.json.JSONObject
 import timber.log.Timber
@@ -431,6 +434,8 @@ class EpicDownloadManager @Inject constructor(
 
             val parallelDownloads = PrefManager.downloadSpeed.coerceAtLeast(1)
             val downloadHttpClient = Net.httpForParallelDownloads(parallelDownloads)
+            // One shared semaphore per download session caps concurrent CPU-bound inflaters.
+            val decompressSemaphore = Semaphore(DownloadSpeedConfig().maxDecompress)
 
             var downloadedChunks = 0
             val totalChunks = chunks.size
@@ -438,7 +443,7 @@ class EpicDownloadManager @Inject constructor(
             chunks.chunked(parallelDownloads).forEach { batch ->
                 val results = batch.map { chunk ->
                     async {
-                        downloadChunkWithRetry(chunk, chunkCacheDir, chunkDir, cdnUrls, dummyDownloadInfo, downloadHttpClient)
+                        downloadChunkWithRetry(chunk, chunkCacheDir, chunkDir, cdnUrls, dummyDownloadInfo, downloadHttpClient, decompressSemaphore)
                     }
                 }.awaitAll()
 
@@ -485,11 +490,12 @@ class EpicDownloadManager @Inject constructor(
         cdnUrls: List<EpicManager.CdnUrl>,
         downloadInfo: DownloadInfo,
         downloadHttpClient: okhttp3.OkHttpClient,
+        decompressSemaphore: Semaphore,
     ): Result<File> = withContext(Dispatchers.IO) {
         var lastException: Exception? = null
 
         repeat(MAX_CHUNK_RETRIES) { attempt ->
-            val result = downloadChunk(chunk, chunkCacheDir, chunkDir, cdnUrls, downloadInfo, downloadHttpClient)
+            val result = downloadChunk(chunk, chunkCacheDir, chunkDir, cdnUrls, downloadInfo, downloadHttpClient, decompressSemaphore)
 
             if (result.isSuccess) {
                 if (attempt > 0) {
@@ -534,6 +540,7 @@ class EpicDownloadManager @Inject constructor(
         cdnUrls: List<EpicManager.CdnUrl>,
         downloadInfo: DownloadInfo,
         downloadHttpClient: okhttp3.OkHttpClient,
+        decompressSemaphore: Semaphore,
     ): Result<File> = withContext(Dispatchers.IO) {
         try {
             val chunkFile = File(chunkCacheDir, "${chunk.guidStr}.chunk")
@@ -579,7 +586,12 @@ class EpicDownloadManager @Inject constructor(
                         responseBody.byteStream().use { input ->
                             // Stream directly from network into chunk parser/decompressor.
                             // This removes an extra temp compressed-file write/read cycle.
-                            decompressStreamingChunkToFile(input, decompressedFile, chunk.windowSize.toLong(), chunk.shaHash, downloadInfo)
+                            // Gate the CPU-bound inflate behind a shared session semaphore so at
+                            // most maxDecompress inflaters run concurrently regardless of how many
+                            // download coroutines are in flight (keeps cores from pinning / cooking).
+                            decompressSemaphore.withPermit {
+                                decompressStreamingChunkToFile(input, decompressedFile, chunk.windowSize.toLong(), chunk.shaHash, downloadInfo)
+                            }
                         }
 
                         return@withContext Result.success(decompressedFile)
@@ -701,6 +713,12 @@ class EpicDownloadManager @Inject constructor(
                 if (isCompressed) {
                     // Streaming decompression
                     val inflater = Inflater()
+                    // Drop to background thread priority for the CPU-bound inflate loop so the DVFS
+                    // governor keeps big cores off peak clock (cooler during downloads). Toggleable.
+                    val thermalFriendly = DownloadSpeedConfig().thermalFriendlyDecompress
+                    if (thermalFriendly) {
+                        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+                    }
                     try {
                         val inputBuffer = ByteArray(65536) // 64KB compressed read buffer
                         val outputBuffer = ByteArray(65536) // 64KB decompressed write buffer
@@ -749,6 +767,9 @@ class EpicDownloadManager @Inject constructor(
                         }
                     } finally {
                         inflater.end()
+                        if (thermalFriendly) {
+                            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DEFAULT)
+                        }
                     }
                 } else {
                     // Already uncompressed - stream directly
@@ -842,6 +863,8 @@ class EpicDownloadManager @Inject constructor(
         val totalFiles = files.size
         val parallelDownloads = PrefManager.downloadSpeed.coerceAtLeast(1)
         val downloadHttpClient = Net.httpForParallelDownloads(parallelDownloads)
+        // One shared semaphore per download session caps concurrent CPU-bound inflaters.
+        val decompressSemaphore = Semaphore(DownloadSpeedConfig().maxDecompress)
         val downloadedChunkIds = mutableSetOf<String>()
         var nextFileToAssemble = 0
 
@@ -892,6 +915,7 @@ class EpicDownloadManager @Inject constructor(
                             cdnUrls,
                             downloadInfo,
                             downloadHttpClient,
+                            decompressSemaphore,
                         )
                         completionChannel.send(chunk.guidStr to result)
                     }

@@ -158,6 +158,20 @@
             android:name=".service.NotificationActionReceiver"
             android:exported="false" />
 
+        <!--
+            DEBUG-ONLY adb test hook for the cheat engine + speedhack research.
+            Exported so `adb shell am broadcast` can reach it, but every action is
+            gated behind BuildConfig.DEBUG in app.gamenative.debug.CheatTestReceiver,
+            so it is INERT in release builds. See that class for usage / extras.
+        -->
+        <receiver
+            android:name=".debug.CheatTestReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="app.gamenative.debug.CHEAT_TEST" />
+            </intent-filter>
+        </receiver>
+
         <!-- FileProvider for secure file sharing (for APK installation) -->
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -1,5 +1,6 @@
 package app.gamenative.utils
 
+import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
 import app.gamenative.PrefManager
@@ -79,6 +80,27 @@ object ContainerUtils {
             DefaultVersion.VKD3D = "2.14.1"
             DefaultVersion.STEAM_TYPE = Container.STEAM_TYPE_LIGHT
             DefaultVersion.ASYNC_CACHE = "0"
+        }
+
+        // Device-aware videoMemorySize default. The hardcoded 2048 MB under-reports VRAM
+        // on high-memory devices and over-reports on low-memory ones. Derive a sane default
+        // from total system RAM (half of it, clamped to a safe [512, 8192] MB window) and
+        // persist it to PrefManager so it propagates to NEW containers via
+        // getDefaultContainerData()/user.reg. This runs on every launch, so we ONLY apply
+        // the device-aware default while the value is still at the factory "2048"; once the
+        // user (or a saved container) has changed it, that choice is preserved. Best-effort:
+        // leave the existing value on failure.
+        try {
+            val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val memoryInfo = ActivityManager.MemoryInfo()
+            activityManager.getMemoryInfo(memoryInfo)
+            val totalMemMb = memoryInfo.totalMem / (1024L * 1024L)
+            val videoMemoryMB = (totalMemMb / 2L).coerceIn(512L, 8192L)
+            if (PrefManager.videoMemorySize == "2048") {
+                PrefManager.videoMemorySize = videoMemoryMB.toString()
+            }
+        } catch (e: Exception) {
+            Timber.tag("ContainerUtils").w(e, "Failed to compute device-aware videoMemorySize; keeping existing default")
         }
     }
 

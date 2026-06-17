@@ -200,7 +200,7 @@ object FileUtils {
                 true
             }
         } catch (e: IOException) {
-            // Timber.e(e)
+            Timber.w(e, "assetExists: failed to open asset %s", assetPath)
             false
         }
     }

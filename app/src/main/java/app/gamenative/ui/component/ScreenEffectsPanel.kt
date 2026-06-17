@@ -365,7 +365,7 @@ fun GLScreenEffectsTabContent(
         ScreenEffectActionRow(
             title = stringResource(R.string.screen_effects_reset),
             icon = Icons.Default.RestartAlt,
-            accentColor = PluviaTheme.colors.accentPurple,
+            accentColor = PluviaTheme.colors.accentBrand,
             onClick = ::resetEffects,
         )
 
@@ -601,7 +601,7 @@ fun ScreenEffectsTabContent(
         ScreenEffectActionRow(
             title = stringResource(R.string.screen_effects_reset),
             icon = Icons.Default.RestartAlt,
-            accentColor = PluviaTheme.colors.accentPurple,
+            accentColor = PluviaTheme.colors.accentBrand,
             onClick = ::resetEffects,
         )
 
@@ -871,7 +871,7 @@ fun ScreenEffectsPanel(
                     ScreenEffectActionRow(
                         title = stringResource(R.string.screen_effects_reset),
                         icon = Icons.Default.RestartAlt,
-                        accentColor = PluviaTheme.colors.accentPurple,
+                        accentColor = PluviaTheme.colors.accentBrand,
                         onClick = ::resetEffects,
                     )
 
@@ -894,7 +894,7 @@ private fun ScreenEffectAdjustmentRow(
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
-    val accentColor = PluviaTheme.colors.accentPurple
+    val accentColor = PluviaTheme.colors.accentBrand
     val shape = RoundedCornerShape(14.dp)
     var isAdjustmentLocked by remember { mutableStateOf(false) }
 
@@ -1132,7 +1132,7 @@ private fun ScreenEffectToggleRow(
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
-    val accentColor = PluviaTheme.colors.accentPurple
+    val accentColor = PluviaTheme.colors.accentBrand
 
     Row(
         modifier = Modifier
@@ -1209,7 +1209,7 @@ private fun ScreenEffectRadioRow(
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
-    val accentColor = PluviaTheme.colors.accentPurple
+    val accentColor = PluviaTheme.colors.accentBrand
     val shape = RoundedCornerShape(14.dp)
 
     Row(

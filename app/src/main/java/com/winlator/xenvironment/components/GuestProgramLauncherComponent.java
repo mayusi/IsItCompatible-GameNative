@@ -27,7 +27,7 @@ import java.util.List;
 
 public class GuestProgramLauncherComponent extends EnvironmentComponent {
     private String guestExecutable;
-    private static int pid = -1;
+    protected int pid = -1;
     private String[] bindingPaths;
     private EnvVars envVars;
     private String box86Version = DefaultVersion.BOX86;
@@ -35,7 +35,7 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
     private String box86Preset = Box86_64Preset.COMPATIBILITY;
     private String box64Preset = Box86_64Preset.COMPATIBILITY;
     private Callback<Integer> terminationCallback;
-    private static final Object lock = new Object();
+    protected final Object lock = new Object();
     private boolean wow64Mode = true;
     private File workingDir;
     private WineInfo wineInfo;
@@ -74,15 +74,13 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
                 Process.killProcess(pid);
                 Log.d("GuestProgramLauncherComponent", "Stopped process " + pid);
                 pid = -1;
-                List<ProcessHelper.ProcessInfo> subProcesses = ProcessHelper.listSubProcesses();
-                for (ProcessHelper.ProcessInfo subProcess : subProcesses) {
-                    Log.d("GuestProgramLauncherComponent",
-                            "Sub-process still running: "
-                                    + subProcess.name + " | "
-                                    + subProcess.pid + " | "
-                                    + subProcess.ppid + ", stopping..."
-                    );
-                    Process.killProcess(subProcess.pid);
+                for (String winePid : ProcessHelper.listRunningWineProcesses()) {
+                    try {
+                        int subPid = Integer.parseInt(winePid);
+                        Log.d("GuestProgramLauncherComponent",
+                                "Wine process still running: " + subPid + ", stopping...");
+                        Process.killProcess(subPid);
+                    } catch (NumberFormatException ignored) {}
                 }
             }
         }
@@ -192,10 +190,10 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
 
         return exec(context, !wow64Mode, bindingPaths, envVars, terminationCallback, "box64 " + guestExecutable, workingDir);
     }
-    public static int exec(Context context, String prootCmd) {
+    public int exec(Context context, String prootCmd) {
         return exec(context, false, new String[0], null, null, prootCmd, null);
     }
-    public static int exec(Context context, boolean proot32, String[] bindingPaths, EnvVars extraVars, Callback<Integer> terminationCallback, String prootCmd, File workingDir) {
+    public int exec(Context context, boolean proot32, String[] bindingPaths, EnvVars extraVars, Callback<Integer> terminationCallback, String prootCmd, File workingDir) {
         Log.d("GuestProgramLauncherComponent", "Executing guest program");
         // Context context = environment.getContext();
         // ImageFs imageFs = environment.getImageFs();

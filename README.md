@@ -1,12 +1,14 @@
-# GameNative (IIC) — Is It Compatible? Fork
+![GameNative IIC](branding/banner.png)
 
-**v1.12.0-IIC** | Package: `app.gamenative.iic` | Android 9+ (modern flavor)
+**Run PC games on Android — with one-tap cheats, a smart auto-tuner, and crowd-sourced crash fixes.**
+
+[![Version](https://img.shields.io/badge/version-1.12.10--IIC-blue)](../../releases)
+[![Package](https://img.shields.io/badge/package-app.gamenative.iic-informational)](../../releases)
+[![Android](https://img.shields.io/badge/Android-9%2B%20%28modern%20flavor%29-green)](../../releases)
 
 A personal fork of [GameNative](https://github.com/utkarshdalal/GameNative) by utkarshdalal,
-packaged as `app.gamenative.iic` so it installs **alongside** the official app without
-conflicting. Built for the **Is It Compatible?** companion-app workflow — bakes in per-game
-auto-fixes, device-tuned defaults across 6 GPU classes, and an empirical Auto-Tuner that
-sweeps configs to find what works best for each game on your hardware.
+packaged as `app.gamenative.iic` so it **installs alongside** the official app without
+conflicting. Built for the **Is It Compatible?** companion-app workflow.
 
 > **Note:** Because this fork is signed with a different key, Android treats it as a separate
 > app. It cannot update an existing official GameNative installation in-place. Install it
@@ -29,32 +31,117 @@ This fork adds the IIC-specific patches described below.
 
 ## IIC Fork Features
 
-### Auto-Tuner
+### One-Tap "Make It Work" Button
 
-The centerpiece of this fork. The Auto-Tuner empirically sweeps through Wine/graphics
-configs and measures real performance on your device to find the best setup for each game.
+On the game-detail screen, a full-width **Make It Work** button runs the Compatibility Probe
+auto-tuner end to end with one tap. It cycles through archetype configs, detects the first
+one that boots the game successfully, and saves it — no manual config browsing required.
+
+### One-Tap Cheats + DIY Scanner
+
+A proxy-DLL cheat engine (`dinput8.dll`, injected into the game via Wine's DLL override
+mechanism) powers two complementary cheat modes accessible from the **in-game QuickMenu →
+Cheats tab**:
+
+**Bundled cheat catalog** — 15 games have ready-made cheat tables (resources, health,
+currency, etc.) with one-tap toggles and guided memory scans:
+
+| Game | Cheats |
+|---|---|
+| Hollow Knight | Geo, Health, Soul |
+| Stardew Valley | Gold |
+| Hades | Health, Darkness, Gems, Diamonds, Titan Blood, Nectar, Chthonic Keys |
+| Devil May Cry HD Collection | Infinite Vitality, Devil Trigger, Red Orbs (DMC3, multiple methods) |
+| Skyrim Special Edition | Gold, Health |
+| Terraria | Platinum, Health, Mana, Defense, Gold, Ammo |
+| Cuphead | HP, Coins |
+| Dead Cells | Gold, Cells, Health |
+| Celeste | *(listed, no cheatable values in a one-hit-kill game)* |
+| Undertale | Gold, HP |
+| Vampire Survivors | Coins, HP, Run Gold |
+| Slay the Spire | Gold, HP *(best-effort — JVM heap)* |
+| Binding of Isaac: Rebirth | Coins, Keys, Bombs |
+| Cult of the Lamb | Gold, Devotion, Health |
+| Brotato | Materials, HP |
+
+The catalog is **OTA-updatable**: new tables are deployed by committing
+[`cheattables/registry.json`](cheattables/registry.json) — no app release needed.
+
+Because Box64 does not produce stable addresses across runs, each table entry is a
+**recipe** (scan → narrow → freeze), not a hardcoded address. Tables also support AOB
+(array-of-bytes) patch cheats and pointer-chain freezes for games where a stable chain is
+available (e.g. DMC3 one-tap HP/DT verified on device).
+
+**DIY cheat scanner** — for games without a premade table, the Cheats tab exposes a
+free-form value scanner: choose a type (i32 / f32), enter the current in-game value, scan,
+change the value in-game, narrow, repeat until one candidate remains, then freeze.
+Direction-based narrowing (increased/decreased/changed) is also supported for unknown
+initial values.
+
+**Cheats discoverability** — library cards display a gold lightning-bolt "Has Cheats"
+badge for games that have a bundled table. The game-detail screen shows a dedicated cheats
+section.
+
+### Smart Auto-Tuner
+
+The Auto-Tuner empirically sweeps Wine/graphics configs and measures real performance on
+your device. It now includes:
+
+- **Crash-fix-retry loop**: after a trial crashes or shows a black screen, the engine
+  classifies the Wine log, looks up a fix from the catalog, applies it, and retries the
+  same config slot — automatically, without user input.
+- **Warm-start**: if this game was tuned before, the sweep seeds its starting config from
+  the prior winning result so it converges faster.
 
 **Seven optimization goals:**
 
 | Goal | What it optimises |
 |---|---|
-| Compatibility Probe | "Does it even run?" — fast boot check (~5-8 min), ~6 archetype configs |
+| Compatibility Probe | "Does it even run?" — fast boot check (~5–8 min), ~6 archetype configs |
 | Max FPS | Highest average frame rate |
 | FPS + Stability | Best balance of frame rate and smoothness (good for online play) |
 | FPS + Battery | Best FPS per watt — extends playtime (device must be unplugged) |
 | FPS + Cool | Best FPS while keeping thermals low — good for long sessions |
 | Low-End Friendly | Lightest stable config for modest hardware |
-| Custom Weights | User-defined FPS/stability/battery/temperature weight sliders |
+| Custom Weights | User-defined FPS / stability / battery / temperature weight sliders |
 
 **Sweep mechanics:**
-- Two measurement modes: Auto (hands-off, reads FPS session data) and Manual (user plays,
-  taps "Stop Recording")
+
+- Two measurement modes: **Auto** (hands-off, reads FPS session data) and **Manual** (user
+  plays, taps "Stop Recording")
 - Per-trial: warmup phase, measurement window, cooldown with GPU temp tracking
-- Black-screen / crash detection — aborted trials are recorded, not silently discarded
-- Fix-finding during sweep: if a trial crashes, the engine attempts known fixes and retries
-  before marking the config as failed
+- Black-screen detection and crash detection — aborted trials are classified, not silently
+  discarded
 - Results screen shows all ranked configs with FPS, stability, battery, and temperature data
 - Sweep can be canceled mid-run; the best result so far is preserved
+
+### Crowd-Sourced Crash-Fix OTA Catalog
+
+[`assets/crashfixes/registry.json`](app/src/main/assets/crashfixes/registry.json) maps
+known crash signatures to fixes. The auto-tuner and the post-crash crash classifier both
+pull from it. OTA-updatable by committing the JSON — no app release needed.
+
+Current seed covers six failure classes:
+
+| Failure Class | Auto-fix |
+|---|---|
+| `D3D12_UNSUPPORTED` | Force DX11 mode (covers UE4/UE5 + Lies of P, Remnant 2) |
+| `STEAM_INIT_FAILED` | Bundled Steam API replacement |
+| `WMV_CODEC` | Rename intro `.wmv` files to `.wmv.bak` |
+| `STEAM_OVERLAY` | DLL override to disable overlay injection |
+| `EOS_CRASH` | DLL override to disable Epic Online Services SDK |
+| `D3D_COMPILER` | Native-first DLL override for `d3dcompiler_47` |
+
+### Plain-English Crash Diagnosis
+
+When a game exits abnormally, the fork:
+
+1. Captures the Wine debug output in a ring buffer during the session.
+2. Classifies the failure against known patterns.
+3. Shows a human-readable snackbar message with a **one-tap fix action** where possible
+   (e.g. "rename intro videos — tap to fix").
+4. Optionally opens a "Why?" detail dialog with a plain-English explanation of what went
+   wrong and what the fix does.
 
 ### Per-Game GameFixes Registry
 
@@ -79,7 +166,7 @@ leave user overrides intact.
 | Adreno 830 / 8 Elite | AYN Odin 2 Pro, SD8 Elite phones | Turnip (Wrapper) | 4 GB |
 | Adreno 750 / 8 Gen 3 | SD8 Gen 3 phones | Turnip (Wrapper) | 3 GB |
 | Adreno 740 / 8 Gen 2 | SD8 Gen 2 phones | Turnip (Wrapper) | 2 GB |
-| Adreno 6xx / 865-888 | SD865/888 phones | Wrapper (system GLES fallback) | 2 GB |
+| Adreno 6xx / 865–888 | SD865/888 phones | Wrapper (system GLES fallback) | 2 GB |
 | Mali-G7xx / Dimensity | Dimensity 9000–9300 | System Vulkan | 2 GB |
 | Mali lower / Helio | Helio-class | System Vulkan | 1 GB |
 
@@ -100,14 +187,7 @@ manual executable path changes.
 Built-in collection: **Devil May Cry HD Collection** (Steam 631510) — DMC1, DMC2, DMC3:
 Dante's Awakening. The crashing `dmcLauncher.exe` is excluded automatically.
 
-Additional collections can be deployed via OTA (same sync mechanism as the game-fix
-registry; `assets/gamefixes/collections.json` bundled in-app).
-
-### Crash Classifier
-
-After a game exits abnormally, the fork classifies the Wine debug output against known
-crash patterns and surfaces a human-readable suggestion with a one-tap fix action where
-possible (e.g. DLL override, registry fix).
+Additional collections can be deployed via OTA (`assets/gamefixes/collections.json`).
 
 ### AYN Odin / Virtual Controller Support
 
@@ -142,12 +222,18 @@ name (`/proc/self/cmdline`) rather than a hardcoded path, so it works correctly 
 |---|---|---|
 | Package ID | `app.gamenative` | `app.gamenative.iic` |
 | Install alongside official | — | Yes (separate package) |
-| Auto-Tuner | No | Yes (7 goals, 2 modes) |
-| Crash classifier | No | Yes (one-tap fixes) |
+| One-Tap "Make It Work" | No | Yes (COMPAT_PROBE in one tap) |
+| Auto-Tuner | No | Yes (7 goals, 2 modes, crash-fix-retry) |
+| Crash classifier + "Why?" dialog | No | Yes (one-tap fixes, plain-English diagnosis) |
+| Crowd-sourced crash-fix OTA | No | Yes (`crashfixes/registry.json`, 6 failure classes) |
+| In-game cheat engine | No | Yes (proxy DLL + QuickMenu Cheats tab) |
+| Bundled cheat catalog | No | Yes (15 games, OTA-updatable) |
+| DIY memory scanner | No | Yes (scan → narrow → freeze, in-game) |
+| Cheats badge on library cards | No | Yes (lightning bolt badge) |
 | Per-game fixes | Upstream registry | 40+ compiled-in + OTA updates |
 | Device GPU defaults | No | 6 GPU classes, one-shot |
 | Best config on launch | Upstream API | Upstream API + auto-apply |
-| Multi-game collections | No | DMC HD + OTA collections.json |
+| Multi-game collections | No | DMC HD + OTA `collections.json` |
 | AYN Odin controller | Partial | Full virtual-device support |
 | IIC app session feedback | No | Yes (broadcast at session end) |
 
@@ -165,17 +251,20 @@ source (see below).
 
 ---
 
-## OTA Game-Fix Files
+## OTA Files
 
-Two JSON files are hosted in this repo and synced by the app in the background:
+Four JSON files are hosted in this repo or bundled in-app and synced in the background:
 
-| File | Contents |
-|---|---|
-| [`gamefixes/registry.json`](gamefixes/registry.json) | Per-game Wine/DLL fixes (delete files, env vars, registry keys, DLL overrides) |
-| `assets/gamefixes/collections.json` (bundled in-app) | Multi-game collection definitions |
+| File | Contents | Sync |
+|---|---|---|
+| [`gamefixes/registry.json`](gamefixes/registry.json) | Per-game Wine/DLL fixes (env vars, registry keys, DLL overrides) | OTA from repo |
+| [`cheattables/registry.json`](cheattables/registry.json) | Per-game cheat recipes (15 games, scan/freeze/patch) | OTA from repo |
+| `assets/crashfixes/registry.json` | Crash-signature → fix-rung catalog (6 failure classes) | OTA from repo |
+| `assets/gamefixes/collections.json` | Multi-game collection definitions | Bundled in-app |
 
 Compiled-in entries always take priority over OTA entries — there is no regression for
-games already covered at build time.
+games already covered at build time. A bad OTA entry is skipped defensively; the rest
+load normally.
 
 ---
 
@@ -218,7 +307,6 @@ the Winlator/Wine lineage).
   Android UI are their work. This fork only adds the IIC-specific patches described above.
 - **Winlator** — Wine-on-Android container runtime by
   [brunodev85](https://github.com/brunodev85/winlator), which GameNative builds upon.
-- Built with assistance from Claude (Anthropic).
 
 ---
 

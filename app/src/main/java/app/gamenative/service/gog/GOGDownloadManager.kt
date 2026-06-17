@@ -1548,6 +1548,12 @@ class GOGDownloadManager @Inject constructor(
 
             // Decompress using zlib
             val inflater = Inflater()
+            // Drop to background thread priority for the CPU-bound inflate loop so the DVFS
+            // governor keeps big cores off peak clock (cooler during downloads). Toggleable.
+            val thermalFriendly = DownloadSpeedConfig().thermalFriendlyDecompress
+            if (thermalFriendly) {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            }
             try {
                 inflater.setInput(compressedBytes)
                 val outputStream = ByteArrayOutputStream(chunk.size.toInt())
@@ -1585,6 +1591,9 @@ class GOGDownloadManager @Inject constructor(
                 Result.success(decompressed)
             } finally {
                 inflater.end()
+                if (thermalFriendly) {
+                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DEFAULT)
+                }
             }
         } catch (e: Exception) {
             Timber.tag("GOG").e(e, "Failed to decompress chunk ${chunk.compressedMd5}")

@@ -34,6 +34,15 @@ class DownloadSpeedConfig {
     val maxDownloads: Int
         get() = (cpuCores * ratios.download).toInt().coerceAtLeast(1)
 
+    // Hard ceiling on concurrent decompression (Inflater) workers, independent of
+    // downloadSpeed. On an 8-core handheld this yields 4; on a 4-core, 2. Capping
+    // CPU-bound inflate concurrency keeps cores from pinning at peak clock (and the
+    // device from cooking) during downloads, which are network-bound anyway.
     val maxDecompress: Int
-        get() = (cpuCores * ratios.decompress).toInt().coerceAtLeast(1)
+        get() = (cpuCores / 2).coerceIn(1, 4)
+
+    // Gate for thermal-friendly decompression (background thread priority). Toggleable
+    // later if needed; defaults on.
+    val thermalFriendlyDecompress: Boolean
+        get() = true
 }

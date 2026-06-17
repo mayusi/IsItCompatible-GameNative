@@ -8,6 +8,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Face4
+import androidx.compose.material.icons.rounded.FlashOn
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -52,6 +54,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.gamenative.R
+import app.gamenative.cheats.CheatTableRegistry
 import app.gamenative.data.GameCompatibilityStatus
 import app.gamenative.data.GameSource
 import app.gamenative.data.LibraryItem
@@ -292,14 +295,45 @@ internal fun GridViewCard(
                     )
                 }
 
-                if (!appInfo.isRecommended) {
-                    GameSourceIcon(
-                        gameSource = appInfo.gameSource,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(top = topIconPadding, end = topIconPadding),
-                        iconSize = if (isCapsule) 14 else 12,
-                    )
+                val hasCheatTable = remember(appInfo.appId) {
+                    CheatTableRegistry.hasTableFor(appInfo.appId)
+                }
+
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = topIconPadding, end = topIconPadding),
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (!appInfo.isRecommended) {
+                        GameSourceIcon(
+                            gameSource = appInfo.gameSource,
+                            iconSize = if (isCapsule) 14 else 12,
+                        )
+                    }
+                    if (hasCheatTable) {
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color.Black.copy(alpha = 0.55f))
+                                .padding(horizontal = 5.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.FlashOn,
+                                contentDescription = stringResource(R.string.cheat_badge_has_cheats),
+                                tint = Color(0xFFFFD700),
+                                modifier = Modifier.size(10.dp),
+                            )
+                            Text(
+                                text = stringResource(R.string.cheat_badge_has_cheats),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFFFD700),
+                            )
+                        }
+                    }
                 }
             }
         }

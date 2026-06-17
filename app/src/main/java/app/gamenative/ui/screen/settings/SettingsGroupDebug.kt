@@ -43,6 +43,14 @@ import app.gamenative.BuildConfig
 import app.gamenative.trainer.TrainerSelfTest
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.unit.dp
 
 @Suppress("UnnecessaryOptInAnnotation") // ExperimentalFoundationApi
 @OptIn(ExperimentalCoilApi::class, ExperimentalFoundationApi::class)
@@ -308,22 +316,45 @@ fun SettingsGroupDebug() {
 
         // ---- Trainer self-test (DEBUG builds only) -------------------------
         // Proves the libtrainer.so memory-scanner engine works in-process
-        // without needing a game. Long-press to run; single-press shows hint.
-        // The report is logged under tag "TrainerSelfTest" and a summary toast
-        // is shown. This item is compiled out of release APKs via BuildConfig.DEBUG.
+        // without needing a game. Long-press to run; result shown in-app dialog
+        // (scrollable + selectable so the user can read and copy the output).
+        // This item is compiled out of release APKs via BuildConfig.DEBUG.
         if (BuildConfig.DEBUG) {
+            var selfTestReport by remember { mutableStateOf<String?>(null) }
+
+            if (selfTestReport != null) {
+                val reportText = selfTestReport!!
+                AlertDialog(
+                    onDismissRequest = { selfTestReport = null },
+                    title = { Text(text = "Trainer Self-Test Result") },
+                    text = {
+                        val scrollState = rememberScrollState()
+                        SelectionContainer {
+                            Text(
+                                text = reportText,
+                                style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                                modifier = androidx.compose.ui.Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 400.dp)
+                                    .verticalScroll(scrollState),
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { selfTestReport = null }) {
+                            Text("Close")
+                        }
+                    },
+                )
+            }
+
             SettingsMenuLink(
                 modifier = Modifier.combinedClickable(
                     onLongClick = {
-                        SnackbarManager.show("Trainer self-test running — check Logcat tag TrainerSelfTest")
+                        SnackbarManager.show("Trainer self-test running…")
                         scope.launch(Dispatchers.IO) {
                             val report = TrainerSelfTest.run(context)
-                            val summary = if (report.allPassed) {
-                                "TrainerSelfTest PASSED — engine works in-process"
-                            } else {
-                                "TrainerSelfTest FAILED — see Logcat tag TrainerSelfTest for details"
-                            }
-                            SnackbarManager.show(summary)
+                            selfTestReport = report.toDisplayString()
                         }
                     },
                     onClick = {

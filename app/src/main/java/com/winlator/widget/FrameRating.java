@@ -25,7 +25,7 @@ import java.util.concurrent.Executors;
 public class FrameRating extends FrameLayout implements Runnable {
     private long lastTime = 0;
     private int frameCount = 0;
-    private float lastFPS = 0;
+    private volatile float lastFPS = 0;
     private final TextView textView;
 
     // FPS reading tracking
@@ -120,6 +120,20 @@ public class FrameRating extends FrameLayout implements Runnable {
     public float getAvgFPS() {
         if (readingCount == 0) return 0;
         return (float) fpsSum / readingCount;
+    }
+
+    /** Returns the maximum per-second FPS reading observed since the last {@link #reset()}. */
+    public int getMaxFps() {
+        return maxFPS;
+    }
+
+    /**
+     * Returns the minimum per-second FPS reading (> 1) observed since the last {@link #reset()},
+     * or 0 if no qualifying reading has been taken. Mirrors {@link #writeSessionSummary()}'s
+     * normalization of the sentinel {@link Integer#MAX_VALUE}.
+     */
+    public int getMinFps() {
+        return minFPS == Integer.MAX_VALUE ? 0 : minFPS;
     }
 
     /**

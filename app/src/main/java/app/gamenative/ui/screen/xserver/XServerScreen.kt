@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.graphics.Color
 import android.os.Build
+import android.os.PowerManager
 import android.util.Log
 import android.view.Display
 import android.view.Gravity
@@ -22,9 +23,12 @@ import android.view.InputDevice
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import app.gamenative.BuildConfig
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -53,6 +57,10 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
@@ -61,6 +69,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -101,6 +111,8 @@ import app.gamenative.ui.component.parsePositiveFpsLimit
 import app.gamenative.ui.data.PerformanceHudConfig
 import app.gamenative.ui.data.PerformanceHudSize
 import app.gamenative.ui.data.XServerState
+import app.gamenative.ui.theme.IicTeal
+import app.gamenative.ui.theme.IicViolet
 import app.gamenative.ui.widget.PerformanceHudView
 import app.gamenative.utils.AssetUtils
 import app.gamenative.utils.BestConfigApplier
@@ -223,6 +235,10 @@ private const val EXIT_PROCESS_TIMEOUT_MS = 30_000L
 private const val EXIT_PROCESS_POLL_INTERVAL_MS = 1_000L
 private const val EXIT_PROCESS_RESPONSE_TIMEOUT_MS = 2_000L
 private const val QUICK_MENU_PROCESS_POLL_INTERVAL_MS = 2_000L
+// Edge-pill auto-fade: how long the pill stays opaque after the last screen touch,
+// and how long the one-time discovery coachmark lingers before auto-dismissing.
+private const val QUICK_MENU_PILL_FADE_DELAY_MS = 3_500L
+private const val QUICK_MENU_COACHMARK_DURATION_MS = 5_000L
 private const val DEFAULT_FPS_LIMITER_MAX_HZ = 60
 private const val DEFAULT_FPS_LIMITER_TARGET_HZ = 60
 private const val FPS_LIMITER_ENABLED_EXTRA = "fpsLimiterEnabled"
@@ -466,6 +482,15 @@ fun XServerScreen(
     var keyboardRequestedFromOverlay by remember { mutableStateOf(false) }
     var shouldForceResumeOnMenuClose by remember { mutableStateOf(false) }
     var showQuickMenu by remember { mutableStateOf(false) }
+    // Edge-pill affordance: a thin, auto-fading pill on the left edge that opens the
+    // QuickMenu. `quickMenuPillInteractions` bumps on every screen touch and re-arms the
+    // inactivity fade; `quickMenuPillVisible` drives the alpha animation (kept composed).
+    val quickMenuEdgePillEnabled = remember { PrefManager.quickMenuEdgePillEnabled }
+    var quickMenuPillInteractions by remember { mutableIntStateOf(0) }
+    var quickMenuPillVisible by remember { mutableStateOf(true) }
+    var showQuickMenuCoachmark by remember { mutableStateOf(false) }
+    val quickMenuPillDesc = stringResource(R.string.quick_menu_edge_pill_desc)
+    val quickMenuCoachmarkHint = stringResource(R.string.quick_menu_coachmark_hint)
     var quickMenuToolsVisible by remember { mutableStateOf(false) }
     var quickMenuWineProcesses by remember { mutableStateOf<List<ProcessInfo>>(emptyList()) }
     var quickMenuWineProcessesLoading by remember { mutableStateOf(false) }
@@ -1307,6 +1332,25 @@ fun XServerScreen(
             }
             registerBackAction { }
         }   // preserve suspend state across activity recreation while a game is still running
+    }
+
+    // Anti-throttle: ask Android to hold a steady sustained clock for the game window
+    // instead of boost-then-throttle. Window hint only — Process.setThreadPriority can't
+    // reach into the forked box64 subprocess so it's deliberately not attempted here.
+    DisposableEffect(container) {
+        val activity = context as? Activity
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val supported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
+            powerManager?.isSustainedPerformanceModeSupported == true
+        val enabled = supported && PrefManager.sustainedPerformanceMode
+        if (enabled) {
+            activity?.window?.setSustainedPerformanceMode(true)
+        }
+        onDispose {
+            if (enabled) {
+                activity?.window?.setSustainedPerformanceMode(false)
+            }
+        }
     }
 
     DisposableEffect(lifecycleOwner, container) {
@@ -2560,6 +2604,108 @@ fun XServerScreen(
             },
         )
 
+        // ── QuickMenu edge-pill affordance ───────────────────────────────────────
+        // A discoverable tap target so new users can reach the QuickMenu (cheats /
+        // trainer / controls) without knowing the back-gesture. Gated behind a pref
+        // and the same overlay conditions the other affordances use. It only appears
+        // when no editor/menu is active so it never fights edit mode.
+        val quickMenuPillAllowed = quickMenuEdgePillEnabled &&
+            !showElementEditor && !isEditMode && !showQuickMenu && !keepPausedForEditor
+
+        if (quickMenuPillAllowed) {
+            // Non-blocking touch sensor: observe pointer-down events in the Initial
+            // pass and NEVER consume them, so the game still receives every touch.
+            // Each down re-arms the inactivity fade by bumping the interaction count.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                if (event.changes.any { it.pressed }) {
+                                    quickMenuPillInteractions++
+                                }
+                            }
+                        }
+                    },
+            )
+
+            // Inactivity timer: keyed on the interaction counter so any screen touch
+            // restarts it. Shows the pill immediately, then fades it after a few
+            // seconds of no input. The pill stays composed; only its alpha changes.
+            LaunchedEffect(quickMenuPillInteractions) {
+                quickMenuPillVisible = true
+                delay(QUICK_MENU_PILL_FADE_DELAY_MS)
+                quickMenuPillVisible = false
+            }
+
+            // One-time coachmark: first game run only, gated by a pref that flips
+            // true the moment we show it so it never reappears.
+            LaunchedEffect(Unit) {
+                if (!PrefManager.quickMenuCoachmarkShown) {
+                    PrefManager.quickMenuCoachmarkShown = true
+                    showQuickMenuCoachmark = true
+                    delay(QUICK_MENU_COACHMARK_DURATION_MS)
+                    showQuickMenuCoachmark = false
+                }
+            }
+
+            val pillAlpha by animateFloatAsState(
+                targetValue = if (quickMenuPillVisible || showQuickMenuCoachmark) 1f else 0f,
+                label = "quickMenuPillAlpha",
+            )
+
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // The pill itself — only its small bounds are tappable, so the rest
+                    // of the left edge still passes touches through to the game.
+                    Box(
+                        modifier = Modifier
+                            .graphicsLayer { alpha = if (showQuickMenu) 0f else pillAlpha * 0.7f }
+                            .width(6.dp)
+                            .height(64.dp)
+                            .clip(RoundedCornerShape(topEnd = 4.dp, bottomEnd = 4.dp))
+                            .background(Brush.verticalGradient(listOf(IicTeal, IicViolet)))
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = {
+                                    quickMenuPillInteractions++
+                                    showQuickMenuCoachmark = false
+                                    showQuickMenu = true
+                                },
+                            )
+                            .semantics {
+                                contentDescription = quickMenuPillDesc
+                            },
+                    )
+
+                    // One-time coachmark hint bubble next to the pill.
+                    AnimatedVisibility(visible = showQuickMenuCoachmark && !showQuickMenu) {
+                        Text(
+                            text = quickMenuCoachmarkHint,
+                            color = androidx.compose.ui.graphics.Color.White,
+                            fontSize = 13.sp,
+                            modifier = Modifier
+                                .padding(start = 8.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.78f))
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClick = { showQuickMenuCoachmark = false },
+                                )
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+            }
+        }
+
         if (manualResumeMode && PluviaApp.isOverlayPaused && !showQuickMenu && !keepPausedForEditor) {
             Box(
                 modifier = Modifier
@@ -3239,6 +3385,18 @@ private fun setupXEnvironment(
         } catch (e: Exception) {
             Timber.tag("CheatStager").w(e, "Cheat staging failed before launch")
         }
+        // FLiNG trainer: if the user imported a FLiNG dinput8.dll for this game, stage it
+        // next to the exe as dinput8.fling.dll. Our own engine IS dinput8.dll and chain-loads
+        // the fling sibling in its DllMain, so both coexist. No-op when no trainer is enabled.
+        // Never throws into the launch path (FlingStager guards all).
+        try {
+            app.gamenative.cheats.FlingStager.stage(
+                context, container, appId,
+                app.gamenative.utils.ContainerUtils.extractGameIdFromContainerId(appId),
+            )
+        } catch (e: Exception) {
+            Timber.tag("FlingStager").w(e, "FLiNG trainer staging failed before launch")
+        }
         if (container.startupSelection == Container.STARTUP_SELECTION_AGGRESSIVE) {
             if (container.containerVariant.equals(Container.BIONIC)){
                 Timber.d("Incorrect startup selection detected. Reverting to essential startup selection")
@@ -3410,12 +3568,29 @@ private fun setupXEnvironment(
                 )
                 if (suggestion != null) {
                     Timber.tag("CrashClassifier").i("Crash suggestion for $appId: ${suggestion.message}")
+
+                    // Build the SnackbarMessage.  When a one-tap fix action exists, keep it
+                    // as the snackbar button; the diagnosis text is still passed through so
+                    // the PluviaMain "Why?" fallback can show it if no action is taken.
+                    // When no fix action exists but we have diagnosis text, expose a "Why?"
+                    // button on the snackbar that opens the diagnosis dialog in PluviaMain.
+                    val hasDiagnosis = suggestion.diagnosis.isNotEmpty()
+                    val hasFixAction = suggestion.actionLabel != null && suggestion.action != null
+                    val snackbarActionLabel = when {
+                        hasFixAction -> suggestion.actionLabel
+                        hasDiagnosis -> "Why?"
+                        else -> null
+                    }
+                    val snackbarAction: (() -> Unit)? = if (hasFixAction) suggestion.action else null
+
                     app.gamenative.ui.util.SnackbarManager.showRich(
                         SnackbarMessage(
                             message = suggestion.message,
-                            actionLabel = suggestion.actionLabel,
-                            onAction = suggestion.action,
+                            actionLabel = snackbarActionLabel,
+                            onAction = snackbarAction,
                             persistent = true,
+                            diagnosisTitle = "Why did it crash?",
+                            diagnosisBody = suggestion.diagnosis.takeIf { it.isNotEmpty() },
                         ),
                     )
                 }
@@ -4404,6 +4579,13 @@ private fun extractx86_64InputDlls(context: Context, container: Container) {
     if ("proton-9.0-x86_64" == wineVersion) {
         val wineFolder: File = File(imageFs.getWinePath() + "/lib/wine/")
         Log.d("XServerDisplayActivity", "Extracting input dlls to " + wineFolder.getPath())
+        // BUGFIX: the extract call was missing here (its arm64ec twin above does
+        // perform the extract), so for proton-9.0-x86_64 containers the input DLLs
+        // silently never installed. Mirror the arm64ec path.
+        val success: Boolean = TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context.assets, inputAsset, wineFolder)
+        if (!success) {
+            Log.d("XServerDisplayActivity", "Failed to extract input dlls")
+        }
     } else Log.d("XServerDisplayActivity", "Wine version is not proton-9.0-x86_64, skipping input dlls extraction")
 }
 
@@ -5008,7 +5190,7 @@ private suspend fun extractGraphicsDriverFiles(
         if (dxwrapper.contains("dxvk")) {
             DXVKHelper.setEnvVars(context, dxwrapperConfig, envVars)
         } else if (dxwrapper.contains("vkd3d")) {
-            DXVKHelper.setVKD3DEnvVars(context, dxwrapperConfig, envVars)
+            DXVKHelper.setVKD3DEnvVars(context, dxwrapperConfig, envVars, container.id)
         }
 
         if (graphicsDriver == "turnip") {
@@ -5141,7 +5323,7 @@ private suspend fun extractGraphicsDriverFiles(
                 envVars.put("WRAPPER_NO_PATCH_OPCONSTCOMP", "1")
             }
         } else if (dxwrapper.contains("vkd3d")) {
-            DXVKHelper.setVKD3DEnvVars(context, dxwrapperConfig, envVars)
+            DXVKHelper.setVKD3DEnvVars(context, dxwrapperConfig, envVars, container.id)
         }
 
         val useDRI3: Boolean = container.isUseDRI3

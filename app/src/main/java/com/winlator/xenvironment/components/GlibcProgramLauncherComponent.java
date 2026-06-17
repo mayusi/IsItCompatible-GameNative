@@ -39,7 +39,6 @@ import app.gamenative.service.SteamService;
 
 public class GlibcProgramLauncherComponent extends GuestProgramLauncherComponent {
     private String guestExecutable;
-    private static int pid = -1;
     private String[] bindingPaths;
     private EnvVars envVars;
     private String box86Version = DefaultVersion.BOX86;
@@ -48,7 +47,6 @@ public class GlibcProgramLauncherComponent extends GuestProgramLauncherComponent
     private String box64Preset = Box86_64Preset.COMPATIBILITY;
     private String steamType = DefaultVersion.STEAM_TYPE;
     private Callback<Integer> terminationCallback;
-    private static final Object lock = new Object();
     private boolean wow64Mode = true;
     private final ContentsManager contentsManager;
     private final ContentProfile wineProfile;
@@ -87,9 +85,10 @@ public class GlibcProgramLauncherComponent extends GuestProgramLauncherComponent
                 Process.killProcess(pid);
                 Log.d("GlibcProgramLauncherComponent", "Stopped process " + pid);
                 pid = -1;
-                List<ProcessHelper.ProcessInfo> subProcesses = ProcessHelper.listSubProcesses();
-                for (ProcessHelper.ProcessInfo subProcess : subProcesses) {
-                    Process.killProcess(subProcess.pid);
+                for (String winePid : ProcessHelper.listRunningWineProcesses()) {
+                    try {
+                        Process.killProcess(Integer.parseInt(winePid));
+                    } catch (NumberFormatException ignored) {}
                 }
                 SteamService.setKeepAlive(false);
             }
