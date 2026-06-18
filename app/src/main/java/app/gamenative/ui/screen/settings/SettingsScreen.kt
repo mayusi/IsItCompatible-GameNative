@@ -1,9 +1,9 @@
 package app.gamenative.ui.screen.settings
 
 import android.content.res.Configuration
-import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -27,13 +27,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.BugReport
-import androidx.compose.material.icons.filled.Gamepad
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Palette
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -45,21 +38,32 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.gamenative.PrefManager
 import app.gamenative.R
 import app.gamenative.enums.AppTheme
+import app.gamenative.ui.theme.NovaInk
 import app.gamenative.ui.theme.PluviaTheme
 import com.materialkolor.PaletteStyle
+
+// NovaGN spec: EaseOutCubic — cubic-bezier(0.33, 1, 0.68, 1)
+private val EaseOutCubic: Easing = Easing { t ->
+    val t1 = t - 1f
+    t1 * t1 * t1 + 1f
+}
+
+// Spec colors used inline (matches NOVAGN_DESIGN.md)
+private val NovaSectionLabel = Color(0xFF9CA0AD)   // Text muted / section labels
+private val NovaPanelSurface = Color(0xFF13131B)   // Panel surface — cards/panels
+private val NovaDivider = Color(0xFF1A1A24)        // Divider / hairline
 
 @Composable
 fun SettingsScreen(
@@ -88,18 +92,11 @@ private fun SettingsScreenContent(
 ) {
     val scrollState = rememberScrollState()
 
+    // Flat near-black ink canvas — no gradient, matches spec "Ink" (#0B0B0F)
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        PluviaTheme.colors.surfacePanel,
-                        MaterialTheme.colorScheme.background,
-                        MaterialTheme.colorScheme.background,
-                    ),
-                ),
-            ),
+            .background(NovaInk),
     ) {
         Column(
             modifier = Modifier
@@ -109,33 +106,31 @@ private fun SettingsScreenContent(
         ) {
             SettingsHeader(
                 onBack = onBack,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
             )
 
-            // Scrollable content
+            // Scrollable section list
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(scrollState)
                     .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
                 Spacer(modifier = Modifier.height(8.dp))
 
                 // Emulation section
-                SettingsSection(
-                    title = stringResource(R.string.settings_emulation_title),
-                    icon = Icons.Default.Gamepad,
-                    iconTint = PluviaTheme.colors.accentBrand,
+                NovaSettingsSection(
+                    label = stringResource(R.string.settings_emulation_title),
                 ) {
                     SettingsGroupEmulation()
                 }
 
+                Spacer(modifier = Modifier.height(24.dp))
+
                 // Interface section
-                SettingsSection(
-                    title = stringResource(R.string.settings_interface_title),
-                    icon = Icons.Default.Palette,
-                    iconTint = PluviaTheme.colors.accentPurple,
+                NovaSettingsSection(
+                    label = stringResource(R.string.settings_interface_title),
                 ) {
                     SettingsGroupInterface(
                         appTheme = appTheme,
@@ -145,35 +140,80 @@ private fun SettingsScreenContent(
                     )
                 }
 
+                Spacer(modifier = Modifier.height(24.dp))
+
                 // Info section
-                SettingsSection(
-                    title = stringResource(R.string.settings_info_title),
-                    icon = Icons.Default.Info,
-                    iconTint = PluviaTheme.colors.accentSuccess,
+                NovaSettingsSection(
+                    label = stringResource(R.string.settings_info_title),
                 ) {
                     SettingsGroupInfo()
                 }
 
-                // IIC Edition section
-                SettingsSection(
-                    title = stringResource(R.string.settings_iic_section_title),
-                    icon = Icons.Default.AutoAwesome,
-                    iconTint = PluviaTheme.colors.accentBrand,
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // NovaGN brand section
+                NovaSettingsSection(
+                    label = stringResource(R.string.settings_iic_section_title),
                 ) {
                     SettingsGroupIIC()
                 }
 
+                Spacer(modifier = Modifier.height(24.dp))
+
                 // Debug section
-                SettingsSection(
-                    title = stringResource(R.string.settings_debug_title),
-                    icon = Icons.Default.BugReport,
-                    iconTint = PluviaTheme.colors.accentWarning,
+                NovaSettingsSection(
+                    label = stringResource(R.string.settings_debug_title),
                 ) {
                     SettingsGroupDebug()
                 }
 
-                Spacer(modifier = Modifier.height(32.dp))
+                Spacer(modifier = Modifier.height(40.dp))
             }
+        }
+    }
+}
+
+/**
+ * NovaGN spec grouped-settings pattern:
+ * UPPERCASE muted section label (11sp / 600 / +0.08em / #9CA0AD) above a flat
+ * #13131B panel (12dp radius). Dividers between rows are handled by each
+ * SettingsGroup*() composable using the shared NovaDivider color; this shell
+ * just provides the outer label + rounded container.
+ *
+ * The old "Surface card with colored icon-box per section" is intentionally gone —
+ * that was the generic-Material tell.
+ */
+@Composable
+private fun NovaSettingsSection(
+    label: String,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        // UPPERCASE tracked muted label — spec: 11sp / 600 / +0.08em / #9CA0AD
+        Text(
+            text = label.uppercase(),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 11.sp,
+                letterSpacing = 0.08.sp * 11f, // +0.08em at 11sp
+                color = NovaSectionLabel,
+            ),
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 0.dp),
+            textAlign = TextAlign.Start,
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Flat grouped panel — #13131B, 12dp radius, no elevation
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            color = NovaPanelSurface,
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
+        ) {
+            content()
         }
     }
 }
@@ -190,47 +230,30 @@ private fun SettingsHeader(
     ) {
         BackButton(onClick = onBack)
 
-        // Title
-        Column {
+        // Screen title — spec: 28sp / 700 / line-height 1.1
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
                 text = stringResource(R.string.settings_title),
-                style = MaterialTheme.typography.headlineSmall.copy(
+                style = MaterialTheme.typography.headlineMedium.copy(
                     fontWeight = FontWeight.Bold,
-                    letterSpacing = 0.5.sp,
+                    fontSize = 28.sp,
+                    lineHeight = (28 * 1.1).sp,
+                    letterSpacing = 0.sp,
                 ),
-                color = MaterialTheme.colorScheme.onSurface,
+                color = Color(0xFFFAFAFA),
             )
             Text(
                 text = stringResource(R.string.settings_subtitle),
-                style = MaterialTheme.typography.bodySmall,
-                color = PluviaTheme.colors.textMuted,
-            )
-        }
-
-        Spacer(modifier = Modifier.weight(1f))
-
-        // Settings icon decoration
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .background(
-                    Brush.radialGradient(
-                        colors = listOf(
-                            PluviaTheme.colors.accentBrand.copy(alpha = 0.2f),
-                            Color.Transparent,
-                        ),
-                    ),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontWeight = FontWeight.Normal,
+                    fontSize = 12.sp,
+                    letterSpacing = 0.4.sp,
                 ),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Default.Settings,
-                contentDescription = null,
-                tint = PluviaTheme.colors.accentBrand.copy(alpha = 0.6f),
-                modifier = Modifier.size(24.dp),
+                color = NovaSectionLabel,
             )
         }
+        // No decorative gear — spec says indigo accent only on active nav/focus/launch/
+        // toggle-ON/slider; a purely decorative icon at the header is off-spec.
     }
 }
 
@@ -242,12 +265,10 @@ private fun BackButton(
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
 
+    // Spec: 120ms EaseOutCubic focus scale (no spring physics — "springs read playful")
     val scale by animateFloatAsState(
-        targetValue = if (isFocused) 1.1f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMedium,
-        ),
+        targetValue = if (isFocused) 1.05f else 1f,
+        animationSpec = tween(durationMillis = 120, easing = EaseOutCubic),
         label = "backButtonScale",
     )
 
@@ -258,24 +279,17 @@ private fun BackButton(
             .clip(CircleShape)
             .background(
                 if (isFocused) {
-                    PluviaTheme.colors.accentBrand.copy(alpha = 0.2f)
+                    PluviaTheme.colors.accentBrand.copy(alpha = 0.16f)
                 } else {
-                    PluviaTheme.colors.surfaceElevated
+                    NovaDivider // #1A1A24 — elevated panel tier, subtle on ink bg
                 },
             )
             .then(
                 if (isFocused) {
-                    Modifier.border(
-                        2.dp,
-                        PluviaTheme.colors.accentBrand.copy(alpha = 0.6f),
-                        CircleShape,
-                    )
+                    // Spec focused control: 2dp indigo border
+                    Modifier.border(2.dp, PluviaTheme.colors.accentBrand, CircleShape)
                 } else {
-                    Modifier.border(
-                        1.dp,
-                        PluviaTheme.colors.borderDefault.copy(alpha = 0.3f),
-                        CircleShape,
-                    )
+                    Modifier.border(1.dp, Color(0xFF262633), CircleShape)
                 },
             )
             .selectable(
@@ -289,71 +303,9 @@ private fun BackButton(
         Icon(
             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
             contentDescription = stringResource(R.string.back),
-            tint = if (isFocused) PluviaTheme.colors.accentBrand else Color.White.copy(alpha = 0.8f),
+            tint = if (isFocused) PluviaTheme.colors.accentBrand else Color(0xFFC0C0CC),
             modifier = Modifier.size(24.dp),
         )
-    }
-}
-
-@Composable
-private fun SettingsSection(
-    title: String,
-    icon: ImageVector,
-    iconTint: Color,
-    modifier: Modifier = Modifier,
-    content: @Composable () -> Unit,
-) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        color = PluviaTheme.colors.surfaceElevated,
-        tonalElevation = 0.dp,
-    ) {
-        Column(
-            modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
-        ) {
-            // Section header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                // Icon with glow background
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(iconTint.copy(alpha = 0.15f)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = iconTint,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        letterSpacing = 0.3.sp,
-                    ),
-                    color = Color.White,
-                )
-            }
-
-            HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                color = PluviaTheme.colors.borderDefault.copy(alpha = 0.2f),
-            )
-
-            // Section content
-            content()
-        }
     }
 }
 
