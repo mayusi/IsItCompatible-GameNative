@@ -151,38 +151,6 @@ class ProxyCtrl private constructor(
     }
 
     /**
-     * Set the game speed multiplier (the SPEED-HACK feature).
-     *
-     * Writes `speed=<multiplier>` to the control file. The in-DLL time hook scales
-     * the Windows timing functions (QueryPerformanceCounter / GetTickCount(64) /
-     * timeGetTime) the game imports, anchoring the scaled clock so changes stay
-     * monotonic. `1.0` = normal speed; `< 1.0` = slow-mo; `> 1.0` = fast-forward.
-     *
-     * DEFAULT-SAFETY: the DLL only patches the game's IAT the first time it sees a
-     * non-1.0 value, so a value of exactly 1.0 (and any launch where the slider is
-     * never touched) leaves game startup completely unaffected.
-     *
-     * The multiplier is clamped to [MULTIPLIER_MIN]..[MULTIPLIER_MAX] before the
-     * write (mirrors the DLL's own SPEED_MIN..SPEED_MAX clamp).
-     *
-     * Issued via [writeCmdUnique] because the DLL de-dupes commands by file content;
-     * the appended nonce makes repeated/identical multiplier writes distinct while the
-     * DLL's prefix-matched `atof` ignores the trailing bytes.
-     *
-     * @return true if written successfully; false on IO error or unavailability.
-     */
-    @Deprecated(
-        "The in-Wine speed-hack DLL bridge is dead on arm64ec (the proxy DLL never loads), " +
-            "so this writes a control file nothing reads. The runtime speed hack is being " +
-            "rebuilt host-side; SpeedSection no longer calls this. Do not wire new code to it.",
-    )
-    suspend fun setSpeed(multiplier: Float): Boolean {
-        val clamped = multiplier.coerceIn(MULTIPLIER_MIN, MULTIPLIER_MAX)
-        Log.d(TAG, "setSpeed: $clamped")
-        return writeCmdUnique("speed=$clamped")
-    }
-
-    /**
      * Disable ALL active freeze slots in the DLL.
      *
      * Equivalent to calling [removeChain] for every slot but cheaper — a single
@@ -643,10 +611,6 @@ class ProxyCtrl private constructor(
         // "[cheat] engine up" line before declaring the engine available.
         private const val CONNECT_ATTEMPTS = 5
         private const val CONNECT_POLL_MS  = 300L
-
-        // Speed-hack multiplier bounds — mirror SPEED_MIN..SPEED_MAX in cheat.c.
-        const val MULTIPLIER_MIN: Float = 0.1f
-        const val MULTIPLIER_MAX: Float = 10.0f
 
         // DIY scanner result polling — a full-process scan can take a couple seconds.
         private const val SCAN_POLL_MS    = 200L

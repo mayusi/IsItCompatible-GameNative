@@ -94,7 +94,6 @@ import app.gamenative.ui.screen.library.components.LibraryOptionsPanel
 import app.gamenative.ui.screen.library.components.LibrarySearchBar
 import app.gamenative.ui.screen.library.components.LibrarySourceNotLoggedInSplash
 import app.gamenative.ui.screen.library.components.LibrarySourceRail
-import app.gamenative.ui.screen.library.components.LibraryTabBar
 import app.gamenative.ui.screen.library.components.NovaRailWidth
 import app.gamenative.ui.screen.auth.AmazonOAuthActivity
 import app.gamenative.ui.screen.auth.EpicOAuthActivity
