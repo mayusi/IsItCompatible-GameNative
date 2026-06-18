@@ -46,8 +46,10 @@ import app.gamenative.trainer.TrainerShm
 import app.gamenative.ui.theme.PluviaTheme
 import kotlinx.coroutines.launch
 
-// Discrete multiplier stops exposed in the UI
-private val SPEED_PRESETS = listOf(0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f)
+// Discrete multiplier stops exposed in the UI. Extends to 8x (the patched ntdll + SpeedhackControl
+// support up to 16x) so grinding / cutscene-skipping has real headroom, while keeping fine control
+// around 1x. The speed hotkeys (SPEED_CYCLE etc.) use their own preset subset.
+private val SPEED_PRESETS = listOf(0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f)
 
 /**
  * Given a persisted multiplier, return the SPEED_PRESETS index whose value is closest
@@ -292,6 +294,15 @@ private fun SpeedControlSection(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
         )
     }
+
+    Spacer(modifier = Modifier.height(4.dp))
+    // Discoverability: tell the user they can drive speed from a controller button without the menu.
+    Text(
+        text = stringResource(R.string.speed_hotkey_hint),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+    )
 }
 
 private fun formatMultiplier(value: Float): String {

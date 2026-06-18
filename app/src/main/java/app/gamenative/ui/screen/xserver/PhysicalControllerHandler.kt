@@ -23,7 +23,12 @@ class PhysicalControllerHandler(
     private var profile: ControlsProfile?,
     private val xServer: XServer?,
     private val onOpenNavigationMenu: (() -> Unit)? = null,
-    private val onShowKeyboard: (() -> Unit)? = null
+    private val onShowKeyboard: (() -> Unit)? = null,
+    // Speed-hack hotkeys (NovaGN). Fired on rising edge for toggle/cycle; fast-forward fires
+    // press=true on key-down and press=false on key-up so the caller can hold-to-fast-forward.
+    private val onSpeedToggle: (() -> Unit)? = null,
+    private val onSpeedCycle: (() -> Unit)? = null,
+    private val onSpeedFastForward: ((Boolean) -> Unit)? = null,
 ) {
     private val TAG = "gncontrol"
     private val mouseMoveOffset = PointF(0f, 0f)
@@ -34,6 +39,12 @@ class PhysicalControllerHandler(
 
     // Tracks whether SHOW_KEYBOARD is currently held, so onShowKeyboard fires once per press (rising edge only)
     private var showKeyboardPressed = false
+
+    // Rising-edge guards so SPEED_TOGGLE/SPEED_CYCLE fire once per press, and FAST-FORWARD
+    // fires its press/release callbacks exactly once each (key events can repeat while held).
+    private var speedTogglePressed = false
+    private var speedCyclePressed = false
+    private var speedFastForwardPressed = false
 
     private fun releaseActiveAxes() {
         val controller = profile?.getController("*") ?: return
@@ -339,6 +350,39 @@ class PhysicalControllerHandler(
                     }
                 } else {
                     showKeyboardPressed = false
+                }
+            } else if (binding == Binding.SPEED_TOGGLE) {
+                // Tap to toggle the game speed (e.g. 1x <-> last fast preset). Rising edge only.
+                if (isActionDown) {
+                    if (!speedTogglePressed) {
+                        speedTogglePressed = true
+                        onSpeedToggle?.invoke()
+                    }
+                } else {
+                    speedTogglePressed = false
+                }
+            } else if (binding == Binding.SPEED_CYCLE) {
+                // Tap to cycle through the speed presets. Rising edge only.
+                if (isActionDown) {
+                    if (!speedCyclePressed) {
+                        speedCyclePressed = true
+                        onSpeedCycle?.invoke()
+                    }
+                } else {
+                    speedCyclePressed = false
+                }
+            } else if (binding == Binding.SPEED_FASTFORWARD) {
+                // Hold to fast-forward, release to restore. One callback per edge.
+                if (isActionDown) {
+                    if (!speedFastForwardPressed) {
+                        speedFastForwardPressed = true
+                        onSpeedFastForward?.invoke(true)
+                    }
+                } else {
+                    if (speedFastForwardPressed) {
+                        speedFastForwardPressed = false
+                        onSpeedFastForward?.invoke(false)
+                    }
                 }
             } else if (binding == Binding.MOUSE_MOVE_LEFT || binding == Binding.MOUSE_MOVE_RIGHT) {
                 // Handle horizontal mouse movement - ADD contribution from this input

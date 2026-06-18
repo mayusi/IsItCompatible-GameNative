@@ -87,6 +87,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.gamenative.PluviaApp
 import app.gamenative.PrefManager
+import app.gamenative.cheats.SpeedhackControl
 import app.gamenative.SteamBootstrap
 import app.gamenative.data.GameSource
 import app.gamenative.gamefixes.GameFixesRegistry
@@ -349,6 +350,12 @@ fun XServerScreen(
     val context = LocalContext.current
     val view = LocalView.current
     val scope = rememberCoroutineScope()
+    // NovaGN speed-hotkey state (survives recomposition): the last fast speed to toggle/fast-forward
+    // to, and the speed to restore after a fast-forward hold. Held in a remembered holder so the
+    // controller-handler callbacks can read+mutate them across presses.
+    val speedHotkeyState = remember { app.gamenative.input.SpeedHotkeyState() }
+    var speedHotkeyLastFast by speedHotkeyState::lastFast
+    var speedHotkeyBeforeHold by speedHotkeyState::beforeHold
     val imm = remember(context) {
         context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
     }
@@ -2206,6 +2213,42 @@ fun XServerScreen(
                         gameBack,
                         onShowKeyboard = {
                             PluviaApp.inputControlsView?.triggerShowKeyboard()
+                        },
+                        // ---- NovaGN speed hotkeys (drive the live speed-hack without the menu) ----
+                        // applySpeed persists the per-game multiplier AND writes the control file the
+                        // patched ntdll reads (off the main thread). Shared by all three hotkeys.
+                        onSpeedToggle = {
+                            val cur = PrefManager.getSpeedMultiplier(appId)
+                            // Toggle between normal and the last fast speed (default 4x). When already
+                            // sped up, drop back to 1x and remember the speed so the next tap restores it.
+                            val next = if (cur != 1.0f) {
+                                speedHotkeyLastFast = cur
+                                1.0f
+                            } else {
+                                speedHotkeyLastFast
+                            }
+                            PrefManager.setSpeedMultiplier(appId, next)
+                            scope.launch(Dispatchers.IO) { SpeedhackControl.setMultiplier(context, next) }
+                        },
+                        onSpeedCycle = {
+                            val presets = listOf(0.5f, 1.0f, 2.0f, 4.0f)
+                            val cur = PrefManager.getSpeedMultiplier(appId)
+                            val curIdx = presets.indexOfFirst { kotlin.math.abs(it - cur) < 0.01f }
+                            val next = presets[(if (curIdx < 0) 1 else curIdx + 1) % presets.size]
+                            PrefManager.setSpeedMultiplier(appId, next)
+                            scope.launch(Dispatchers.IO) { SpeedhackControl.setMultiplier(context, next) }
+                        },
+                        onSpeedFastForward = { holding ->
+                            if (holding) {
+                                // Remember the current speed and jump to fast-forward (last fast preset).
+                                speedHotkeyBeforeHold = PrefManager.getSpeedMultiplier(appId)
+                                val ff = speedHotkeyLastFast
+                                scope.launch(Dispatchers.IO) { SpeedhackControl.setMultiplier(context, ff) }
+                            } else {
+                                // Restore the pre-hold speed (don't persist the transient fast-forward).
+                                val restore = speedHotkeyBeforeHold
+                                scope.launch(Dispatchers.IO) { SpeedhackControl.setMultiplier(context, restore) }
+                            }
                         },
                     )
 

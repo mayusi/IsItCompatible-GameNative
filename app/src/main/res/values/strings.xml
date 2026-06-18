@@ -1772,6 +1772,7 @@
     <!-- %1$s is the formatted multiplier, e.g. "0.5×" / "2×" -->
     <string name="speed_active_slowmo">Slow motion active — game running at %1$s speed</string>
     <string name="speed_active_fast">Fast-forward active — game running at %1$s speed</string>
+    <string name="speed_hotkey_hint">Tip: bind a controller button to Speed Toggle, Speed Cycle, or Fast-forward (hold) in the controller settings to change speed without opening this menu.</string>
 
     <!-- Macro / Turbo strings -->
     <string name="macro_not_enabled_title">Macros &amp; Turbo disabled</string>
