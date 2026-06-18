@@ -69,6 +69,54 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
         refreshSummary()
     }
 
+    /**
+     * Update the foreground-service notification for [id] to show live download progress.
+     *
+     * Call at a throttled cadence (every ~2 s) from the download coroutine — NOT on every
+     * progress callback — to avoid notification spam and battery drain.
+     *
+     * @param id          Notification ID (NOTIFICATION_ID_EPIC / _GOG / _AMAZON).
+     * @param gameName    Human-readable game title (shown as notification sub-text).
+     * @param progressPct Progress in [0, 100]. Pass -1 while the total is unknown (shows
+     *                    indeterminate bar).
+     * @param speedBytesPerSec Current smoothed speed from [DownloadInfo.getCurrentSpeedBytesPerSec].
+     *                         Pass 0 to omit the speed label.
+     */
+    @Synchronized
+    fun notifyProgress(
+        id: Int,
+        gameName: String,
+        progressPct: Int,
+        speedBytesPerSec: Double,
+    ) {
+        val isIndeterminate = progressPct < 0
+        val pct = progressPct.coerceIn(0, 100)
+
+        val speedLabel = if (speedBytesPerSec >= 1_000_000.0) {
+            " · %.1f MB/s".format(speedBytesPerSec / 1_000_000.0)
+        } else if (speedBytesPerSec >= 1_000.0) {
+            " · %.0f KB/s".format(speedBytesPerSec / 1_000.0)
+        } else {
+            ""
+        }
+
+        val contentText = if (isIndeterminate) {
+            "Downloading $gameName$speedLabel"
+        } else {
+            "Downloading $gameName · $pct%$speedLabel"
+        }
+
+        val notification = buildNotificationWithProgress(
+            id = id,
+            content = contentText,
+            progressMax = 100,
+            progress = pct,
+            indeterminate = isIndeterminate,
+        )
+        notificationManager.notify(id, notification)
+        activeServices.add(id)
+    }
+
     @Synchronized
     fun cancel(id: Int = NOTIFICATION_ID_STEAM) {
         notificationManager.cancel(id)
@@ -113,6 +161,57 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
         content = "Connected",
         isSummary = true,
     )
+
+    private fun buildNotificationWithProgress(
+        id: Int,
+        content: String,
+        progressMax: Int,
+        progress: Int,
+        indeterminate: Boolean,
+    ): Notification {
+        val title = serviceNameFor(id)
+        val intent = android.content.Intent(
+            android.content.Intent.ACTION_VIEW,
+            "pluvia://home".toUri(),
+            context,
+            MainActivity::class.java,
+        ).apply {
+            flags = android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = android.app.PendingIntent.getActivity(
+            context,
+            0,
+            intent,
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val stopIntent = android.content.Intent(context, NotificationActionReceiver::class.java).apply {
+            action = ACTION_EXIT
+        }
+        val stopPendingIntent = android.app.PendingIntent.getBroadcast(
+            context,
+            0,
+            stopIntent,
+            android.app.PendingIntent.FLAG_IMMUTABLE,
+        )
+        val smallIconRes = if (PrefManager.useAltNotificationIcon) {
+            R.drawable.ic_notification_alt
+        } else {
+            R.drawable.ic_notification
+        }
+        return NotificationCompat.Builder(context, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(content)
+            .setSmallIcon(smallIconRes)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setAutoCancel(false)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(pendingIntent)
+            .setGroup(GROUP_KEY)
+            .addAction(0, "Exit", stopPendingIntent)
+            .setProgress(progressMax, progress, indeterminate)
+            .build()
+    }
 
     private fun buildNotification(title: String, content: String, isSummary: Boolean): Notification {
         val intent = Intent(

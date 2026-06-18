@@ -1550,14 +1550,29 @@ class GOGDownloadManager @Inject constructor(
                 }
             }
 
-            // Verify final file hash if provided (non-fatal — same semantics as before).
-            if (file.md5 != null) {
+            // Verify full-file MD5 only when the last chunk for this file has been written.
+            // Running it on intermediate chunks is always wrong — the file is not yet complete.
+            // Conditions for a hard-fail:
+            //   (a) this is the final chunk (chunkIndex == file.chunks.lastIndex), AND
+            //   (b) the manifest provided a real (non-empty) MD5 for this file, AND
+            //   (c) the computed MD5 does not match.
+            // If the manifest omitted the MD5 (file.md5 is null/blank) we stay lenient —
+            // there is nothing to verify against.
+            val isLastChunk = chunkIndex == file.chunks.lastIndex
+            if (isLastChunk && !file.md5.isNullOrBlank()) {
                 val fileMd5 = calculateMd5File(outputFile)
-                if (fileMd5 != file.md5) {
-                    // Don't fail — some games have incorrect MD5 in manifest,
-                    // and intermediate chunks won't match the full-file hash yet.
+                if (!fileMd5.equals(file.md5, ignoreCase = true)) {
+                    Timber.tag("GOG").e(
+                        "File MD5 mismatch for ${file.path}: expected=${file.md5}, got=$fileMd5 — " +
+                            "marking file for re-download",
+                    )
+                    // Delete the corrupted assembled file so the next resume will re-download it.
+                    outputFile.delete()
+                    return@withContext Result.failure(
+                        Exception("File MD5 mismatch for ${file.path}: expected=${file.md5}, got=$fileMd5"),
+                    )
                 } else {
-                    Timber.tag("GOG").v("Assembled: ${file.path} (${outputFile.length()} bytes)")
+                    Timber.tag("GOG").v("Assembled + verified: ${file.path} (${outputFile.length()} bytes, md5 OK)")
                 }
             }
 

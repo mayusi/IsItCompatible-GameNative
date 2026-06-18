@@ -459,6 +459,23 @@ class AmazonService : Service() {
             )
 
             val job = instance.serviceScope.launch {
+                // Throttled progress notification: update the FGS notification at most every 2 s.
+                var lastNotifyMs = 0L
+                val progressListener: (Float) -> Unit = { _ ->
+                    val now = System.currentTimeMillis()
+                    if (now - lastNotifyMs >= 2000L) {
+                        lastNotifyMs = now
+                        val pct = (downloadInfo.getProgress() * 100f).toInt().coerceIn(0, 100)
+                        val speed = downloadInfo.getCurrentSpeedBytesPerSec()
+                        instance.notificationHelper.notifyProgress(
+                            app.gamenative.service.NotificationHelper.NOTIFICATION_ID_AMAZON,
+                            game.title,
+                            pct,
+                            speed,
+                        )
+                    }
+                }
+                downloadInfo.addProgressListener(progressListener)
                 try {
                     val result = instance.amazonDownloadManager.downloadGame(
                         context = context,
@@ -491,6 +508,9 @@ class AmazonService : Service() {
                     }
                     downloadInfo.setActive(false)
                 } finally {
+                    downloadInfo.removeProgressListener(progressListener)
+                    // Reset notification to idle state now that the download is done/cancelled.
+                    instance.notificationHelper.notify("Connected", app.gamenative.service.NotificationHelper.NOTIFICATION_ID_AMAZON)
                     instance.activeDownloads.remove(productId)
                     instance.activeDownloadPaths.remove(productId)
                     PluviaApp.events.emitJava(

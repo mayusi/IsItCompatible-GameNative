@@ -351,8 +351,30 @@ class GOGService : Service() {
             // Track in activeDownloads first
             instance.activeDownloads[gameId] = downloadInfo
 
+            // Resolve game title for the progress notification (best-effort; falls back to gameId).
+            val gameTitle: String = runBlocking(Dispatchers.IO) {
+                instance.gogManager.getGameFromDbById(gameId)?.title ?: gameId
+            }
+
             // Launch download in service scope so it runs independently
             val job = instance.scope.launch {
+                // Throttled progress notification: update the FGS notification at most every 2 s.
+                var lastNotifyMs = 0L
+                val progressListener: (Float) -> Unit = { _ ->
+                    val now = System.currentTimeMillis()
+                    if (now - lastNotifyMs >= 2000L) {
+                        lastNotifyMs = now
+                        val pct = (downloadInfo.getProgress() * 100f).toInt().coerceIn(0, 100)
+                        val speed = downloadInfo.getCurrentSpeedBytesPerSec()
+                        instance.notificationHelper.notifyProgress(
+                            NotificationHelper.NOTIFICATION_ID_GOG,
+                            gameTitle,
+                            pct,
+                            speed,
+                        )
+                    }
+                }
+                downloadInfo.addProgressListener(progressListener)
                 try {
                     Timber.d("[Download] Starting download for game $gameId")
                     val commonRedistDir = File(installPath, "_CommonRedist")
@@ -421,6 +443,9 @@ class GOGService : Service() {
 
                     SnackbarManager.show("Download error: ${e.message ?: "Unknown error"}")
                 } finally {
+                    downloadInfo.removeProgressListener(progressListener)
+                    // Reset notification to idle state now that the download is done/cancelled.
+                    instance.notificationHelper.notify("Connected", NotificationHelper.NOTIFICATION_ID_GOG)
                     // Remove from activeDownloads for both success and failure
                     // so UI knows download is complete and to prevent stale entries
                     instance.activeDownloads.remove(gameId)

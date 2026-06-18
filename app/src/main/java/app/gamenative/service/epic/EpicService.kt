@@ -424,6 +424,23 @@ class EpicService : Service() {
 
             // Start download in background
             val job = instance.scope.launch {
+                // Throttled progress notification: update the FGS notification at most every 2 s.
+                var lastNotifyMs = 0L
+                val progressListener: (Float) -> Unit = { _ ->
+                    val now = System.currentTimeMillis()
+                    if (now - lastNotifyMs >= 2000L) {
+                        lastNotifyMs = now
+                        val pct = (downloadInfo.getProgress() * 100f).toInt().coerceIn(0, 100)
+                        val speed = downloadInfo.getCurrentSpeedBytesPerSec()
+                        instance.notificationHelper.notifyProgress(
+                            NotificationHelper.NOTIFICATION_ID_EPIC,
+                            game.title,
+                            pct,
+                            speed,
+                        )
+                    }
+                }
+                downloadInfo.addProgressListener(progressListener)
                 try {
                     val commonRedistDir = File(installPath, "_CommonRedist")
                     Timber.tag("Epic").i("Starting download for game: ${game.title}, gameId: ${game.id}")
@@ -493,6 +510,9 @@ class EpicService : Service() {
 
                     SnackbarManager.show("Download error: ${e.message ?: "Unknown error"}")
                 } finally {
+                    downloadInfo.removeProgressListener(progressListener)
+                    // Reset notification to idle state now that the download is done/cancelled.
+                    instance.notificationHelper.notify("Connected", NotificationHelper.NOTIFICATION_ID_EPIC)
                     instance.activeDownloads.remove(appId)
                     Timber.d("[Download] Finished for game $gameId, progress: ${downloadInfo.getProgress()}, active: ${downloadInfo.isActive()}")
                 }
