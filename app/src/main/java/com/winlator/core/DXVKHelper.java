@@ -75,5 +75,37 @@ public class DXVKHelper {
         File vkd3dCacheDir = new File(imageFs.cache_path + "/vkd3d-" + containerId);
         vkd3dCacheDir.mkdirs();
         envVars.put("VKD3D_SHADER_CACHE_PATH", vkd3dCacheDir.getPath());
+
+        // Frame-rate cap for DX12 games. DXVK_FRAME_RATE only limits D3D9/10/11 (the DXVK
+        // path); D3D12 goes through VKD3D-Proton, which has its own VKD3D_FRAME_RATE (v2.14+).
+        // Without this, DX12 games had NO frame cap at all — they ran uncapped, cooking the
+        // device and draining battery. We honour the same "framerate" container setting the
+        // user already sets for DXVK so one Frame Limit control covers every renderer.
+        String framerate = config.get("framerate");
+        if (framerate != null && !framerate.isEmpty() && !framerate.equals("0")) {
+            envVars.put("VKD3D_FRAME_RATE", framerate);
+        }
+
+        // Lower swapchain latency (default is 3 frames) for snappier input on a handheld.
+        // Only set when the user hasn't overridden it via the env-var picker.
+        if (!envVars.has("VKD3D_SWAPCHAIN_LATENCY_FRAMES")) {
+            envVars.put("VKD3D_SWAPCHAIN_LATENCY_FRAMES", "2");
+        }
+
+        // ARM/mobile-GPU VKD3D tuning defaults (non-overriding). These are safe, universally
+        // beneficial on a UMA mobile GPU:
+        //   nodxr           - skip ray-tracing extension probing (no Adreno/Mali/Turnip DXR)
+        //   single_queue    - match the single hardware queue on mobile GPUs, drop scheduler overhead
+        //   no_upload_hvv   - don't use host-visible VRAM uploads (no benefit on unified memory)
+        //   recycle_command_pools - reuse Vulkan command pools, less per-frame allocation
+        //   memory_allocator_skip_clear - don't zero fresh allocations (small repeated win)
+        // Merged with any user VKD3D_CONFIG rather than clobbering it.
+        String armDefaults = "nodxr,single_queue,no_upload_hvv,recycle_command_pools,memory_allocator_skip_clear";
+        String existingVkd3dConfig = envVars.get("VKD3D_CONFIG");
+        if (existingVkd3dConfig == null || existingVkd3dConfig.isEmpty()) {
+            envVars.put("VKD3D_CONFIG", armDefaults);
+        } else {
+            envVars.put("VKD3D_CONFIG", existingVkd3dConfig + "," + armDefaults);
+        }
     }
 }
