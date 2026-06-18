@@ -126,7 +126,7 @@ private fun SettingsScreenContent(
                 SettingsSection(
                     title = stringResource(R.string.settings_emulation_title),
                     icon = Icons.Default.Gamepad,
-                    iconTint = PluviaTheme.colors.accentCyan,
+                    iconTint = PluviaTheme.colors.accentBrand,
                 ) {
                     SettingsGroupEmulation()
                 }
@@ -158,7 +158,7 @@ private fun SettingsScreenContent(
                 SettingsSection(
                     title = stringResource(R.string.settings_iic_section_title),
                     icon = Icons.Default.AutoAwesome,
-                    iconTint = PluviaTheme.colors.accentCyan,
+                    iconTint = PluviaTheme.colors.accentBrand,
                 ) {
                     SettingsGroupIIC()
                 }
@@ -217,7 +217,7 @@ private fun SettingsHeader(
                 .background(
                     Brush.radialGradient(
                         colors = listOf(
-                            PluviaTheme.colors.accentCyan.copy(alpha = 0.2f),
+                            PluviaTheme.colors.accentBrand.copy(alpha = 0.2f),
                             Color.Transparent,
                         ),
                     ),
@@ -227,7 +227,7 @@ private fun SettingsHeader(
             Icon(
                 imageVector = Icons.Default.Settings,
                 contentDescription = null,
-                tint = PluviaTheme.colors.accentCyan.copy(alpha = 0.6f),
+                tint = PluviaTheme.colors.accentBrand.copy(alpha = 0.6f),
                 modifier = Modifier.size(24.dp),
             )
         }
@@ -258,7 +258,7 @@ private fun BackButton(
             .clip(CircleShape)
             .background(
                 if (isFocused) {
-                    PluviaTheme.colors.accentCyan.copy(alpha = 0.2f)
+                    PluviaTheme.colors.accentBrand.copy(alpha = 0.2f)
                 } else {
                     PluviaTheme.colors.surfaceElevated
                 },
@@ -267,7 +267,7 @@ private fun BackButton(
                 if (isFocused) {
                     Modifier.border(
                         2.dp,
-                        PluviaTheme.colors.accentCyan.copy(alpha = 0.6f),
+                        PluviaTheme.colors.accentBrand.copy(alpha = 0.6f),
                         CircleShape,
                     )
                 } else {
@@ -289,7 +289,7 @@ private fun BackButton(
         Icon(
             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
             contentDescription = stringResource(R.string.back),
-            tint = if (isFocused) PluviaTheme.colors.accentCyan else Color.White.copy(alpha = 0.8f),
+            tint = if (isFocused) PluviaTheme.colors.accentBrand else Color.White.copy(alpha = 0.8f),
             modifier = Modifier.size(24.dp),
         )
     }
