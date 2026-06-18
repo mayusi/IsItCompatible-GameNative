@@ -54,6 +54,18 @@ object WineLogClassifier {
                 (joined.contains("fixme:vkd3d") && joined.contains(Regex("(?i)(fail|error|unsupported|not present)"))) ->
                 FixLadder.FailureClass.D3D12_UNSUPPORTED
 
+            // Old DirectX 9 render failure (DMC3-class 2006-era games). dxvk's D3D9 path or a
+            // bad/bundled d3dx9 helper can crash or black-screen these. Key off D3D9-specific
+            // device/d3dx9 failures — NOT bare "d3d9" (benign fixme:d3d9 lines are constant).
+            // Checked AFTER DX12 so a DX12 title is never misclassified as D3D9.
+            joined.contains(Regex("err:module:import_dll Library d3dx9")) ||
+                (joined.contains("d3d9", ignoreCase = true) &&
+                    joined.contains(Regex("(?i)(create.*device.*fail|failed to create.*d3d9|D3DERR_|not available)"))) ||
+                (joined.contains("wined3d", ignoreCase = true) &&
+                    joined.contains(Regex("(?i)(no pixel format|failed to initialize|unsupported)")) &&
+                    joined.contains("d3d9", ignoreCase = true)) ->
+                FixLadder.FailureClass.D3D9_RENDER
+
             // Steam API / Steam client initialisation failure.
             //
             // FALSE-POSITIVE GUARDS: do NOT match bare "Steam" or "SteamGameId" — the launcher
@@ -93,6 +105,14 @@ object WineLogClassifier {
             // Anti-cheat / SEH exception
             joined.contains("err:seh:setup_exception") ->
                 FixLadder.FailureClass.SEH_ANTICHEAT
+
+            // Box64 dynarec / CPU-translation fault — old games hit JIT edge cases. These come
+            // from Box64 stderr (now captured alongside Wine logs). Dropping to the Box64
+            // COMPATIBILITY preset is the fix.
+            joined.contains(Regex("(?i)(box64|dynarec).*(segfault|sigsegv|illegal instruction|abort)")) ||
+                joined.contains("Dynarec block", ignoreCase = true) ||
+                joined.contains(Regex("(?i)box64.*(error|crash|fault)")) ->
+                FixLadder.FailureClass.BOX64_DYNAREC
 
             else -> FixLadder.FailureClass.UNKNOWN_CRASH
         }

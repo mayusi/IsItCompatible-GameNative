@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.gamenative.PluviaApp
+import app.gamenative.PrefManager
 import app.gamenative.autotuner.AutoTunerEngine
 import app.gamenative.autotuner.BatteryReader
 import app.gamenative.autotuner.GoalWeights
@@ -14,6 +15,7 @@ import app.gamenative.autotuner.TunerOutcome
 import app.gamenative.autotuner.TunerProgress
 import app.gamenative.autotuner.TunerResult
 import app.gamenative.events.AndroidEvent
+import app.gamenative.gamefixes.CollectionRegistry
 import app.gamenative.utils.ContainerUtils
 import com.winlator.widget.FrameRating
 import kotlinx.coroutines.Dispatchers
@@ -135,6 +137,7 @@ class AutoTunerViewModel : ViewModel() {
         mode: SweepMode,
         measurementMode: MeasurementMode,
         customWeights: GoalWeights? = null,
+        executablePath: String? = null,
     ) {
         if (sweepJob?.isActive == true) {
             Timber.tag(TAG).w("startTuning called while sweep already running — ignoring")
@@ -144,6 +147,16 @@ class AutoTunerViewModel : ViewModel() {
         // COMPAT_PROBE always forces PROBE sweep mode
         val effectiveMode = if (goal.isFastProbe) SweepMode.PROBE else mode
 
+        // Resolve the executable to tune. For a multi-game collection (e.g. DMC HD: DMC1/2/3),
+        // the container's default exe may be the crashing launcher — so the tuner MUST be told
+        // which sub-game to launch, exactly like a normal play does. If the caller passed one,
+        // use it; otherwise auto-resolve for known collections. Non-collection games resolve to
+        // null (the engine then uses the container's stored executablePath as before).
+        val resolvedExe = executablePath ?: resolveCollectionExe(appId)
+        if (resolvedExe != null) {
+            Timber.tag(TAG).i("startTuning: tuning sub-game exe='$resolvedExe' for appId=$appId")
+        }
+
         val eng = AutoTunerEngine(
             context = context.applicationContext,
             appId = appId,
@@ -151,6 +164,7 @@ class AutoTunerViewModel : ViewModel() {
             mode = effectiveMode,
             measurementMode = measurementMode,
             customWeights = customWeights,
+            executablePath = resolvedExe,
         )
         // Wire the auto-exit callback so the engine can close the trial game programmatically.
         eng.onRequestTrialExit = { requestTrialExit() }
@@ -169,6 +183,30 @@ class AutoTunerViewModel : ViewModel() {
                 handleProgress(progress)
             }
         }
+    }
+
+    /**
+     * Resolve which executable the tuner should launch for a multi-game collection.
+     *
+     * Without this, Make-It-Work tuned whatever exe the container defaulted to — for the DMC HD
+     * Collection that is often the launcher (dmcLauncher.exe), which is excluded because it
+     * crashes Wine. The tuner then "fixed" the wrong process and never touched dmc3.exe, so a
+     * game like DMC3 could never be made to work. We mirror the normal play path exactly:
+     * prefer the user's last-played sub-game, else the first non-excluded sub-game in the
+     * collection. Returns null for non-collection games (the engine keeps using the container's
+     * stored executablePath unchanged).
+     */
+    private fun resolveCollectionExe(appId: String): String? {
+        val rawId = appId.substringAfterLast('_')
+        val collection = CollectionRegistry.getCollection(rawId) ?: return null
+
+        val lastExe = PrefManager.getLastPlayedSubGame(appId)
+        val sub = collection.subGames.firstOrNull { it.exePath.equals(lastExe, ignoreCase = true) }
+            ?: collection.subGames.firstOrNull { exe ->
+                collection.excludedExes.none { exe.exePath.substringAfterLast('/').equals(it, ignoreCase = true) }
+            }
+            ?: collection.subGames.firstOrNull()
+        return sub?.exePath
     }
 
     /** Cancel the in-progress sweep. */

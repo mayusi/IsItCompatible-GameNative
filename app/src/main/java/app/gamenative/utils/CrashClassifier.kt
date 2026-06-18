@@ -18,8 +18,13 @@ import timber.log.Timber
  */
 object CrashClassifier {
 
-    /** Maximum number of Wine debug lines retained in memory per session. */
-    const val RING_BUFFER_LINES = 300
+    /**
+     * Maximum number of Wine/Box64 debug lines retained in memory per session.
+     * 1000 (was 300): old/verbose games (D3D9 shader init, Box64 dynarec dumps) push the actual
+     * error well past 300 lines of init spam, so a too-small buffer dropped the signal before the
+     * classifier could see it. 1000 keeps the relevant crash context in view.
+     */
+    const val RING_BUFFER_LINES = 1000
 
     /**
      * Thread-safe, in-memory ring buffer for Wine debug output.
@@ -268,6 +273,31 @@ object CrashClassifier {
                     )
                 } else null
             }
+
+            FixLadder.FailureClass.D3D9_RENDER -> CrashSuggestion(
+                message = "Old DirectX 9 game failed to render — tap to try the wined3d renderer",
+                actionLabel = null,
+                action = null,
+                diagnosis = "What happened: this is an older DirectX 9 game (mid-2000s). It failed " +
+                    "to create its D3D9 device or crashed in rendering — usually because the fast " +
+                    "DXVK D3D9 path doesn't agree with the game, or a d3dx9 helper library is " +
+                    "missing or the wrong version.\n\n" +
+                    "What the auto-fixer does: forces Wine's built-in d3dx9 helpers and, if needed, " +
+                    "switches this game to the wined3d renderer (D3D9 → OpenGL) — the standard " +
+                    "fallback that makes these old titles boot.",
+            )
+
+            FixLadder.FailureClass.BOX64_DYNAREC -> CrashSuggestion(
+                message = "CPU translation fault — tap to use the Box64 compatibility preset",
+                actionLabel = null,
+                action = null,
+                diagnosis = "What happened: Box64 (the x86 → ARM CPU translator) hit a fault while " +
+                    "running this game's code. Older or unusual games can trip the faster " +
+                    "translation presets.\n\n" +
+                    "What the auto-fixer does: switches Box64 to its COMPATIBILITY preset, which " +
+                    "favours correctness over speed and is the most reliable way to get a stubborn " +
+                    "game to at least boot.",
+            )
 
             FixLadder.FailureClass.BLACK_SCREEN_NOFIX -> CrashSuggestion(
                 message = "The game started but showed a black screen — we couldn't pinpoint the cause",

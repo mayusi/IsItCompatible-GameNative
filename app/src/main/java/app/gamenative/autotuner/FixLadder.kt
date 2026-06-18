@@ -45,6 +45,8 @@ object FixLadder {
         WMV_CODEC,
         D3D_COMPILER,
         D3D12_UNSUPPORTED,
+        D3D9_RENDER, // old DirectX 9 game (e.g. DMC3) failing under dxvk/D3D9 — needs wined3d / d3dx9
+        BOX64_DYNAREC, // Box64 JIT/dynarec fault (old-game CPU-translation crash)
         STEAM_INIT_FAILED,
         STEAM_OVERLAY,
         EOS_CRASH,
@@ -254,6 +256,83 @@ object FixLadder {
                     )
                 } catch (e: Exception) {
                     Timber.tag(TAG).e(e, "Rung vkd3d_config_workaround failed for $appId")
+                    null
+                }
+            },
+        ),
+
+        // Rung 5c — d3dx9 helper DLL overrides for old DirectX 9 games (DMC3-class).
+        // Many 2000s D3D9 games bundle or expect the d3dx9 helper libraries. Forcing Wine's
+        // built-in d3dx9_43 / d3dx9_36 (the two most common versions) resolves missing-symbol
+        // and bad-bundled-DLL crashes. native,builtin lets a present game-bundled copy win but
+        // falls back to Wine's. Cheap and safe — only adds overrides, never removes the game's.
+        Rung(
+            id = "d3dx9_override",
+            description = "Add d3dx9 helper DLL overrides (old D3D9 games)",
+            appliesToClasses = setOf(FailureClass.D3D9_RENDER, FailureClass.BLACK_SCREEN_NOFIX, FailureClass.UNKNOWN_CRASH),
+            apply = { _, appId, baseConfig, _, _ ->
+                try {
+                    var patched = mergeWineDllOverride(baseConfig, "d3dx9_43", "n,b")
+                    patched = mergeWineDllOverride(patched, "d3dx9_36", "n,b")
+                    FixResult(
+                        appliedFix = AppliedFix.DllOverride("d3dx9_43,d3dx9_36", "n,b"),
+                        patchedConfig = patched,
+                    )
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "Rung d3dx9_override failed for $appId")
+                    null
+                }
+            },
+        ),
+
+        // Rung 5d — Switch a D3D9 game off dxvk onto wined3d.
+        // dxvk's D3D9 path is strong for most titles but some old fixed-function / SM2-3 games
+        // (DMC3, many 2006-era games) render black or crash under it. wined3d (D3D9→OpenGL) is
+        // the community fallback for exactly these. We ONLY do this for D3D9_RENDER failures (or
+        // a black screen on a dxvk container) and only when currently on dxvk — never touch a
+        // DX11/DX12 title's wrapper (that path is handled by dx12_force_dx11 / vkd3d rungs).
+        Rung(
+            id = "d3d9_wined3d_fallback",
+            description = "Use wined3d for this old DirectX 9 game",
+            appliesToClasses = setOf(FailureClass.D3D9_RENDER, FailureClass.BLACK_SCREEN_NOFIX),
+            condition = { _, _, baseConfig, _ ->
+                baseConfig.dxwrapper.equals("dxvk", ignoreCase = true)
+            },
+            apply = { _, appId, baseConfig, _, _ ->
+                try {
+                    val patched = baseConfig.copy(dxwrapper = "wined3d")
+                    FixResult(
+                        appliedFix = AppliedFix.DxWrapperSwitch("wined3d"),
+                        patchedConfig = patched,
+                    )
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "Rung d3d9_wined3d_fallback failed for $appId")
+                    null
+                }
+            },
+        ),
+
+        // Rung 5e — Drop Box64 to the COMPATIBILITY preset on a CPU-translation fault or an
+        // otherwise-unexplained crash. Old games hit dynarec edge cases the PERFORMANCE/
+        // INTERMEDIATE presets miss; COMPATIBILITY trades speed for correctness and is the
+        // single most reliable "make it at least boot" lever for stubborn old titles. Only
+        // applied when not already on COMPATIBILITY (no point retrying the same preset).
+        Rung(
+            id = "box64_compat_preset",
+            description = "Use Box64 COMPATIBILITY preset",
+            appliesToClasses = setOf(FailureClass.BOX64_DYNAREC, FailureClass.UNKNOWN_CRASH, FailureClass.BLACK_SCREEN_NOFIX),
+            condition = { _, _, baseConfig, _ ->
+                !baseConfig.box64Preset.equals("COMPATIBILITY", ignoreCase = true)
+            },
+            apply = { _, appId, baseConfig, _, _ ->
+                try {
+                    val patched = baseConfig.copy(box64Preset = "COMPATIBILITY")
+                    FixResult(
+                        appliedFix = AppliedFix.Box64PresetSwitch("COMPATIBILITY"),
+                        patchedConfig = patched,
+                    )
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "Rung box64_compat_preset failed for $appId")
                     null
                 }
             },

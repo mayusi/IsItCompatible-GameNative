@@ -44,6 +44,16 @@ sealed class AppliedFix {
         override fun label(): String = "Launch arg: $arg"
     }
 
+    /** The DirectX wrapper was switched (e.g. dxvk -> wined3d for an old D3D9 game). */
+    data class DxWrapperSwitch(val wrapper: String) : AppliedFix() {
+        override fun label(): String = "DirectX wrapper: $wrapper"
+    }
+
+    /** The Box64 preset was switched (e.g. -> COMPATIBILITY for a dynarec fault). */
+    data class Box64PresetSwitch(val preset: String) : AppliedFix() {
+        override fun label(): String = "Box64 preset: $preset"
+    }
+
     /**
      * Goldberg-style Steam API emulation was deployed against the game's install folder.
      * Covers: steam_api[64].dll replacement + steam_settings/ + steam_appid.txt.

@@ -124,11 +124,22 @@ data class TunerResult(
         /** GPU busy percentage at or below which the GPU is considered idle (black screen). */
         const val BLACK_SCREEN_GPU_BUSY_THRESHOLD = 8
 
-        /** Consecutive seconds at black-screen FPS+GPU levels before we declare BLACK_SCREEN. */
-        const val BLACK_SCREEN_SUSTAIN_SEC = 10
+        /**
+         * Consecutive seconds at black-screen FPS+GPU levels before we declare BLACK_SCREEN.
+         * 6 (was 10): in a 20s probe-measure window, a 10s detection lag wasted half the window
+         * before the engine could react and try a fix. 6s is still long enough to avoid flagging
+         * a brief load-screen pause as a black screen.
+         */
+        const val BLACK_SCREEN_SUSTAIN_SEC = 6
 
-        /** Minimum sustained avgFps across ~5s required for a genuine boot success. */
-        const val SUSTAINED_RENDER_FPS_THRESHOLD = 12.0f
+        /**
+         * Minimum sustained FPS across ~5s required to count as a genuine BOOT success.
+         * 8 (was 12): boot-success and playable-performance are different bars. A game that
+         * reaches its menu and renders at 8-11 FPS HAS booted (the config works) — the old 12 FPS
+         * floor false-failed correctly-rendering old/heavy games and made the engine keep churning
+         * through configs. Playable-FPS quality is still judged separately by the ranking weights.
+         */
+        const val SUSTAINED_RENDER_FPS_THRESHOLD = 8.0f
 
         /**
          * Strips the "Pass N · DimName:" prefix from a trial description to produce a

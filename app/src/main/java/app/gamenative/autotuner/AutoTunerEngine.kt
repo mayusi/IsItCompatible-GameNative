@@ -165,6 +165,12 @@ class AutoTunerEngine(
     // a multi-fix chain. UNKNOWN_CRASH still fails fast (see the guard in that loop).
     private val CRASH_FIX_CHAIN_MAX = 4
 
+    // How many speculative rungs a NO-SIGNAL (UNKNOWN_CRASH) failure may try before the engine
+    // gives up on this trial. Old games (DMC3) crash with no Wine-log signal, so 1 was too few —
+    // they never reached the d3dx9 / wined3d / Box64-COMPATIBILITY speculative fixes. Bounded
+    // below CRASH_FIX_CHAIN_MAX; triedRungIds prevents repeats so this is targeted, not blind.
+    private val UNKNOWN_CRASH_MAX_RUNGS = 3
+
     // -------------------------------------------------------------------------
     // Trial controller (UI wires into this)
     // -------------------------------------------------------------------------
@@ -1284,11 +1290,14 @@ class AutoTunerEngine(
                 FixLadder.classifyFailure(logLines)
             }
 
-            // UNKNOWN fail-fast: a no-signal crash gets at most ONE speculative rung.
-            // Without this guard, raising the chain cap (CRASH_FIX_CHAIN_MAX) would let an
-            // unclassifiable crash blindly march through several speculative DLL-override
-            // rungs. Classified crashes are unaffected — they chain their applicable rungs.
-            if (failureClass == FixLadder.FailureClass.UNKNOWN_CRASH && retryNum >= 1) break
+            // UNKNOWN fail-fast: a no-signal crash gets a BOUNDED number of speculative rungs.
+            // Old games (e.g. DMC3) routinely crash with no Wine-log signal, so giving up after
+            // ONE attempt meant they could never be auto-fixed. We now allow up to
+            // UNKNOWN_CRASH_MAX_RUNGS distinct speculative rungs — the high-value, safe ones
+            // (d3dx9 overrides, wined3d fallback, Box64 COMPATIBILITY preset). triedRungIds still
+            // prevents repeats, so this marches through a few targeted fixes, not blindly.
+            // Classified crashes are unaffected — they chain their applicable rungs as before.
+            if (failureClass == FixLadder.FailureClass.UNKNOWN_CRASH && retryNum >= UNKNOWN_CRASH_MAX_RUNGS) break
 
             // Preferred rungs: merge device-level learned prior (TunerMemory) with the
             // crowd-sourced catalog (CrashFixCatalog), in that precedence order:

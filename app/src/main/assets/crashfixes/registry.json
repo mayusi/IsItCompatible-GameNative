@@ -37,6 +37,36 @@
       "rungId": "d3dcompiler_override",
       "games": ["*"],
       "_comment": "Missing or incompatible d3dcompiler_47. Native-first override (n,b) picks up the bundled copy."
+    },
+    {
+      "failureClass": "D3D9_RENDER",
+      "rungId": "d3d9_wined3d_fallback",
+      "games": ["*"],
+      "_comment": "Old DirectX 9 games (2006-era) that crash/black-screen under dxvk's D3D9 path. wined3d (D3D9->OpenGL) is the community fallback."
+    },
+    {
+      "failureClass": "D3D9_RENDER",
+      "rungId": "d3dx9_override",
+      "games": ["*"],
+      "_comment": "Old D3D9 games expecting d3dx9 helper libraries. Force Wine's built-in d3dx9_43/d3dx9_36."
+    },
+    {
+      "failureClass": "BOX64_DYNAREC",
+      "rungId": "box64_compat_preset",
+      "games": ["*"],
+      "_comment": "Box64 JIT/dynarec fault on old games. Drop to the COMPATIBILITY preset for correctness over speed."
+    },
+    {
+      "failureClass": "WMV_CODEC",
+      "rungId": "wmv_rename",
+      "games": ["631510"],
+      "_comment": "DMC HD Collection (DMC1/2/3): intro .wmv videos crash Wine. Renaming them is the verified first fix for this title."
+    },
+    {
+      "failureClass": "UNKNOWN_CRASH",
+      "rungId": "d3d9_wined3d_fallback",
+      "games": ["631510"],
+      "_comment": "DMC HD Collection: after the WMV fix, the D3D9 render itself is the common failure and often produces no Wine-log signal. Prefer the wined3d fallback for this old D3D9 collection."
     }
   ]
 }
