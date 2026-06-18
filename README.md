@@ -3,10 +3,23 @@
 **Run PC games on Android — tuned, cheated, and sped up.** One-tap "make it work", a built-in
 cheat engine, a universal speed hack, and crowd-sourced crash fixes.
 
+[![Download latest APK](https://img.shields.io/badge/Download-latest%20APK-6D5BF6?style=for-the-badge&logo=android&logoColor=white)](https://github.com/mayusi/IsItCompatible-GameNative/releases/latest)
+
 [![Version](https://img.shields.io/badge/version-1.13.0--NovaGN-6D5BF6)](../../releases)
 [![Downloads](https://img.shields.io/github/downloads/mayusi/IsItCompatible-GameNative/total?color=6D5BF6&label=downloads)](../../releases)
 [![Package](https://img.shields.io/badge/package-app.gamenative.iic-informational)](../../releases)
 [![Android](https://img.shields.io/badge/Android-9%2B%20%28modern%20flavor%29-green)](../../releases)
+
+## 📥 Download & install
+
+1. **[Download the latest APK](https://github.com/mayusi/IsItCompatible-GameNative/releases/latest)** — grab the file ending in `-arm64-v8a.apk` from the newest release.
+2. On your Android handheld, open the APK. If prompted, allow **“Install unknown apps”** for your browser / file manager.
+3. Tap **Install**. NovaGN installs **alongside** the official GameNative (separate app, won't touch it).
+4. That's it. **From now on, NovaGN updates itself** — it checks this repo for new releases and offers a one-tap in-app update (Settings → *Check for updates* to check manually).
+
+> Requires Android 9+ (a 64-bit ARM handheld). You only have to sideload once — after that the in-app updater handles every future version for you.
+
+---
 
 **NovaGN** is a premium fork of [GameNative](https://github.com/utkarshdalal/GameNative) by
 utkarshdalal — rebuilt into its own thing with deep additions (a universal Wine-level speed
