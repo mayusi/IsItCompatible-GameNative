@@ -4,9 +4,8 @@ import android.content.Context
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.MutableTransitionState
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -88,6 +87,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.TextUnitType
 import androidx.compose.ui.unit.dp
 import app.gamenative.PrefManager
 import app.gamenative.R
@@ -111,6 +112,14 @@ import kotlin.math.roundToInt
 // retries with a short delay reliably catches it without blocking the UI.
 private const val TRAINER_PID_POLL_ATTEMPTS = 8
 private const val TRAINER_PID_POLL_DELAY_MS = 400L
+
+// NovaGN motion spec: EaseOutQuart slide-in (200ms), EaseInQuart slide-out (150ms).
+// Springs are retired — springs read playful; NovaGN is premium/minimal.
+private val EaseOutQuart = CubicBezierEasing(0.25f, 1f, 0.5f, 1f)
+private val EaseInQuart = CubicBezierEasing(0.5f, 0f, 0.75f, 0f)
+
+// NovaGN scrim: near-black at 88% covers the game while the menu is open.
+private val NovaScrimColor = Color(0xFF0F0F18)
 
 object QuickMenuAction {
     const val KEYBOARD = 1
@@ -357,6 +366,14 @@ fun QuickMenu(
         else -> R.string.quick_menu_tab_controller
     }
 
+    // Live indigo dot: shown in the header when the speed multiplier is active (not 1.0×).
+    // Read persisted multiplier for this game; fall back to 1.0 when there's no appId.
+    val speedMultiplier: Float = remember(container?.id) {
+        val id = container?.id
+        if (id != null && PrefManager.speedHackEnabled) PrefManager.getSpeedMultiplier(id) else 1.0f
+    }
+    val isSpeedActive = speedMultiplier != 1.0f
+
     val hudScrollState = rememberScrollState()
     val effectsScrollState = rememberScrollState()
     val lsfgScrollState = rememberScrollState()
@@ -497,15 +514,16 @@ fun QuickMenu(
     }
 
     Box(modifier = modifier.fillMaxSize()) {
+        // NovaGN scrim: #0F0F18 @ 88% — game stays visible but dimmed under the panel.
         AnimatedVisibility(
             visible = isVisible,
-            enter = fadeIn(animationSpec = tween(200)),
-            exit = fadeOut(animationSpec = tween(150)),
+            enter = fadeIn(animationSpec = tween(200, easing = EaseOutQuart)),
+            exit = fadeOut(animationSpec = tween(150, easing = EaseInQuart)),
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0f))
+                    .background(NovaScrimColor.copy(alpha = 0.88f))
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -514,25 +532,28 @@ fun QuickMenu(
             )
         }
 
+        // NovaGN spec: right-side slide-in panel. Game stays visible on the left.
+        // Corners: 12dp on the exposed (left) side, 0dp on the screen-edge (right) side.
+        // Motion: 200ms EaseOutQuart enter, 150ms EaseInQuart exit — no springs.
         AnimatedVisibility(
             visibleState = visibleState,
             enter = slideInHorizontally(
-                initialOffsetX = { fullWidth -> -fullWidth },
-                animationSpec = tween(200),
+                initialOffsetX = { fullWidth -> fullWidth },
+                animationSpec = tween(200, easing = EaseOutQuart),
             ),
             exit = slideOutHorizontally(
-                targetOffsetX = { fullWidth -> -fullWidth },
-                animationSpec = tween(150),
+                targetOffsetX = { fullWidth -> fullWidth },
+                animationSpec = tween(150, easing = EaseInQuart),
             ),
-            modifier = Modifier.align(Alignment.CenterStart),
+            modifier = Modifier.align(Alignment.CenterEnd),
         ) {
             Surface(
                 modifier = Modifier
                     .width(adaptivePanelWidth(400.dp))
                     .fillMaxHeight(),
-                shape = RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 2.dp,
+                shape = RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp),
+                color = PluviaTheme.colors.surfacePanel,
+                tonalElevation = 0.dp,
                 shadowElevation = 24.dp,
             ) {
                 Column(
@@ -547,19 +568,38 @@ fun QuickMenu(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Text(
-                            text = stringResource(R.string.quick_menu_title),
-                            style = MaterialTheme.typography.titleLarge.copy(
-                                fontWeight = FontWeight.SemiBold,
-                            ),
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.quick_menu_title),
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            // Live indigo dot — shown when speed multiplier != 1.0×.
+                            // Spec: "the quick-menu 'live' dot" using accentBrand (#6D5BF6).
+                            if (isSpeedActive) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .background(
+                                            color = PluviaTheme.colors.accentBrand,
+                                            shape = CircleShape,
+                                        ),
+                                )
+                            }
+                        }
                         QuickMenuCloseButton(onClick = onDismiss)
                     }
 
+                    // NovaGN spec: 1dp #1A1A24 divider between major zones.
                     HorizontalDivider(
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                        modifier = Modifier.padding(horizontal = 0.dp),
+                        thickness = 1.dp,
+                        color = PluviaTheme.colors.surfaceElevated,
                     )
 
                     Row(
@@ -643,26 +683,42 @@ fun QuickMenu(
                                     modifier = Modifier.width(56.dp),
                                     focusRequester = toolsTabFocusRequester,
                                 )
-                                QuickMenuTabButton(
-                                    icon = Icons.Default.SmartToy,
-                                    contentDescriptionResId = R.string.trainer_tab_title,
-                                    selected = selectedTab == QuickMenuTab.TRAINER,
-                                    accentColor = PluviaTheme.colors.accentBrand,
-                                    onSelected = {
-                                        selectedTab = QuickMenuTab.TRAINER
-                                        PrefManager.quickMenuLastTab = selectedTab
-                                    },
-                                    modifier = Modifier.width(56.dp),
-                                    focusRequester = trainerTabFocusRequester,
-                                )
+                                // Trainer tab — power feature: show small indigo dot badge
+                                // when trainer is enabled to mark it as a live capability.
+                                Box {
+                                    QuickMenuTabButton(
+                                        icon = Icons.Default.SmartToy,
+                                        contentDescriptionResId = R.string.trainer_tab_title,
+                                        selected = selectedTab == QuickMenuTab.TRAINER,
+                                        accentColor = PluviaTheme.colors.accentBrand,
+                                        onSelected = {
+                                            selectedTab = QuickMenuTab.TRAINER
+                                            PrefManager.quickMenuLastTab = selectedTab
+                                        },
+                                        modifier = Modifier.width(56.dp),
+                                        focusRequester = trainerTabFocusRequester,
+                                    )
+                                    if (PrefManager.trainerEnabled) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .align(Alignment.TopEnd)
+                                                .background(
+                                                    color = PluviaTheme.colors.accentBrand,
+                                                    shape = CircleShape,
+                                                ),
+                                        )
+                                    }
+                                }
                             }
 
+                            // Spec: 1dp #1A1A24 divider above Exit Game button in rail.
                             Box(
                                 modifier = Modifier
                                     .padding(horizontal = 4.dp, vertical = 12.dp)
                                     .fillMaxWidth()
                                     .height(1.dp)
-                                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)),
+                                    .background(PluviaTheme.colors.surfaceElevated),
                             )
 
                             QuickMenuRailActionButton(
@@ -676,28 +732,34 @@ fun QuickMenu(
                             )
                         }
 
+                        // Spec: 1dp #1A1A24 divider between rail and content area.
                         Box(
                             modifier = Modifier
                                 .padding(horizontal = 12.dp)
                                 .width(1.dp)
                                 .fillMaxHeight()
-                                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)),
+                                .background(PluviaTheme.colors.surfaceElevated),
                         )
 
                         Column(
                             modifier = Modifier
                                 .fillMaxSize(),
                         ) {
+                            // NovaGN spec: section label — uppercase, muted, 11sp/600.
                             Text(
-                                text = stringResource(selectedTabLabelResId),
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = MaterialTheme.colorScheme.onSurface,
+                                text = stringResource(selectedTabLabelResId).uppercase(),
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = TextUnit(0.08f, TextUnitType.Em),
+                                ),
+                                color = PluviaTheme.colors.textMuted,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                             )
 
                             HorizontalDivider(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f),
+                                thickness = 1.dp,
+                                color = PluviaTheme.colors.surfaceElevated,
                             )
 
                             Box(
@@ -1338,11 +1400,14 @@ private fun QuickMenuSectionHeader(
     Column(
         modifier = modifier.padding(horizontal = 8.dp, vertical = 4.dp),
     ) {
+        // NovaGN spec: section labels — 11sp / 600 / +0.08em / UPPERCASE / muted color.
         Text(
-            text = title,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            fontWeight = FontWeight.SemiBold,
+            text = title.uppercase(),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = TextUnit(0.08f, TextUnitType.Em),
+            ),
+            color = PluviaTheme.colors.textMuted,
         )
         if (!subtitle.isNullOrBlank()) {
             Spacer(modifier = Modifier.height(2.dp))
