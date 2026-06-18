@@ -47,7 +47,7 @@ fun AppUpdateBanner(
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
             Text(
-                "A new version of GameNative IIC is ready.",
+                "A new version of NovaGN is ready.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
             )

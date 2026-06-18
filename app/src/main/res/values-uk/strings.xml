@@ -1,5 +1,5 @@
 ﻿<resources>
-    <string name="app_name">GameNative</string>
+    <string name="app_name">NovaGN</string>
     <string name="login_user">Вхід користувача</string>
     <string name="login_2fa">Двофакторна автентифікація</string>
     <string name="home">Домівка</string>
@@ -963,7 +963,7 @@
     <string name="settings_downloads_title">Завантаження</string>
 
     <!-- Login Screen -->
-    <string name="login_app_name">GameNative</string>
+    <string name="login_app_name">NovaGN</string>
     <string name="login_privacy_policy">Політика конфіденційності</string>
     <string name="login_welcome_back">З поверненням</string>
     <string name="login_subtitle">Увійдіть, щоб отримати доступ до бібліотеки Steam</string>

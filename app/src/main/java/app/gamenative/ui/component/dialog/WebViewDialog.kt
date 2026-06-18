@@ -37,7 +37,7 @@ fun WebViewDialog(
     onDismissRequest: () -> Unit,
 ) {
     if (isVisible) {
-        var topBarTitle by rememberSaveable { mutableStateOf("GameNative Web View") }
+        var topBarTitle by rememberSaveable { mutableStateOf("NovaGN Web View") }
         val startingUrl by rememberSaveable(url) { mutableStateOf(url) }
         var webView: WebView? = remember { null } // WebView class.
         val webViewState = rememberSaveable { Bundle() } // WebView state for lifecycle events.

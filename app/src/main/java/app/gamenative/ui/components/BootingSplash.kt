@@ -165,7 +165,7 @@ fun BootingSplash(
                 ) {
                     // Glow layer (blurred behind)
                     Text(
-                        text = "GameNative",
+                        text = "NovaGN",
                         style = MaterialTheme.typography.displaySmall.copy(
                             fontWeight = FontWeight.Bold,
                             fontSize = 36.sp,
@@ -179,7 +179,7 @@ fun BootingSplash(
 
                     // Main logo text
                     Text(
-                        text = "GameNative",
+                        text = "NovaGN",
                         style = MaterialTheme.typography.displaySmall.copy(
                             fontWeight = FontWeight.Bold,
                             fontSize = 36.sp,
@@ -198,7 +198,7 @@ fun BootingSplash(
 
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "IIC · Is It Compatible? fork",
+                    text = "Run PC games on Android",
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.SemiBold,
                         letterSpacing = 3.sp,

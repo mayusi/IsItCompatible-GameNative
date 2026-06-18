@@ -1,5 +1,5 @@
 ﻿<resources>
-    <string name="app_name">GameNative</string>
+    <string name="app_name">NovaGN</string>
     <string name="login_user">ユーザーログイン</string>
     <string name="login_2fa">ツーファクター</string>
     <string name="home">ホーム</string>
@@ -1004,7 +1004,7 @@
     <string name="container_storage_unknown_error">不明なエラー</string>
 
     <!-- Login Screen -->
-    <string name="login_app_name">GameNative</string>
+    <string name="login_app_name">NovaGN</string>
     <string name="login_privacy_policy">プライバシーポリシー</string>
     <string name="login_welcome_back">おかえり</string>
     <string name="login_subtitle">サインインして Steam ライブラリにアクセスします</string>

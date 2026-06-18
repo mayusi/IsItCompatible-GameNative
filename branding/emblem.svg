@@ -1,102 +1,30 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="NovaGN emblem">
+  <title>NovaGN emblem</title>
+  <desc>Minimal monogram: a sharp geometric N on a near-black rounded square with a single electric-indigo accent diagonal.</desc>
   <defs>
-    <!-- Main teal→violet gradient (diagonal) -->
-    <linearGradient id="grad-main" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#14b8a6"/>
-      <stop offset="100%" stop-color="#7c3aed"/>
-    </linearGradient>
-    <!-- Subtle inner highlight -->
-    <linearGradient id="grad-shine" x1="0%" y1="0%" x2="50%" y2="100%">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.18"/>
-      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
-    </linearGradient>
-    <!-- Drop shadow filter -->
-    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
-      <feDropShadow dx="0" dy="6" stdDeviation="18" flood-color="#7c3aed" flood-opacity="0.45"/>
-    </filter>
-    <!-- Glow on glyph -->
-    <filter id="glyph-glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="4" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
+    <clipPath id="round">
+      <rect x="0" y="0" width="512" height="512" rx="116" ry="116"/>
+    </clipPath>
   </defs>
 
-  <!-- Rounded-square badge -->
-  <rect x="28" y="28" width="456" height="456" rx="96" ry="96"
-        fill="url(#grad-main)" filter="url(#shadow)"/>
+  <g clip-path="url(#round)">
+    <!-- Near-black base -->
+    <rect x="0" y="0" width="512" height="512" fill="#0B0B0F"/>
+    <!-- Very subtle top panel for depth (premium, low-contrast — not a loud gradient) -->
+    <rect x="0" y="0" width="512" height="270" fill="#13131B"/>
 
-  <!-- Inner shine overlay -->
-  <rect x="28" y="28" width="456" height="456" rx="96" ry="96"
-        fill="url(#grad-shine)"/>
-
-  <!-- Dark ink background pill behind glyph (optional depth) -->
-  <rect x="76" y="76" width="360" height="360" rx="72" ry="72"
-        fill="#0b1120" opacity="0.35"/>
-
-  <!--
-    GLYPH: Controller silhouette whose negative-space cutouts form a checkmark.
-
-    Controller body = wide rounded rect.
-    Left grip + right grip = lower rounded rects.
-    D-pad area = small cross on left.
-    Button cluster on right = 4 dots.
-    Center negative-space cutout = bold checkmark (✓) — the "compatible" signal.
-  -->
-
-  <!-- Controller body (white/light fill so gradient shows through cutout) -->
-  <g filter="url(#glyph-glow)">
-    <!-- Main body -->
-    <rect x="118" y="196" width="276" height="148" rx="40" ry="40"
-          fill="#f8fafc"/>
-
-    <!-- Left grip -->
-    <rect x="118" y="304" width="96" height="80" rx="28" ry="28"
-          fill="#f8fafc"/>
-
-    <!-- Right grip -->
-    <rect x="298" y="304" width="96" height="80" rx="28" ry="28"
-          fill="#f8fafc"/>
-
-    <!-- D-pad cross (left zone) — dark ink color -->
-    <!-- horizontal bar -->
-    <rect x="160" y="236" width="52" height="18" rx="5" ry="5"
-          fill="#0b1120"/>
-    <!-- vertical bar -->
-    <rect x="177" y="219" width="18" height="52" rx="5" ry="5"
-          fill="#0b1120"/>
-
-    <!-- Button cluster dots (right zone) -->
-    <circle cx="332" cy="236" r="8" fill="#0b1120"/>
-    <circle cx="356" cy="252" r="8" fill="#0b1120"/>
-    <circle cx="308" cy="252" r="8" fill="#0b1120"/>
-    <circle cx="332" cy="268" r="8" fill="#0b1120"/>
-
-    <!-- Center HOME button circle -->
-    <circle cx="256" cy="252" r="18" fill="#0b1120"/>
-
-    <!--
-      CHECKMARK negative-space cutout:
-      Carved from the controller body by drawing the checkmark in the
-      badge's gradient (same as background), creating a "window" effect.
-      The check is bold and centered in the controller body.
-    -->
-    <!-- Checkmark drawn in gradient color so it "cuts through" the white -->
-    <polyline
-      points="210,260 238,292 302,216"
-      fill="none"
-      stroke="url(#grad-main)"
-      stroke-width="26"
-      stroke-linecap="round"
-      stroke-linejoin="round"/>
+    <!-- The N: two white vertical stems + an electric-indigo diagonal -->
+    <!-- left stem -->
+    <rect x="150" y="146" width="48" height="220" fill="#FAFAFA"/>
+    <!-- right stem -->
+    <rect x="314" y="146" width="48" height="220" fill="#FAFAFA"/>
+    <!-- accent diagonal connecting top-left stem to bottom-right stem -->
+    <path d="M198 146 L246 146 L362 312 L362 366 L314 366 L198 200 Z" fill="#6D5BF6"/>
+    <!-- small accent spark, top-right -->
+    <path d="M362 146 L362 198 L336 172 Z" fill="#6D5BF6"/>
   </g>
 
-  <!-- Thin gradient ring stroke around the badge -->
-  <rect x="28" y="28" width="456" height="456" rx="96" ry="96"
-        fill="none"
-        stroke="url(#grad-main)"
-        stroke-width="3"
-        opacity="0.6"/>
+  <!-- Hairline inner border for crispness -->
+  <rect x="0.75" y="0.75" width="510.5" height="510.5" rx="115.5" ry="115.5"
+        fill="none" stroke="#2A2A36" stroke-width="1.5"/>
 </svg>

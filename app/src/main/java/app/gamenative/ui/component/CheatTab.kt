@@ -1204,7 +1204,7 @@ private fun shareCheat(context: Context, appId: String, cheat: Cheat) {
     try {
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "GameNative cheat: ${cheat.name}")
+            putExtra(Intent.EXTRA_SUBJECT, "NovaGN cheat: ${cheat.name}")
             putExtra(Intent.EXTRA_TEXT, note)
         }
         context.startActivity(
@@ -1214,7 +1214,7 @@ private fun shareCheat(context: Context, appId: String, cheat: Cheat) {
         // Fallback: copy to clipboard so the user can paste it anywhere.
         try {
             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            cm.setPrimaryClip(ClipData.newPlainText("GameNative cheat", note))
+            cm.setPrimaryClip(ClipData.newPlainText("NovaGN cheat", note))
             SnackbarManager.show("Cheat JSON copied to clipboard")
         } catch (_: Exception) {}
     }

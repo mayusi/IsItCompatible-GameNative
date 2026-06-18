@@ -368,7 +368,7 @@ private fun UserLoginScreenContent(
                         ),
                     )
                     Text(
-                        text = "IIC Edition",
+                        text = "Run PC games on Android",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontWeight = FontWeight.SemiBold,
                             letterSpacing = 2.sp,

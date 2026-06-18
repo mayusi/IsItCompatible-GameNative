@@ -1,18 +1,24 @@
-![GameNative IIC](branding/banner.png)
+![NovaGN](branding/banner.png)
 
-**Run PC games on Android — with one-tap cheats, a smart auto-tuner, and crowd-sourced crash fixes.**
+**Run PC games on Android — tuned, cheated, and sped up.** One-tap "make it work", a built-in
+cheat engine, a universal speed hack, and crowd-sourced crash fixes.
 
-[![Version](https://img.shields.io/badge/version-1.12.10--IIC-blue)](../../releases)
+[![Version](https://img.shields.io/badge/version-1.12.10--IIC-6D5BF6)](../../releases)
 [![Package](https://img.shields.io/badge/package-app.gamenative.iic-informational)](../../releases)
 [![Android](https://img.shields.io/badge/Android-9%2B%20%28modern%20flavor%29-green)](../../releases)
 
-A personal fork of [GameNative](https://github.com/utkarshdalal/GameNative) by utkarshdalal,
-packaged as `app.gamenative.iic` so it **installs alongside** the official app without
-conflicting. Built for the **Is It Compatible?** companion-app workflow.
+**NovaGN** is a premium fork of [GameNative](https://github.com/utkarshdalal/GameNative) by
+utkarshdalal — rebuilt into its own thing with deep additions (a universal Wine-level speed
+hack, a host-side cheat engine, a smarter auto-tuner, and more). It is packaged as
+`app.gamenative.iic` so it **installs alongside** the official app without conflicting.
 
 > **Note:** Because this fork is signed with a different key, Android treats it as a separate
 > app. It cannot update an existing official GameNative installation in-place. Install it
 > alongside; saves and container data are stored per-package.
+>
+> **NovaGN stands on GameNative's shoulders.** All of the upstream game-compatibility pipeline,
+> cloud saves, and the original Android app are the work of utkarshdalal and the GameNative /
+> Winlator projects. We credit them as the foundation everything here is built on.
 
 ---
 

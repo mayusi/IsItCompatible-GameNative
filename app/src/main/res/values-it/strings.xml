@@ -1,5 +1,5 @@
 ﻿<resources>
-    <string name="app_name">GameNative</string>
+    <string name="app_name">NovaGN</string>
     <string name="login_user">Login Utente</string>
     <string name="login_2fa">Due Fattori</string>
     <string name="home">Home</string>
@@ -960,7 +960,7 @@
     <string name="settings_downloads_title">Download</string>
 
     <!-- Login Screen -->
-    <string name="login_app_name">GameNative</string>
+    <string name="login_app_name">NovaGN</string>
     <string name="login_privacy_policy">Informativa sulla Privacy</string>
     <string name="login_welcome_back">Bentornato</string>
     <string name="login_subtitle">Accedi per accedere alla tua libreria Steam</string>

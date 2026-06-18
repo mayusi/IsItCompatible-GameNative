@@ -111,8 +111,8 @@ import app.gamenative.ui.component.parsePositiveFpsLimit
 import app.gamenative.ui.data.PerformanceHudConfig
 import app.gamenative.ui.data.PerformanceHudSize
 import app.gamenative.ui.data.XServerState
-import app.gamenative.ui.theme.IicTeal
-import app.gamenative.ui.theme.IicViolet
+import app.gamenative.ui.theme.NovaAccent
+import app.gamenative.ui.theme.NovaAccentDeep
 import app.gamenative.ui.widget.PerformanceHudView
 import app.gamenative.utils.AssetUtils
 import app.gamenative.utils.BestConfigApplier
@@ -2669,7 +2669,7 @@ fun XServerScreen(
                             .width(6.dp)
                             .height(64.dp)
                             .clip(RoundedCornerShape(topEnd = 4.dp, bottomEnd = 4.dp))
-                            .background(Brush.verticalGradient(listOf(IicTeal, IicViolet)))
+                            .background(Brush.verticalGradient(listOf(NovaAccent, NovaAccentDeep)))
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,

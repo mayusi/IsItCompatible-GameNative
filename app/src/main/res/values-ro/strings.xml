@@ -1,5 +1,5 @@
 ﻿<resources>
-    <string name="app_name">GameNative</string>
+    <string name="app_name">NovaGN</string>
     <string name="login_user">Autentificare utilizator</string>
     <string name="login_2fa">Autentificare în doi pași</string>
     <string name="home">Acasă</string>
@@ -969,7 +969,7 @@
 	<string name="settings_downloads_title">Descărcări</string>
 
 	<!-- Login Screen -->
-	<string name="login_app_name">GameNative</string>
+	<string name="login_app_name">NovaGN</string>
 	<string name="login_privacy_policy">Politica de confidențialitate</string>
 	<string name="login_welcome_back">Bine ai revenit</string>
 	<string name="login_subtitle">Autentifică-te pentru a accesa biblioteca ta Steam</string>

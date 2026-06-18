@@ -85,7 +85,7 @@
     <string name="app_filter_installed">Установлено</string>
     <string name="app_filter_tool">Инструмент</string>
     <string name="app_library">Библиотека</string>
-    <string name="app_name">GameNative</string>
+    <string name="app_name">NovaGN</string>
     <string name="appbar_scrolling_view_behavior">com.google.android.material.appbar.AppBarLayout$ScrollingViewBehavior</string>
     <string name="appearance">Внешний вид</string>
     <string name="audio_driver">Аудиодрайвер</string>
@@ -635,7 +635,7 @@ Ubuntu RootFs - releases.ubuntu.com/focal</string>
     <string name="location">Местоположение</string>
     <string name="log_out">Выход</string>
     <string name="login_2fa">Двухфакторная аутентификация</string>
-    <string name="login_app_name">GameNative</string>
+    <string name="login_app_name">NovaGN</string>
     <string name="login_or_sign_in_with">Или войдите через:</string>
     <string name="login_password">Пароль</string>
     <string name="login_password_hide">Скрыть пароль</string>

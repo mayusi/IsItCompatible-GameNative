@@ -127,8 +127,8 @@ import app.gamenative.ui.screen.library.appscreen.EpicAppScreen
 import app.gamenative.ui.screen.library.appscreen.GOGAppScreen
 import app.gamenative.ui.screen.library.appscreen.SteamAppScreen
 import app.gamenative.ui.screen.library.components.GameOptionsPanel
-import app.gamenative.ui.theme.IicTeal
-import app.gamenative.ui.theme.IicViolet
+import app.gamenative.ui.theme.NovaAccent
+import app.gamenative.ui.theme.NovaAccentDeep
 import app.gamenative.ui.theme.PluviaTheme
 import app.gamenative.utils.formatEtaMs
 import com.skydoves.landscapist.ImageOptions
@@ -222,8 +222,8 @@ private fun PrimaryActionButton(
                         2.dp,
                         Brush.verticalGradient(
                             colors = listOf(
-                                IicTeal,
-                                IicViolet,
+                                NovaAccent,
+                                NovaAccentDeep,
                             ),
                         ),
                         RoundedCornerShape(8.dp),
@@ -347,8 +347,8 @@ private fun ActionIconButton(
                         2.dp,
                         Brush.verticalGradient(
                             colors = listOf(
-                                IicTeal,
-                                IicViolet,
+                                NovaAccent,
+                                NovaAccentDeep,
                             ),
                         ),
                         RoundedCornerShape(8.dp),
@@ -999,8 +999,8 @@ private fun AppScreenHero(
                                 .background(
                                     brush = Brush.verticalGradient(
                                         colors = listOf(
-                                            IicTeal,
-                                            IicViolet,
+                                            NovaAccent,
+                                            NovaAccentDeep,
                                         ),
                                     ),
                                 ),
@@ -1015,8 +1015,8 @@ private fun AppScreenHero(
                         .background(
                             brush = Brush.verticalGradient(
                                 colors = listOf(
-                                    IicTeal,
-                                    IicViolet,
+                                    NovaAccent,
+                                    NovaAccentDeep,
                                 ),
                             ),
                         ),

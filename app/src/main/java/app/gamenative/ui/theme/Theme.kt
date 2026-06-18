@@ -87,7 +87,7 @@ private val DarkPluviaColors = PluviaColors(
     accentSuccess = PluviaSuccess,
     accentWarning = PluviaWarning,
     accentDanger = PluviaDanger,
-    accentBrand = IicTeal,
+    accentBrand = NovaAccent,
 
     surfacePanel = PluviaSurface,
     surfaceElevated = PluviaSurfaceElevated,
@@ -105,9 +105,13 @@ private val DarkPluviaColors = PluviaColors(
     compatibilityBadBackground = CompatibilityBadBg,
 )
 
-// BrandGradient = upstream GameNative identity; IicBrandGradient = IIC fork identity (teal→violet).
-val BrandGradient = listOf(PluviaCyan, PluviaPurple, PluviaPink)
-val IicBrandGradient = listOf(IicTeal, IicViolet)
+// NovaGN brand gradient — premium/minimal: a single accent expressed as a tight 2-stop
+// indigo fade (bright → deep). The old multi-hue gradients (cyan→violet→pink and
+// teal→violet) are retired; these names are kept as aliases so existing call sites pick
+// up the new identity automatically. For flat fills prefer PluviaTheme.colors.accentBrand.
+val NovaGradient = listOf(NovaAccentBright, NovaAccent, NovaAccentDeep)
+val BrandGradient = NovaGradient
+val IicBrandGradient = listOf(NovaAccent, NovaAccentDeep)
 
 // Light theme placeholder - customize when adding light theme support
 // private val LightPluviaColors = PluviaColors(...)
@@ -118,9 +122,12 @@ private val LocalPluviaColors = staticCompositionLocalOf { DarkPluviaColors }
  * Material3 dark color scheme using Pluvia colors.
  */
 private val DarkColorScheme = darkColorScheme(
-    primary = PluviaPrimary,
+    // NovaGN: single indigo accent. primary + tertiary are now two stops of the SAME
+    // accent family, so every primary→tertiary gradient across the app reads as one
+    // cohesive indigo fade instead of the old magenta→cyan clash.
+    primary = NovaAccent,
     onPrimary = PluviaForeground,
-    primaryContainer = PluviaPrimary.copy(alpha = 0.2f),
+    primaryContainer = NovaAccent.copy(alpha = 0.2f),
     onPrimaryContainer = PluviaForeground,
 
     secondary = PluviaSecondary,
@@ -128,9 +135,9 @@ private val DarkColorScheme = darkColorScheme(
     secondaryContainer = PluviaSecondary.copy(alpha = 0.8f),
     onSecondaryContainer = PluviaForeground,
 
-    tertiary = PluviaCyan,
+    tertiary = NovaAccentBright,
     onTertiary = PluviaForeground,
-    tertiaryContainer = PluviaCyan.copy(alpha = 0.2f),
+    tertiaryContainer = NovaAccentBright.copy(alpha = 0.2f),
     onTertiaryContainer = PluviaForeground,
 
     background = PluviaBackground,
@@ -140,11 +147,11 @@ private val DarkColorScheme = darkColorScheme(
     onSurface = PluviaForeground,
     surfaceVariant = PluviaSecondary,
     onSurfaceVariant = PluviaForegroundMuted,
-    surfaceTint = PluviaPrimary,
+    surfaceTint = NovaAccent,
 
     inverseSurface = PluviaForeground,
     inverseOnSurface = PluviaBackground,
-    inversePrimary = PluviaPrimary,
+    inversePrimary = NovaAccent,
 
     error = PluviaDestructive,
     onError = PluviaForeground,
@@ -249,7 +256,7 @@ object DarkColors {
 fun settingsTileColors(): SettingsTileColors = SettingsTileDefaults.colors(
     titleColor = PluviaForeground,
     subtitleColor = PluviaForegroundMuted,
-    actionColor = PluviaCyan,
+    actionColor = NovaAccent,
 )
 
 @Composable

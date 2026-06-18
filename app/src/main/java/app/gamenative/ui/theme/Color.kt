@@ -31,6 +31,15 @@ val PluviaPink = Color(0xFFEC4899)
 val IicTeal = Color(0xFF14B8A6)
 val IicViolet = Color(0xFF7C3AED)
 
+// NovaGN brand — premium/minimal: a single electric-indigo accent on near-black.
+// This is THE brand color; the old teal→violet and cyan→violet→pink gradients are
+// retired in favour of one confident accent (with a subtle 2-stop variant for
+// large surfaces that genuinely need depth).
+val NovaAccent = Color(0xFF6D5BF6) // primary accent (indigo-violet)
+val NovaAccentBright = Color(0xFF8B7BFF) // hover / focus / highlight tint
+val NovaAccentDeep = Color(0xFF4B3CD0) // pressed / gradient end-stop
+val NovaInk = Color(0xFF0B0B0F) // brand near-black (matches the emblem/banner)
+
 // Semantic
 val PluviaSuccess = Color(0xFF10B981)
 val PluviaWarning = Color(0xFFF59E0B)

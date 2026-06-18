@@ -138,7 +138,7 @@ fun AutoTunerSetupDialog(
                     shape = MaterialTheme.shapes.small,
                 ) {
                     Text(
-                        text = "GameNative will repeatedly launch and close $gameName to measure " +
+                        text = "NovaGN will repeatedly launch and close $gameName to measure " +
                             "FPS under different configs. Keep the device cool during the sweep.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onTertiaryContainer,
