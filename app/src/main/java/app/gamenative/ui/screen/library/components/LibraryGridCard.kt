@@ -53,19 +53,25 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.sp
+import app.gamenative.PrefManager
 import app.gamenative.R
+import app.gamenative.autotuner.TunerMemory
 import app.gamenative.cheats.CheatTableRegistry
 import app.gamenative.data.GameCompatibilityStatus
 import app.gamenative.data.GameSource
 import app.gamenative.data.LibraryItem
 import app.gamenative.ui.component.CompatibilityBadge
 import app.gamenative.ui.enums.PaneType
+import app.gamenative.ui.theme.NovaAccent
 import app.gamenative.ui.theme.PluviaTheme
 import app.gamenative.ui.util.ListItemImage
 import app.gamenative.utils.CustomGameScanner
 import com.skydoves.landscapist.ImageOptions
 import com.skydoves.landscapist.coil.CoilImage
 import java.io.File
+import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -125,7 +131,22 @@ internal fun GridViewCard(
         ),
     )
 
-    Box(
+    val context = LocalContext.current
+
+    // ── Feature-tag chip data (Change 2) ─────────────────────────────────────
+    // Resolved once per appId via remember; PrefManager.getPref uses runBlocking
+    // so it is safe to call on the composition thread (same as rest of the card).
+    val speedMult = remember(appInfo.appId) {
+        PrefManager.getSpeedMultiplier(appInfo.appId)
+    }
+    val hasCheatTableForChip = remember(appInfo.appId) {
+        CheatTableRegistry.hasTableFor(appInfo.appId)
+    }
+    val hasAutoTuned = remember(appInfo.appId) {
+        TunerMemory.bestConfigForGame(context, appInfo.appId) != null
+    }
+
+    Column(
         modifier = modifier
             .padding(vertical = 4.dp)
             .scale(scale)
@@ -337,6 +358,64 @@ internal fun GridViewCard(
                 }
             }
         }
+
+        // ── Feature-tag chip footer (Change 2) ───────────────────────────────
+        // Only render the row when at least one chip is visible — no empty space.
+        val showSpeedChip = abs(speedMult - 1.0f) > 0.01f
+        val showCheatsChip = hasCheatTableForChip
+        val showAutoTunedChip = hasAutoTuned
+        if (showSpeedChip || showCheatsChip || showAutoTunedChip) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp, start = 2.dp, end = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (showSpeedChip) {
+                    // Format: "4×" / "0.5×"
+                    val label = if (speedMult == speedMult.toLong().toFloat()) {
+                        "${speedMult.toLong()}×"
+                    } else {
+                        "${speedMult}×"
+                    }
+                    FeatureChip(label = "Speed $label", isGreen = false)
+                }
+                if (showCheatsChip) {
+                    FeatureChip(label = "Cheats", isGreen = false)
+                }
+                if (showAutoTunedChip) {
+                    FeatureChip(label = "Auto-tuned", isGreen = true)
+                }
+            }
+        }
+    }
+}
+
+/** Small spec-faithful feature chip: indigo for power features, green for working/auto-tuned. */
+@Composable
+private fun FeatureChip(
+    label: String,
+    isGreen: Boolean,
+) {
+    val bgColor = if (isGreen) Color(0xFF1A2A1A) else NovaAccent.copy(alpha = 0.18f)
+    val textColor = if (isGreen) Color(0xFF5CB85C) else Color(0xFF9B8FFA)
+
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(bgColor)
+            .padding(horizontal = 5.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            color = textColor,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

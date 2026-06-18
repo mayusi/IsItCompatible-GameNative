@@ -93,7 +93,9 @@ import app.gamenative.ui.screen.library.components.LibraryListPane
 import app.gamenative.ui.screen.library.components.LibraryOptionsPanel
 import app.gamenative.ui.screen.library.components.LibrarySearchBar
 import app.gamenative.ui.screen.library.components.LibrarySourceNotLoggedInSplash
+import app.gamenative.ui.screen.library.components.LibrarySourceRail
 import app.gamenative.ui.screen.library.components.LibraryTabBar
+import app.gamenative.ui.screen.library.components.NovaRailWidth
 import app.gamenative.ui.screen.auth.AmazonOAuthActivity
 import app.gamenative.ui.screen.auth.EpicOAuthActivity
 import app.gamenative.ui.screen.auth.GOGOAuthActivity
@@ -865,137 +867,126 @@ private fun LibraryScreenContent(
             }
     ) {
         if (selectedAppId == null) {
-            // Use Box to allow content to scroll behind the tab bar
-            Box(modifier = Modifier.fillMaxSize()) {
-                // When on Steam/GOG/Epic/Amazon tab and not logged in, or LOCAL tab with no custom games, show splash
-                val showEmptyStateSplash = when (state.currentTab) {
-                    LibraryTab.STEAM -> !SteamUtils.hasStoredCredentials() && !state.isLoading
-                    LibraryTab.GOG -> !GOGService.hasStoredCredentials(context)
-                    LibraryTab.EPIC -> !EpicService.hasStoredCredentials(context)
-                    LibraryTab.AMAZON -> !AmazonService.hasStoredCredentials(context)
-                    LibraryTab.LOCAL -> PrefManager.customGamesCount == 0
-                    else -> false
-                }
-                if (showEmptyStateSplash) {
-                    val (messageResId, buttonResId, onAction) = when (state.currentTab) {
-                        LibraryTab.STEAM -> Triple(
-                            R.string.library_source_not_logged_in_steam,
-                            R.string.steam_sign_in,
-                            onGoOnline,
-                        )
-                        LibraryTab.GOG -> Triple(
-                            R.string.library_source_not_logged_in_gog,
-                            R.string.gog_settings_login_title,
-                            { gogOAuthLauncher.launch(Intent(context, GOGOAuthActivity::class.java)) },
-                        )
-                        LibraryTab.EPIC -> Triple(
-                            R.string.library_source_not_logged_in_epic,
-                            R.string.epic_settings_login_title,
-                            { epicOAuthLauncher.launch(Intent(context, EpicOAuthActivity::class.java)) },
-                        )
-                        LibraryTab.AMAZON -> Triple(
-                            R.string.library_source_not_logged_in_amazon,
-                            R.string.amazon_settings_login_title,
-                            { amazonOAuthLauncher.launch(Intent(context, AmazonOAuthActivity::class.java)) },
-                        )
-                        LibraryTab.LOCAL -> Triple(
-                            R.string.library_source_no_custom_games,
-                            R.string.add_custom_game_dialog_title,
-                            onAddCustomGameClick,
-                        )
-                        else -> throw IllegalStateException("showEmptyStateSplash is true only for Steam/GOG/Epic/Amazon/LOCAL")
+            // NovaGN layout: left source rail + content area side by side.
+            Row(modifier = Modifier.fillMaxSize()) {
+                // ── Left source rail (Change 1) ──────────────────────────────────
+                LibrarySourceRail(
+                    currentTab = state.currentTab,
+                    tabCounts = mapOf(
+                        LibraryTab.ALL to state.allCount,
+                        LibraryTab.STEAM to state.steamCount,
+                        LibraryTab.GOG to state.gogCount,
+                        LibraryTab.EPIC to state.epicCount,
+                        LibraryTab.AMAZON to state.amazonCount,
+                        LibraryTab.LOCAL to state.localCount,
+                    ),
+                    onTabSelected = onTabChanged,
+                    onSearchClick = { onIsSearching(true) },
+                    onAddGameClick = onAddCustomGameClick,
+                )
+
+                // ── Content area ─────────────────────────────────────────────────
+                Box(modifier = Modifier.weight(1f)) {
+                    // When on Steam/GOG/Epic/Amazon tab and not logged in, or LOCAL tab with no custom games, show splash
+                    val showEmptyStateSplash = when (state.currentTab) {
+                        LibraryTab.STEAM -> !SteamUtils.hasStoredCredentials() && !state.isLoading
+                        LibraryTab.GOG -> !GOGService.hasStoredCredentials(context)
+                        LibraryTab.EPIC -> !EpicService.hasStoredCredentials(context)
+                        LibraryTab.AMAZON -> !AmazonService.hasStoredCredentials(context)
+                        LibraryTab.LOCAL -> PrefManager.customGamesCount == 0
+                        else -> false
                     }
-                    LibrarySourceNotLoggedInSplash(
-                        messageResId = messageResId,
-                        signInButtonLabelResId = buttonResId,
-                        onSignInClick = onAction,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                } else {
-                    // Library list (content scrolls behind tab bar)
-                    if (currentPaneType == PaneType.CAROUSEL) {
-                        LibraryCarouselPane(
-                            state = state,
-                            listState = carouselListState,
-                            onPageChange = onPageChange,
-                            onNavigate = { appId ->
-                                selectedAppId = appId
-                                selectedLibraryItem = state.appInfoList.find { it.appId == appId }
-                            },
-                            onRefresh = onRefresh,
+                    if (showEmptyStateSplash) {
+                        val (messageResId, buttonResId, onAction) = when (state.currentTab) {
+                            LibraryTab.STEAM -> Triple(
+                                R.string.library_source_not_logged_in_steam,
+                                R.string.steam_sign_in,
+                                onGoOnline,
+                            )
+                            LibraryTab.GOG -> Triple(
+                                R.string.library_source_not_logged_in_gog,
+                                R.string.gog_settings_login_title,
+                                { gogOAuthLauncher.launch(Intent(context, GOGOAuthActivity::class.java)) },
+                            )
+                            LibraryTab.EPIC -> Triple(
+                                R.string.library_source_not_logged_in_epic,
+                                R.string.epic_settings_login_title,
+                                { epicOAuthLauncher.launch(Intent(context, EpicOAuthActivity::class.java)) },
+                            )
+                            LibraryTab.AMAZON -> Triple(
+                                R.string.library_source_not_logged_in_amazon,
+                                R.string.amazon_settings_login_title,
+                                { amazonOAuthLauncher.launch(Intent(context, AmazonOAuthActivity::class.java)) },
+                            )
+                            LibraryTab.LOCAL -> Triple(
+                                R.string.library_source_no_custom_games,
+                                R.string.add_custom_game_dialog_title,
+                                onAddCustomGameClick,
+                            )
+                            else -> throw IllegalStateException("showEmptyStateSplash is true only for Steam/GOG/Epic/Amazon/LOCAL")
+                        }
+                        LibrarySourceNotLoggedInSplash(
+                            messageResId = messageResId,
+                            signInButtonLabelResId = buttonResId,
+                            onSignInClick = onAction,
                             modifier = Modifier.fillMaxSize(),
-                            firstCarouselItemFocusRequester = carouselFocusRequester,
-                            focusTargetListIndex = currentCarouselFocusTargetIndex(),
-                            onFocusedIndexChanged = { carouselFocusTargetListIndex = it },
                         )
                     } else {
-                        LibraryListPane(
-                            state = state,
-                            listState = listState,
-                            currentLayout = currentPaneType,
-                            firstGridItemFocusRequester = gridFirstItemFocusRequester,
-                            focusTargetListIndex = gridFocusTargetListIndex,
-                            onPageChange = onPageChange,
-                            onNavigate = { appId ->
-                                selectedAppId = appId
-                                selectedLibraryItem = state.appInfoList.find { it.appId == appId }
+                        // Library list
+                        if (currentPaneType == PaneType.CAROUSEL) {
+                            LibraryCarouselPane(
+                                state = state,
+                                listState = carouselListState,
+                                onPageChange = onPageChange,
+                                onNavigate = { appId ->
+                                    selectedAppId = appId
+                                    selectedLibraryItem = state.appInfoList.find { it.appId == appId }
+                                },
+                                onRefresh = onRefresh,
+                                modifier = Modifier.fillMaxSize(),
+                                firstCarouselItemFocusRequester = carouselFocusRequester,
+                                focusTargetListIndex = currentCarouselFocusTargetIndex(),
+                                onFocusedIndexChanged = { carouselFocusTargetListIndex = it },
+                            )
+                        } else {
+                            LibraryListPane(
+                                state = state,
+                                listState = listState,
+                                currentLayout = currentPaneType,
+                                firstGridItemFocusRequester = gridFirstItemFocusRequester,
+                                focusTargetListIndex = gridFocusTargetListIndex,
+                                onPageChange = onPageChange,
+                                onNavigate = { appId ->
+                                    selectedAppId = appId
+                                    selectedLibraryItem = state.appInfoList.find { it.appId == appId }
+                                },
+                                onRefresh = onRefresh,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                    }
+
+                    // Search overlay (slides over content area when searching)
+                    if (state.isSearching) {
+                        LibrarySearchBar(
+                            isVisible = true,
+                            searchQuery = state.searchQuery,
+                            resultCount = state.totalAppsInFilter,
+                            onScrollToTop = {
+                                if (currentPaneType == PaneType.CAROUSEL) {
+                                    carouselFocusTargetListIndex = 0
+                                    carouselListState.scrollToItem(0)
+                                } else {
+                                    listState.scrollToItem(0)
+                                }
                             },
-                            onRefresh = onRefresh,
-                            modifier = Modifier.fillMaxSize(),
+                            onSearchQuery = onSearchQuery,
+                            onDismiss = { onIsSearching(false) },
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .fillMaxWidth(),
                         )
                     }
-                }
-
-                // Top overlay: Tab bar OR Search bar
-                if (state.isSearching) {
-                    // Search overlay replaces tab bar when searching
-                    // TODO: Gamepad focus is a bit wonky whenever we show the search bar
-                    LibrarySearchBar(
-                        isVisible = true,
-                        searchQuery = state.searchQuery,
-                        resultCount = state.totalAppsInFilter,
-                        onScrollToTop = {
-                            if (currentPaneType == PaneType.CAROUSEL) {
-                                carouselFocusTargetListIndex = 0
-                                carouselListState.scrollToItem(0)
-                            } else {
-                                listState.scrollToItem(0)
-                            }
-                        },
-                        onSearchQuery = onSearchQuery,
-                        onDismiss = { onIsSearching(false) },
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .fillMaxWidth(),
-                    )
-                } else {
-                    // Tab bar when not searching
-                    LibraryTabBar(
-                        currentTab = state.currentTab,
-                        tabCounts = mapOf(
-                            LibraryTab.ALL to state.allCount,
-                            LibraryTab.STEAM to state.steamCount,
-                            LibraryTab.GOG to state.gogCount,
-                            LibraryTab.EPIC to state.epicCount,
-                            LibraryTab.AMAZON to state.amazonCount,
-                            LibraryTab.LOCAL to state.localCount,
-                        ),
-                        onTabSelected = onTabChanged,
-                        onOptionsClick = { onOptionsPanelToggle(true) },
-                        onSearchClick = { onIsSearching(true) },
-                        onAddGameClick = onAddCustomGameClick,
-                        onMenuClick = { isSystemMenuOpen = true },
-                        onNavigateDownToGrid = {
-                            if (state.appInfoList.isNotEmpty()) {
-                                requestContentFocusOrDefer()
-                            }
-                        },
-                        onPreviousTab = onPreviousTab,
-                        onNextTab = onNextTab,
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .fillMaxWidth(),
-                    )
                 }
             }
         } else {
