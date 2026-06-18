@@ -484,6 +484,16 @@ private fun NoWinnerCard(outcome: TunerOutcome) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onErrorContainer,
             )
+            // BUG 3 FIX: show actionable diagnosis when the engine detected the root cause
+            // (e.g. no GPU driver installed → all black-screen).
+            if (outcome.outcomeNotes != null) {
+                Text(
+                    text = outcome.outcomeNotes,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+            }
         }
     }
 }

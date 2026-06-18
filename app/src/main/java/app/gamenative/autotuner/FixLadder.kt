@@ -10,7 +10,9 @@ import app.gamenative.utils.SteamUtils
 import app.gamenative.utils.VideoFileAutoFixer
 import app.gamenative.utils.WineLogClassifier
 import app.gamenative.service.SteamService
+import com.winlator.container.Container
 import com.winlator.container.ContainerData
+import com.winlator.core.KeyValueSet
 import com.winlator.core.envvars.EnvVars
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -307,6 +309,58 @@ object FixLadder {
                     )
                 } catch (e: Exception) {
                     Timber.tag(TAG).e(e, "Rung d3d9_wined3d_fallback failed for $appId")
+                    null
+                }
+            },
+        ),
+
+        // Rung 5e-pre — BUG 5 FIX: install D3D/vcrun Windows components for old DirectX 9 games.
+        //
+        // On the RP6 the container was created with ALL wincomponents=0 (direct3d=0, directsound=0,
+        // etc.). DMC-era (D3D9, 2006) games and many other old titles require the Wine D3D runtime
+        // components to be installed. Without them the game may black-screen or crash immediately.
+        //
+        // This rung patches the ContainerData.wincomponents string to enable the D3D9-relevant set:
+        //   direct3d=1 — core Wine D3D runtime (absolutely required for any D3D game)
+        //   directshow=1 — media playback used for cutscenes / intro videos
+        //   directsound=1 — audio (many old games crash without this)
+        //   vcrun2010=1 — Visual C++ runtime (bundled DLLs often expect this stub)
+        //
+        // Condition: only fires when AT LEAST ONE of these components is currently disabled (=0).
+        // Applies to D3D9_RENDER, BLACK_SCREEN_NOFIX, UNKNOWN_CRASH.
+        Rung(
+            id = "install_d3d_components",
+            description = "Enable D3D/vcrun Windows components for old D3D9 game",
+            appliesToClasses = setOf(FailureClass.D3D9_RENDER, FailureClass.BLACK_SCREEN_NOFIX, FailureClass.UNKNOWN_CRASH),
+            condition = { _, _, baseConfig, _ ->
+                // Only apply when at least one of the target components is off.
+                val kv = KeyValueSet(baseConfig.wincomponents.ifEmpty { Container.DEFAULT_WINCOMPONENTS })
+                kv.get("direct3d") != "1" ||
+                    kv.get("directshow") != "1" ||
+                    kv.get("directsound") != "1" ||
+                    kv.get("vcrun2010") != "1"
+            },
+            apply = { _, appId, baseConfig, _, _ ->
+                try {
+                    val kv = KeyValueSet(baseConfig.wincomponents.ifEmpty { Container.DEFAULT_WINCOMPONENTS })
+                    val changed = mutableListOf<String>()
+                    if (kv.get("direct3d") != "1") { kv.put("direct3d", "1"); changed.add("direct3d") }
+                    if (kv.get("directshow") != "1") { kv.put("directshow", "1"); changed.add("directshow") }
+                    if (kv.get("directsound") != "1") { kv.put("directsound", "1"); changed.add("directsound") }
+                    if (kv.get("vcrun2010") != "1") { kv.put("vcrun2010", "1"); changed.add("vcrun2010") }
+                    if (changed.isEmpty()) {
+                        // condition guard should prevent this, but be safe
+                        return@Rung null
+                    }
+                    val patched = baseConfig.copy(wincomponents = kv.toString())
+                    val changedStr = changed.joinToString(",")
+                    Timber.tag(TAG).i("Rung install_d3d_components: enabled [$changedStr] for $appId")
+                    FixResult(
+                        appliedFix = AppliedFix.WinComponents(changedStr),
+                        patchedConfig = patched,
+                    )
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "Rung install_d3d_components failed for $appId")
                     null
                 }
             },

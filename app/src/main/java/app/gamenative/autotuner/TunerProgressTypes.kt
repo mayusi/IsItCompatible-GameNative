@@ -126,6 +126,13 @@ data class TunerOutcome(
     val completedTrials: Int,
     /** True if battery drain signal was available during the sweep (device was discharging). */
     val batteryAvailable: Boolean = false,
+    /**
+     * BUG 3 FIX: Optional actionable note surfaced on the results screen when the tuner
+     * can diagnose why everything failed. Currently set when all trials black-screened AND
+     * no Turnip driver was installed — telling the user exactly what to do instead of the
+     * generic "game compatibility issue" message.
+     */
+    val outcomeNotes: String? = null,
 )
 
 /**

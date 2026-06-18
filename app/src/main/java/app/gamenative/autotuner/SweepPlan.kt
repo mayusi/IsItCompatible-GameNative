@@ -4,6 +4,7 @@ import android.content.Context
 import app.gamenative.utils.ContainerUtils
 import com.winlator.box86_64.Box86_64Preset
 import com.winlator.container.ContainerData
+import com.winlator.contents.AdrenotoolsManager
 import timber.log.Timber
 
 /**
@@ -127,9 +128,9 @@ class SweepPlan private constructor(
          * @param baseline    starting ContainerData (should be the device's default from ContainerUtils)
          * @return            a SweepPlan with trials for the first dimension
          */
-        fun build(mode: SweepMode, baseline: ContainerData): SweepPlan {
+        fun build(mode: SweepMode, baseline: ContainerData, installedTurnipDrivers: Set<String> = emptySet()): SweepPlan {
             if (mode == SweepMode.PROBE) {
-                val probeTrials = buildProbeTrials(baseline)
+                val probeTrials = buildProbeTrials(baseline, installedTurnipDrivers)
                 return SweepPlan(mode, baseline, probeTrials)
             }
             val dimensions = dimensionsForMode(mode)
@@ -194,7 +195,21 @@ class SweepPlan private constructor(
          * @param baseline  device default ContainerData to derive from
          * @return          ordered list of TrialDefinitions with isProbe=true
          */
-        fun buildProbeTrials(baseline: ContainerData): List<TrialDefinition> {
+        /**
+         * BUG 2 FIX: [installedTurnipDrivers] is the set of driver-version identifiers that are
+         * actually installed on this device (obtained from [AdrenotoolsManager.enumarateInstalledDrivers]).
+         * Any archetype whose [driverVersion] is non-empty (a Wrapper/Turnip archetype) is only
+         * kept when its driverVersion matches an entry in [installedTurnipDrivers].
+         * Matching is lenient: we keep an archetype if ANY installed driver name is a
+         * case/underscore/dash-insensitive substring match of the archetype's driverVersion,
+         * or vice-versa. If [installedTurnipDrivers] is empty ALL Turnip/Wrapper archetypes
+         * are dropped — which is the critical RP6 fix.
+         * System archetypes (driverVersion == "") are ALWAYS kept.
+         */
+        fun buildProbeTrials(
+            baseline: ContainerData,
+            installedTurnipDrivers: Set<String> = emptySet(),
+        ): List<TrialDefinition> {
             data class Archetype(
                 val label: String,
                 val driver: String,
@@ -264,7 +279,40 @@ class SweepPlan private constructor(
                 ),
             )
 
-            return archetypes.mapIndexed { idx, arch ->
+            // BUG 2 FIX: filter out Wrapper/Turnip archetypes that are not installed.
+            // A Wrapper archetype has a non-empty driverVersion. System archetypes (driverVersion=="")
+            // are always kept. When zero Turnip drivers are installed (installedTurnipDrivers is
+            // empty) ALL Wrapper archetypes are dropped — exactly the RP6 fix.
+            fun normalize(s: String) = s.replace(Regex("[_\\-.]"), "").lowercase()
+            val filteredArchetypes = archetypes.filter { arch ->
+                if (arch.driverVersion.isEmpty()) {
+                    // System archetype — always keep.
+                    true
+                } else if (installedTurnipDrivers.isEmpty()) {
+                    // No Turnip drivers installed at all — drop all Wrapper archetypes.
+                    Timber.tag(TAG).d(
+                        "buildProbeTrials: dropping Wrapper archetype '${arch.label}' (driverVersion='${arch.driverVersion}') — " +
+                            "no Turnip drivers installed on this device",
+                    )
+                    false
+                } else {
+                    // Keep only if any installed driver name is a substring-match (lenient).
+                    val archNorm = normalize(arch.driverVersion)
+                    val kept = installedTurnipDrivers.any { installed ->
+                        val instNorm = normalize(installed)
+                        archNorm.contains(instNorm) || instNorm.contains(archNorm)
+                    }
+                    if (!kept) {
+                        Timber.tag(TAG).d(
+                            "buildProbeTrials: dropping Wrapper archetype '${arch.label}' (driverVersion='${arch.driverVersion}') — " +
+                                "not found in installed drivers: $installedTurnipDrivers",
+                        )
+                    }
+                    kept
+                }
+            }
+
+            return filteredArchetypes.mapIndexed { idx, arch ->
                 val cfg = baseline.copy(
                     graphicsDriver = arch.driver,
                     graphicsDriverVersion = arch.driverVersion,
@@ -273,7 +321,7 @@ class SweepPlan private constructor(
                 )
                 TrialDefinition(
                     config = cfg,
-                    description = "Probe ${idx + 1}/${archetypes.size}: ${arch.label}",
+                    description = "Probe ${idx + 1}/${filteredArchetypes.size}: ${arch.label}",
                     dimId = null,
                     valueLabel = arch.label,
                     passIndex = 0,

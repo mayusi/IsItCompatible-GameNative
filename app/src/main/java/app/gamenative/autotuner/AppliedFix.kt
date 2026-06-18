@@ -62,4 +62,13 @@ sealed class AppliedFix {
     object SteamEmulationEnabled : AppliedFix() {
         override fun label(): String = "Steam API emulation enabled"
     }
+
+    /**
+     * BUG 5 FIX: Windows components (direct3d, directsound, etc.) were enabled on the container.
+     * Applied for old D3D9 games (DMC-era) that need these components to render correctly.
+     * The [components] string lists the component keys that were turned on.
+     */
+    data class WinComponents(val components: String) : AppliedFix() {
+        override fun label(): String = "Win components enabled: $components"
+    }
 }

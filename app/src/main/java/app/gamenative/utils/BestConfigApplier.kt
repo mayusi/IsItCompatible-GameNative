@@ -39,8 +39,15 @@ object BestConfigApplier {
             return
         }
 
-        // 2. Guard: if the intent path already set an override, its config wins.
-        if (IntentLaunchManager.hasTemporaryOverride(appId)) {
+        // 2. Guard: if an INTENT-SUPPLIED (non-silent) override is active, that config wins
+        // and we must not clobber it. We use hasIntentSuppliedOverride here rather than
+        // hasTemporaryOverride so that silent/tuner-trial overrides (which are auto-applied
+        // and not user-intent-supplied) do NOT accidentally block BestConfigApplier on every
+        // launch when a stale tuner override lingers in memory between game sessions.
+        // BUG 4 FIX: the original hasTemporaryOverride() check also returned true for the
+        // tuner's own trial overrides (marked silent), causing BestConfigApplier to log
+        // "Intent-supplied config is active" and skip auto-apply on every post-sweep launch.
+        if (IntentLaunchManager.hasIntentSuppliedOverride(appId)) {
             Timber.tag(TAG).d("Intent-supplied config is active for $appId — skipping auto-apply")
             return
         }
@@ -74,7 +81,8 @@ object BestConfigApplier {
             }
 
             // Re-check after the async call; a concurrent intent launch could have set an override.
-            if (IntentLaunchManager.hasTemporaryOverride(appId)) {
+            // Use hasIntentSuppliedOverride for the same reason as above (BUG 4 fix).
+            if (IntentLaunchManager.hasIntentSuppliedOverride(appId)) {
                 Timber.tag(TAG).d("Intent override appeared during fetch for $appId — skipping auto-apply")
                 return
             }

@@ -7,6 +7,7 @@ import app.gamenative.utils.CrashClassifier
 import app.gamenative.utils.ContainerUtils
 import app.gamenative.utils.IntentLaunchManager
 import com.winlator.container.ContainerData
+import com.winlator.contents.AdrenotoolsManager
 import com.winlator.core.ProcessHelper
 import com.winlator.widget.FrameRating
 import kotlinx.coroutines.CancellationException
@@ -558,7 +559,24 @@ class AutoTunerEngine(
         batteryAvailable: Boolean,
     ) {
         val baseline = ContainerUtils.getDefaultContainerData()
-        val archetypeTrials = SweepPlan.buildProbeTrials(baseline)
+
+        // BUG 2 FIX: enumerate installed Turnip drivers so we only probe archetypes that
+        // have their required driver actually present on the device. On the RP6 no Turnip
+        // was installed, so all Wrapper archetypes should be dropped — without this they ran
+        // on the System driver (silently), wasting 5 of 8 probe slots on duplicate configs.
+        val installedTurnipDrivers: Set<String> = try {
+            withContext(Dispatchers.IO) {
+                AdrenotoolsManager(context).enumarateInstalledDrivers().toSet()
+            }
+        } catch (e: Exception) {
+            Timber.tag(TAG).w(e, "Failed to enumerate installed Turnip drivers — assuming none installed")
+            emptySet()
+        }
+        Timber.tag(TAG).i(
+            "Probe sweep: installed Turnip drivers = ${if (installedTurnipDrivers.isEmpty()) "(none)" else installedTurnipDrivers}",
+        )
+
+        val archetypeTrials = SweepPlan.buildProbeTrials(baseline, installedTurnipDrivers)
         // WARM START: if this game already has a stored winning config, try it
         // FIRST so a previously-tuned game boots on trial 0 (the early-abort then
         // ends the whole probe immediately). Falls back to the normal archetype
@@ -624,6 +642,28 @@ class AutoTunerEngine(
             r.copy(goalScore = if (pos >= 0) (ranked.size - pos).toFloat() else 0f)
         }
 
+        // BUG 3 FIX: diagnose no-driver failure. When every probe trial black-screened AND
+        // no Turnip driver was installed, give the user an actionable message instead of the
+        // generic "game compatibility issue" text. The installedTurnipDrivers set computed
+        // above is captured via the outer function's scope.
+        val allBlackScreened = allResults.isNotEmpty() && allResults.all {
+            it.status == TunerResult.TrialStatus.BLACK_SCREEN || it.blackScreenDetected
+        }
+        val noTurnipInstalled = installedTurnipDrivers.isEmpty()
+        val outcomeNotes: String? = if (winner == null && allBlackScreened && noTurnipInstalled) {
+            "No working GPU driver is installed. Install a Turnip GPU driver " +
+                "(Settings → Graphics Drivers) and try again — without it most " +
+                "games cannot render on this device."
+        } else {
+            null
+        }
+        if (outcomeNotes != null) {
+            Timber.tag(TAG).w(
+                "Probe sweep: all trials black-screened AND no Turnip driver installed — " +
+                    "surfacing driver-install message to user",
+            )
+        }
+
         val outcome = TunerOutcome(
             goal = goal,
             winner = winner,
@@ -632,6 +672,7 @@ class AutoTunerEngine(
             totalTrials = total,
             completedTrials = allResults.size,
             batteryAvailable = batteryAvailable,
+            outcomeNotes = outcomeNotes,
         )
         outcomeResult = outcome
 

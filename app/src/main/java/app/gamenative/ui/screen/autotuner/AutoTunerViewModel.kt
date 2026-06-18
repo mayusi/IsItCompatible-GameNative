@@ -152,7 +152,7 @@ class AutoTunerViewModel : ViewModel() {
         // which sub-game to launch, exactly like a normal play does. If the caller passed one,
         // use it; otherwise auto-resolve for known collections. Non-collection games resolve to
         // null (the engine then uses the container's stored executablePath as before).
-        val resolvedExe = executablePath ?: resolveCollectionExe(appId)
+        val resolvedExe = executablePath ?: resolveCollectionExe(context.applicationContext, appId)
         if (resolvedExe != null) {
             Timber.tag(TAG).i("startTuning: tuning sub-game exe='$resolvedExe' for appId=$appId")
         }
@@ -188,23 +188,56 @@ class AutoTunerViewModel : ViewModel() {
     /**
      * Resolve which executable the tuner should launch for a multi-game collection.
      *
-     * Without this, Make-It-Work tuned whatever exe the container defaulted to — for the DMC HD
-     * Collection that is often the launcher (dmcLauncher.exe), which is excluded because it
-     * crashes Wine. The tuner then "fixed" the wrong process and never touched dmc3.exe, so a
-     * game like DMC3 could never be made to work. We mirror the normal play path exactly:
-     * prefer the user's last-played sub-game, else the first non-excluded sub-game in the
-     * collection. Returns null for non-collection games (the engine keeps using the container's
-     * stored executablePath unchanged).
+     * BUG 1 FIX: Priority order:
+     *   (1) Container's current executablePath if it matches one of the collection's sub-games.
+     *       This is what the user has actually selected on the container — the exe they want to play.
+     *   (2) PrefManager.getLastPlayedSubGame(appId) — last-played sub-game from preferences.
+     *   (3) First non-excluded sub-game.
+     *   (4) First sub-game (last resort).
+     *
+     * Without (1), the tuner launched the first sub-game alphabetically (e.g. dmc1.exe) even when
+     * the container's executablePath pointed to dmc3.exe — wasting all probes on the wrong game.
+     * Returns null for non-collection games (engine keeps using the container's stored path).
      */
-    private fun resolveCollectionExe(appId: String): String? {
+    private fun resolveCollectionExe(context: Context, appId: String): String? {
         val rawId = appId.substringAfterLast('_')
         val collection = CollectionRegistry.getCollection(rawId) ?: return null
 
+        // (1) Prefer the container's current executablePath — what the user has selected.
+        val containerExePath = try {
+            ContainerUtils.getContainer(context, appId)?.executablePath
+                ?.takeIf { it.isNotBlank() }
+        } catch (e: Exception) {
+            Timber.tag(TAG).w(e, "resolveCollectionExe: could not read container executablePath for $appId")
+            null
+        }
+        if (containerExePath != null) {
+            val containerBasename = containerExePath.substringAfterLast('/').substringAfterLast('\\')
+            val containerMatch = collection.subGames.firstOrNull { sub ->
+                sub.exePath.substringAfterLast('/').substringAfterLast('\\')
+                    .equals(containerBasename, ignoreCase = true)
+            }
+            if (containerMatch != null) {
+                Timber.tag(TAG).i(
+                    "resolveCollectionExe: using container's executablePath='${containerMatch.exePath}' " +
+                        "(matched basename '$containerBasename') for $appId",
+                )
+                return containerMatch.exePath
+            }
+            Timber.tag(TAG).d(
+                "resolveCollectionExe: container executablePath='$containerExePath' (basename='$containerBasename') " +
+                    "did not match any collection sub-game — falling through",
+            )
+        }
+
+        // (2) Last-played sub-game from preferences.
         val lastExe = PrefManager.getLastPlayedSubGame(appId)
         val sub = collection.subGames.firstOrNull { it.exePath.equals(lastExe, ignoreCase = true) }
+            // (3) First non-excluded sub-game.
             ?: collection.subGames.firstOrNull { exe ->
                 collection.excludedExes.none { exe.exePath.substringAfterLast('/').equals(it, ignoreCase = true) }
             }
+            // (4) Absolute fallback.
             ?: collection.subGames.firstOrNull()
         return sub?.exePath
     }
