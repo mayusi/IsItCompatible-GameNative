@@ -1,7 +1,48 @@
 # Changelog
 
-All notable changes to the IIC fork of GameNative are documented here.
+All notable changes to NovaGN (a fork of GameNative) are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+---
+
+## [1.13.0-NovaGN]
+
+The big one — the fork becomes its own thing: **NovaGN**. Built on GameNative; credited as
+the foundation.
+
+### Rebrand & identity
+- Renamed to **NovaGN** with a premium, minimal identity: a single electric-indigo accent on
+  near-black, a new geometric "N" emblem, wordmark, banner, and adaptive launcher icon.
+- The whole app collapsed to one cohesive accent (the old magenta/teal/cyan mix is gone).
+
+### A distinct interface (not a reskin)
+- **Library**: the top tab strip is replaced by a persistent left **source rail**, and game
+  cards now show **feature-tag chips** — "Speed N×", "Cheats", "Auto-tuned" — so the library
+  shows the work NovaGN has done on your games.
+- **Game detail**: a left art canvas + right **action dashboard** (Launch / Make It Work /
+  Speed / Cheats as first-class peers) instead of the generic hero-with-play-button.
+- **Quick menu**: right-side slide-in with premium motion and a live speed indicator.
+- **Settings**: clean grouped panels instead of Material cards.
+
+### Auto-tuner ("Make It Work") that actually fixes hard games
+- Fixed the root cause that stopped collection games (e.g. DMC HD's DMC3) from ever being
+  tuned — the tuner now launches the correct sub-game.
+- Added DirectX 9 / Box64 fix rungs (wined3d fallback, d3dx9 overrides, Box64 compatibility
+  preset), better crash classification, and smarter boot-success detection.
+
+### Faster, more reliable downloads
+- Amazon: real parallelism, a 256 KB buffer, HTTP-range resume, and disk-full detection.
+- Epic: removed the batch-pipeline stall (sliding-window concurrency).
+- GOG: streaming decompression (far less RAM) and a hard-fail on real file corruption.
+- Live download **speed (MB/s)** on screen and in the notification.
+
+### Universal speed-hack + power features
+- In-game **speed hotkeys** (toggle / cycle / hold-to-fast-forward) on a controller button —
+  no menu needed — plus a wider preset range.
+- **DX12 frame cap** (VKD3D) and ARM GPU tuning defaults — DX12 games were previously uncapped.
+
+### Cleanup
+- Removed ~1000 lines of dead code orphaned by the rework. GameNative credited throughout.
 
 ---
 

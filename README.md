@@ -3,7 +3,8 @@
 **Run PC games on Android — tuned, cheated, and sped up.** One-tap "make it work", a built-in
 cheat engine, a universal speed hack, and crowd-sourced crash fixes.
 
-[![Version](https://img.shields.io/badge/version-1.12.10--IIC-6D5BF6)](../../releases)
+[![Version](https://img.shields.io/badge/version-1.13.0--NovaGN-6D5BF6)](../../releases)
+[![Downloads](https://img.shields.io/github/downloads/mayusi/IsItCompatible-GameNative/total?color=6D5BF6&label=downloads)](../../releases)
 [![Package](https://img.shields.io/badge/package-app.gamenative.iic-informational)](../../releases)
 [![Android](https://img.shields.io/badge/Android-9%2B%20%28modern%20flavor%29-green)](../../releases)
 
