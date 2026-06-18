@@ -4,8 +4,11 @@ import android.content.Context
 import app.gamenative.data.AmazonGame
 import app.gamenative.data.DownloadInfo
 import app.gamenative.enums.Marker
+import app.gamenative.utils.DownloadSpeedConfig
 import app.gamenative.utils.MarkerUtils
+import app.gamenative.utils.StorageUtils
 import java.io.File
+import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
@@ -33,10 +36,11 @@ class AmazonDownloadManager @Inject constructor(
         .build()
 
     companion object {
-        private const val MAX_PARALLEL_DOWNLOADS = 6
         private const val MAX_RETRIES = 3
         private const val RETRY_DELAY_MS = 1000L
         private const val PROGRESS_EMIT_INTERVAL = 512 * 1024L // Emit UI progress every 512 KB
+        private const val DOWNLOAD_BUFFER_SIZE = 256 * 1024   // 256 KB I/O buffer
+        private const val DISK_FULL_THRESHOLD_BYTES = 512L * 1024L * 1024L // 512 MB
         private const val TAG = "Amazon"
     }
 
@@ -117,8 +121,9 @@ class AmazonDownloadManager @Inject constructor(
             val baseUrl = spec.downloadUrl
             var completedFiles = 0
             val totalFiles = files.size
+            val maxParallelDownloads = DownloadSpeedConfig().maxDownloads.coerceAtLeast(1)
 
-            for (batch in files.chunked(MAX_PARALLEL_DOWNLOADS)) {
+            for (batch in files.chunked(maxParallelDownloads)) {
                 if (!downloadInfo.isActive()) {
                     Timber.tag(TAG).w("Download cancelled by user")
                     throw CancellationException("Download cancelled")
@@ -256,57 +261,148 @@ class AmazonDownloadManager @Inject constructor(
             // nile uses /files/{hash_hex} per downloading/manager.py, NOT the unix path
             val hashHex = file.hashBytes.joinToString("") { "%02x".format(it) }
             val url = appendPath(baseUrl, "files/$hashHex")
-            val request = Request.Builder()
+
+            // ── Range-resume: if a valid partial .tmp exists, attempt HTTP resume ──
+            val canVerifyHash = file.hashAlgorithm == 0 && file.hashBytes.isNotEmpty()
+            val partialSize = tmpFile.length()
+            val attemptResume = canVerifyHash &&
+                partialSize > 0L &&
+                file.size > 0L &&
+                partialSize < file.size
+
+            // Seed digest with already-downloaded bytes when resuming
+            var resumeDigest: MessageDigest? = null
+            var resumeOffset = 0L
+            if (attemptResume) {
+                try {
+                    val digest = MessageDigest.getInstance("SHA-256")
+                    tmpFile.inputStream().buffered(DOWNLOAD_BUFFER_SIZE).use { seedInput ->
+                        val buf = ByteArray(DOWNLOAD_BUFFER_SIZE)
+                        var read: Int
+                        while (seedInput.read(buf).also { read = it } != -1) {
+                            digest.update(buf, 0, read)
+                        }
+                    }
+                    resumeDigest = digest
+                    resumeOffset = partialSize
+                    Timber.tag(TAG).d("Resume attempt for ${file.unixPath}: ${partialSize}/${file.size} bytes already present")
+                } catch (e: Exception) {
+                    // Seeding failed — fall back to full restart
+                    Timber.tag(TAG).w(e, "Failed to seed digest for resume of ${file.unixPath}, falling back to full restart")
+                    tmpFile.delete()
+                    resumeDigest = null
+                    resumeOffset = 0L
+                }
+            }
+
+            val requestBuilder = Request.Builder()
                 .url(url)
                 .header("User-Agent", "nile/0.1 Amazon")
-                .build()
+            if (resumeOffset > 0L) {
+                requestBuilder.header("Range", "bytes=$resumeOffset-")
+            }
 
-            okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
+            okHttpClient.newCall(requestBuilder.build()).execute().use { response ->
+                val isPartialContent = response.code == 206
+                val isOk = response.code == 200
+
+                if (!isPartialContent && !isOk) {
                     return@withContext Result.failure(
                         Exception("HTTP ${response.code} for ${file.unixPath}")
                     )
                 }
 
-                response.body.byteStream().use { input ->
-                    tmpFile.outputStream().use { output ->
-                        val buf = ByteArray(8192)
-                        var read: Int
-                        var bytesSinceLastEmit = 0L
-                        while (input.read(buf).also { read = it } != -1) {
-                                    if (!downloadInfo.isActive()) {
-                                        throw CancellationException("Download cancelled")
+                // If server ignored our Range header (responded 200 instead of 206),
+                // discard the partial and restart from byte 0.
+                val useResume = isPartialContent && resumeOffset > 0L
+                if (!useResume && resumeOffset > 0L) {
+                    Timber.tag(TAG).d("Server did not honour Range for ${file.unixPath}, restarting from byte 0")
+                    tmpFile.delete()
+                    resumeDigest = null
+                    resumeOffset = 0L
+                }
+
+                val digest = if (canVerifyHash) {
+                    resumeDigest ?: MessageDigest.getInstance("SHA-256")
+                } else {
+                    null
+                }
+
+                try {
+                    response.body.byteStream().use { input ->
+                        val outputStream = if (useResume) {
+                            tmpFile.outputStream().let {
+                                // Re-open in append mode
+                                it.close()
+                                java.io.FileOutputStream(tmpFile, /* append= */ true)
+                            }
+                        } else {
+                            tmpFile.outputStream()
+                        }
+                        outputStream.use { output ->
+                            val buf = ByteArray(DOWNLOAD_BUFFER_SIZE)
+                            var read: Int
+                            var bytesSinceLastEmit = 0L
+                            while (input.read(buf).also { read = it } != -1) {
+                                if (!downloadInfo.isActive()) {
+                                    throw CancellationException("Download cancelled")
+                                }
+                                try {
+                                    output.write(buf, 0, read)
+                                } catch (e: IOException) {
+                                    // Check for disk-full condition before using up retries
+                                    val isDiskFull = e.message?.let {
+                                        it.contains("ENOSPC", ignoreCase = true) ||
+                                            it.contains("No space left", ignoreCase = true)
+                                    } ?: false
+                                    val availableSpace = try {
+                                        StorageUtils.getAvailableSpace(installDir.absolutePath)
+                                    } catch (_: Exception) {
+                                        Long.MAX_VALUE
                                     }
-                            output.write(buf, 0, read)
-                            downloadInfo.updateBytesDownloaded(read.toLong())
-                            bytesSinceLastEmit += read
-                            // Emit progress every ~512 KB so UI updates smoothly during large files
-                            if (bytesSinceLastEmit >= PROGRESS_EMIT_INTERVAL) {
-                                bytesSinceLastEmit = 0L
-                                downloadInfo.emitProgressChange()
-                                downloadInfo.persistProgressSnapshot()
+                                    if (isDiskFull || availableSpace < DISK_FULL_THRESHOLD_BYTES) {
+                                        return@withContext Result.failure(
+                                            IOException("Insufficient disk space for ${file.unixPath}")
+                                        )
+                                    }
+                                    throw e
+                                }
+                                digest?.update(buf, 0, read)
+                                downloadInfo.updateBytesDownloaded(read.toLong())
+                                bytesSinceLastEmit += read
+                                // Emit progress every ~512 KB so UI updates smoothly during large files
+                                if (bytesSinceLastEmit >= PROGRESS_EMIT_INTERVAL) {
+                                    bytesSinceLastEmit = 0L
+                                    downloadInfo.emitProgressChange()
+                                    downloadInfo.persistProgressSnapshot()
+                                }
                             }
                         }
                     }
-                }
-            }
-
-            // Verify SHA-256 hash (algorithm 0) when present
-            if (file.hashAlgorithm == 0 && file.hashBytes.isNotEmpty()) {
-                val digest = MessageDigest.getInstance("SHA-256")
-                tmpFile.inputStream().buffered().use { input ->
-                    val buf = ByteArray(8192)
-                    var read: Int
-                    while (input.read(buf).also { read = it } != -1) {
-                        digest.update(buf, 0, read)
+                } catch (e: IOException) {
+                    // Outer IO exception (e.g. during read from network)
+                    val availableSpace = try {
+                        StorageUtils.getAvailableSpace(installDir.absolutePath)
+                    } catch (_: Exception) {
+                        Long.MAX_VALUE
                     }
+                    if (availableSpace < DISK_FULL_THRESHOLD_BYTES) {
+                        return@withContext Result.failure(
+                            IOException("Insufficient disk space for ${file.unixPath}")
+                        )
+                    }
+                    throw e
                 }
-                val computed = digest.digest()
-                if (!computed.contentEquals(file.hashBytes)) {
-                    tmpFile.delete()
-                    return@withContext Result.failure(
-                        Exception("SHA-256 mismatch for ${file.unixPath}")
-                    )
+
+                // Verify SHA-256 hash (algorithm 0) when present
+                if (digest != null) {
+                    val computed = digest.digest()
+                    if (!computed.contentEquals(file.hashBytes)) {
+                        tmpFile.delete()
+                        return@withContext Result.failure(
+                            Exception("SHA-256 mismatch for ${file.unixPath}")
+                        )
+                    }
                 }
             }
 
@@ -315,7 +411,7 @@ class AmazonDownloadManager @Inject constructor(
 
             Result.success(Unit)
         } catch (e: CancellationException) {
-            tmpFile.delete()
+            // Preserve the .tmp on cancellation so a future resume can pick up
             throw e
         } catch (e: Exception) {
             tmpFile.delete()

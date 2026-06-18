@@ -895,20 +895,25 @@ class EpicDownloadManager @Inject constructor(
             return Result.success(Unit)
         }
 
-        for (chunkBatch in chunkQueue.chunked(parallelDownloads)) {
-            if (!downloadInfo.isActive()) {
-                return@withContext Result.failure(Exception("Download cancelled"))
-            }
+        // Sliding-window concurrency: all chunks are launched at once, each guarded by a
+        // downloadSemaphore so only `parallelDownloads` are in-flight at any time.
+        // A completion channel keeps the assembly loop strictly sequential so that
+        // downloadedChunkIds and nextFileToAssemble are mutated from a single coroutine.
+        if (!downloadInfo.isActive()) {
+            return@withContext Result.failure(Exception("Download cancelled"))
+        }
 
-            // Stream chunk completions within each batch to avoid jumpy progress updates.
-            val completionChannel = Channel<Pair<String, Result<File>>>(chunkBatch.size)
-            val resultsByChunk = mutableMapOf<String, Result<File>>()
-            var assemblyFailure: Throwable? = null
+        val completionChannel = Channel<Pair<String, Result<File>>>(Channel.UNLIMITED)
+        val downloadSemaphore = Semaphore(parallelDownloads)
+        var assemblyFailure: Throwable? = null
+        var firstDownloadFailure: Throwable? = null
 
-            coroutineScope {
-                chunkBatch.forEach { chunk ->
-                    launch {
-                        val result = downloadChunkWithRetry(
+        coroutineScope {
+            // Launch all downloads concurrently, each waiting for a semaphore permit.
+            chunkQueue.forEach { chunk ->
+                launch {
+                    val result = downloadSemaphore.withPermit {
+                        downloadChunkWithRetry(
                             chunk,
                             chunkCacheDir,
                             chunkDir,
@@ -917,49 +922,45 @@ class EpicDownloadManager @Inject constructor(
                             downloadHttpClient,
                             decompressSemaphore,
                         )
-                        completionChannel.send(chunk.guidStr to result)
                     }
+                    completionChannel.send(chunk.guidStr to result)
+                }
+            }
+
+            // Single-threaded assembly receiver — no concurrent mutation of shared state.
+            repeat(totalChunks) {
+                val (chunkGuid, result) = completionChannel.receive()
+
+                if (result.isFailure && firstDownloadFailure == null) {
+                    firstDownloadFailure = result.exceptionOrNull() ?: Exception("Failed to download chunk $chunkGuid")
                 }
 
-                repeat(chunkBatch.size) {
-                    val (chunkGuid, result) = completionChannel.receive()
-                    resultsByChunk[chunkGuid] = result
-
-                    if (result.isSuccess && assemblyFailure == null) {
-                        downloadedChunkIds.add(chunkGuid)
-                        val assembleResult = assembleReady()
-                        if (assembleResult.isFailure) {
-                            assemblyFailure = assembleResult.exceptionOrNull() ?: Exception("Failed to assemble ready files")
-                            return@repeat
-                        }
-
-                        val progress = downloadedChunkIds.size.toFloat() / totalChunks
-                        downloadInfo.setProgress(progress)
-                        downloadInfo.updateStatusMessage(
-                            "Downloading (${downloadedChunkIds.size}/$totalChunks chunks, $nextFileToAssemble/$totalFiles files)",
-                        )
+                if (result.isSuccess && assemblyFailure == null && firstDownloadFailure == null) {
+                    downloadedChunkIds.add(chunkGuid)
+                    val assembleResult = assembleReady()
+                    if (assembleResult.isFailure) {
+                        assemblyFailure = assembleResult.exceptionOrNull() ?: Exception("Failed to assemble ready files")
+                        return@repeat
                     }
+
+                    val progress = downloadedChunkIds.size.toFloat() / totalChunks
+                    downloadInfo.setProgress(progress)
+                    downloadInfo.updateStatusMessage(
+                        "Downloading (${downloadedChunkIds.size}/$totalChunks chunks, $nextFileToAssemble/$totalFiles files)",
+                    )
                 }
             }
-            completionChannel.close()
-
-            if (assemblyFailure != null) {
-                return@withContext Result.failure(assemblyFailure!!)
-            }
-
-            val failedResult = chunkBatch
-                .map { chunk ->
-                    resultsByChunk[chunk.guidStr] ?: Result.failure(Exception("Missing batch result for chunk ${chunk.guidStr}"))
-                }
-                .firstOrNull { it.isFailure }
-            if (failedResult != null) {
-                return@withContext Result.failure(
-                    failedResult.exceptionOrNull() ?: Exception("Failed to download chunk"),
-                )
-            }
-
-            Timber.tag("Epic").d("Progress: ${downloadedChunkIds.size}/$totalChunks chunks, $nextFileToAssemble/$totalFiles files assembled")
         }
+        completionChannel.close()
+
+        if (assemblyFailure != null) {
+            return@withContext Result.failure(assemblyFailure!!)
+        }
+        if (firstDownloadFailure != null) {
+            return@withContext Result.failure(firstDownloadFailure!!)
+        }
+
+        Timber.tag("Epic").d("Progress: ${downloadedChunkIds.size}/$totalChunks chunks, $nextFileToAssemble/$totalFiles files assembled")
 
         // final assembly pass for zero-chunk files that the chunk loop never reaches
         while (nextFileToAssemble < totalFiles) {

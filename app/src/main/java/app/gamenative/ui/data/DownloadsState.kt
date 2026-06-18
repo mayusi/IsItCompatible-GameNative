@@ -20,6 +20,7 @@ data class DownloadItemState(
     val bytesDownloaded: Long?,
     val bytesTotal: Long?,
     val etaMs: Long?,
+    val speedBytesPerSec: Double,
     val statusMessage: String?,
     val isActive: Boolean?,
     val isPartial: Boolean,

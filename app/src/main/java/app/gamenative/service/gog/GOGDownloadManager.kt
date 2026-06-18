@@ -25,6 +25,7 @@ import java.nio.file.Files
 import java.security.DigestOutputStream
 import java.security.MessageDigest
 import java.util.zip.Inflater
+import java.util.zip.InflaterInputStream
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -1453,7 +1454,13 @@ class GOGDownloadManager @Inject constructor(
     }
 
     /**
-     * Assemble a single file from its chunks
+     * Assemble a single file chunk by streaming decompression directly into a RandomAccessFile.
+     *
+     * Replaced the old readBytes() + ByteArrayOutputStream approach (2× chunk size on heap) with
+     * streaming inflate: the compressed chunk file is opened as a FileInputStream, optionally
+     * wrapped in InflaterInputStream, and pumped through a 64 KB buffer directly into the
+     * RandomAccessFile at the correct offset. The decompressed MD5 is computed incrementally and
+     * verified against chunk.md5 — identical semantics to the prior approach.
      *
      * @param file File metadata with chunks
      * @param chunkCacheDir Directory containing downloaded chunks
@@ -1470,54 +1477,86 @@ class GOGDownloadManager @Inject constructor(
             val outputFile = File(installDir, file.path)
             outputFile.parentFile?.mkdirs()
 
-            // Get compressed chunk file
             val chunkFile = File(chunkCacheDir, "${chunk.compressedMd5}.chunk")
-
             if (!chunkFile.exists()) {
                 return@withContext Result.failure(
                     Exception("Chunk file missing: ${chunk.compressedMd5}"),
                 )
             }
 
-            // Read compressed data
-            val compressedBytes = chunkFile.readBytes()
-
-            // Decompress chunk
-            val decompressedBytes = decompressChunk(compressedBytes, chunk)
-            if (decompressedBytes.isFailure) {
-                return@withContext Result.failure(
-                    decompressedBytes.exceptionOrNull()
-                        ?: Exception("Failed to decompress chunk ${chunk.compressedMd5}"),
-                )
-            }
-
-            val data = decompressedBytes.getOrThrow()
-
-            // Verify decompressed MD5
-            val actualMd5 = calculateMd5(data)
-            if (actualMd5 != chunk.md5) {
-                return@withContext Result.failure(
-                    Exception("Decompressed MD5 mismatch for chunk: expected ${chunk.md5}, got $actualMd5"),
-                )
-            }
-
             val writeOffset = file.chunks.take(chunkIndex).sumOf { it.size }
 
-            // Write decompressed chunk at specific file offset using RandomAccessFile
-            RandomAccessFile(outputFile.path, "rw").use { randomAccessFile ->
-                randomAccessFile.seek(writeOffset)
-                randomAccessFile.write(data)
+            // Drop to background priority for CPU-bound inflate — same as previous code.
+            val thermalFriendly = DownloadSpeedConfig().thermalFriendlyDecompress
+            if (thermalFriendly) {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             }
 
-            // Verify final file hash if provided
+            try {
+                val digest = MessageDigest.getInstance("MD5")
+                val buffer = ByteArray(65536) // 64 KB inflate buffer
+                var totalDecompressed = 0L
+
+                RandomAccessFile(outputFile.path, "rw").use { raf ->
+                    raf.seek(writeOffset)
+
+                    if (chunk.compressedSize == null) {
+                        // Uncompressed chunk — stream directly, updating MD5 incrementally.
+                        chunkFile.inputStream().buffered(65536).use { input ->
+                            var bytesRead: Int
+                            while (input.read(buffer).also { bytesRead = it } != -1) {
+                                raf.write(buffer, 0, bytesRead)
+                                digest.update(buffer, 0, bytesRead)
+                                totalDecompressed += bytesRead
+                            }
+                        }
+                    } else {
+                        // Compressed chunk — wrap in InflaterInputStream and stream-inflate.
+                        val inflater = Inflater()
+                        try {
+                            chunkFile.inputStream().buffered(65536).use { fileInput ->
+                                InflaterInputStream(fileInput, inflater, 65536).use { infStream ->
+                                    var bytesRead: Int
+                                    while (infStream.read(buffer).also { bytesRead = it } != -1) {
+                                        raf.write(buffer, 0, bytesRead)
+                                        digest.update(buffer, 0, bytesRead)
+                                        totalDecompressed += bytesRead
+                                    }
+                                }
+                            }
+                        } finally {
+                            inflater.end()
+                        }
+                    }
+                }
+
+                // Verify decompressed size matches expected chunk size.
+                if (totalDecompressed != chunk.size) {
+                    return@withContext Result.failure(
+                        Exception("Decompressed size mismatch for chunk ${chunk.compressedMd5}: expected ${chunk.size}, got $totalDecompressed"),
+                    )
+                }
+
+                // Verify decompressed MD5 — same accept/reject behavior as before.
+                val actualMd5 = digest.digest().joinToString("") { "%02x".format(it) }
+                if (actualMd5 != chunk.md5) {
+                    return@withContext Result.failure(
+                        Exception("Decompressed MD5 mismatch for chunk: expected ${chunk.md5}, got $actualMd5"),
+                    )
+                }
+            } finally {
+                if (thermalFriendly) {
+                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DEFAULT)
+                }
+            }
+
+            // Verify final file hash if provided (non-fatal — same semantics as before).
             if (file.md5 != null) {
                 val fileMd5 = calculateMd5File(outputFile)
                 if (fileMd5 != file.md5) {
-                    // Timber.tag("GOG").w("File MD5 mismatch: ${file.path}, expected ${file.md5}, got $fileMd5")
-                    // Don't fail - some games have incorrect MD5 in manifest
-                    // And as it is changed to use RandomAccessFile, it happens when not all chunks are completed download
+                    // Don't fail — some games have incorrect MD5 in manifest,
+                    // and intermediate chunks won't match the full-file hash yet.
                 } else {
-                    // Move the log here for files finally assembled
                     Timber.tag("GOG").v("Assembled: ${file.path} (${outputFile.length()} bytes)")
                 }
             }
@@ -1525,78 +1564,6 @@ class GOGDownloadManager @Inject constructor(
             Result.success(outputFile)
         } catch (e: Exception) {
             Timber.tag("GOG").e(e, "Failed to assemble file ${file.path}")
-            Result.failure(e)
-        }
-    }
-
-    /**
-     * Decompress a GOG chunk using zlib
-     *
-     * GOG chunks are compressed with zlib
-     * If chunk.compressedSize is null, data is uncompressed
-     *
-     * @param compressedBytes Compressed chunk data
-     * @param chunk Chunk metadata
-     * @return Decompressed data
-     */
-    private fun decompressChunk(compressedBytes: ByteArray, chunk: FileChunk): Result<ByteArray> {
-        return try {
-            // If no compressed size specified, data is already uncompressed
-            if (chunk.compressedSize == null) {
-                return Result.success(compressedBytes)
-            }
-
-            // Decompress using zlib
-            val inflater = Inflater()
-            // Drop to background thread priority for the CPU-bound inflate loop so the DVFS
-            // governor keeps big cores off peak clock (cooler during downloads). Toggleable.
-            val thermalFriendly = DownloadSpeedConfig().thermalFriendlyDecompress
-            if (thermalFriendly) {
-                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
-            }
-            try {
-                inflater.setInput(compressedBytes)
-                val outputStream = ByteArrayOutputStream(chunk.size.toInt())
-                val buffer = ByteArray(8192)
-
-                while (!inflater.finished()) {
-                    val count = inflater.inflate(buffer)
-                    if (count > 0) {
-                        outputStream.write(buffer, 0, count)
-                    } else {
-                        // No bytes produced - check if we need more input or a dictionary
-                        if (inflater.needsInput()) {
-                            throw java.io.IOException(
-                                "Incomplete zlib data: decompression requires more input but none available"
-                            )
-                        } else if (inflater.needsDictionary()) {
-                            throw java.io.IOException(
-                                "Zlib data requires a preset dictionary which is not supported"
-                            )
-                        }
-                        // If neither condition is true, inflater is still processing internally
-                        // Continue loop, but this should be rare
-                    }
-                }
-
-                val decompressed = outputStream.toByteArray()
-
-                // Verify size matches expected
-                if (decompressed.size.toLong() != chunk.size) {
-                    return Result.failure(
-                        Exception("Decompressed size mismatch: expected ${chunk.size}, got ${decompressed.size}"),
-                    )
-                }
-
-                Result.success(decompressed)
-            } finally {
-                inflater.end()
-                if (thermalFriendly) {
-                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DEFAULT)
-                }
-            }
-        } catch (e: Exception) {
-            Timber.tag("GOG").e(e, "Failed to decompress chunk ${chunk.compressedMd5}")
             Result.failure(e)
         }
     }

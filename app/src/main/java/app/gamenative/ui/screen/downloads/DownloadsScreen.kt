@@ -736,6 +736,7 @@ private fun DownloadItemCard(
     val statusText = statusLabel(item.status)
     val detailText = item.statusMessage?.takeIf { !it.equals(statusText, ignoreCase = true) }
     val etaText = item.etaMs?.let(::formatEta)
+    val speedText = if (item.speedBytesPerSec > 0.0) formatSpeed(item.speedBytesPerSec) else null
     val progressColor = when (item.status) {
         DownloadItemStatus.COMPLETED -> PluviaTheme.colors.accentSuccess
         DownloadItemStatus.CANCELLED,
@@ -841,7 +842,7 @@ private fun DownloadItemCard(
                     )
                 }
 
-                if (item.bytesDownloaded != null || etaText != null) {
+                if (item.bytesDownloaded != null || etaText != null || speedText != null) {
                     Spacer(modifier = Modifier.height(10.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -865,14 +866,28 @@ private fun DownloadItemCard(
                             Spacer(modifier = Modifier.weight(1f))
                         }
 
-                        if (!etaText.isNullOrBlank()) {
-                            Text(
-                                text = etaText,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (!speedText.isNullOrBlank()) {
+                                Text(
+                                    text = speedText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (!etaText.isNullOrBlank()) {
+                                Text(
+                                    text = etaText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
                     }
                 }
@@ -1158,4 +1173,9 @@ private fun formatEta(etaMs: Long): String {
         minutes > 0 -> "${minutes}m ${seconds}s"
         else -> "${seconds}s"
     }
+}
+
+private fun formatSpeed(bytesPerSec: Double): String {
+    val mbPerSec = bytesPerSec / (1024.0 * 1024.0)
+    return "%.1f MB/s".format(mbPerSec)
 }

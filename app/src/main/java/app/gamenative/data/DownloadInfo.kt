@@ -250,6 +250,14 @@ data class DownloadInfo(
         return (etaSeconds * 1000.0).toLong()
     }
 
+    /**
+     * Returns the current smoothed download speed in bytes per second (the same EMA value
+     * used for ETA computation), or 0.0 if no speed sample is available yet.
+     */
+    fun getCurrentSpeedBytesPerSec(): Double {
+        return if (hasEmaSpeed) emaSpeedBytesPerSec else 0.0
+    }
+
     fun addProgressListener(listener: (Float) -> Unit) {
         downloadProgressListeners.add(listener)
     }
