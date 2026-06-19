@@ -4196,14 +4196,20 @@ private fun getWineStartCommand(
                 Timber.i("Working directory is ${executableDir}")
 
                 Timber.i("Final exe path is " + executablePath)
-                val drives = container.drives
-                val driveIndex = drives.indexOf(appDirPath)
-                // greater than 1 since there is the drive character and the colon before the app dir path
-                val drive = if (driveIndex > 1) {
-                    drives[driveIndex - 2]
-                } else {
-                    Timber.e("Could not locate game drive")
-                    'D'
+                // Use drivesIterator to find the drive whose path == appDirPath.
+                // The old drives.indexOf + drives[driveIndex-2] treated the packed String as
+                // a char array and would produce wrong offsets or SIOOB on unusual paths.
+                var drive: Char = 'D'
+                var driveFound = false
+                for (entry in container.drivesIterator()) {
+                    if (entry[1] == appDirPath) {
+                        drive = entry[0][0]
+                        driveFound = true
+                        break
+                    }
+                }
+                if (!driveFound) {
+                    Timber.e("Could not locate game drive for $appDirPath, falling back to 'D'")
                 }
                 if (appLaunchInfo != null){
                     envVars.put("WINEPATH", "$drive:/${appLaunchInfo.workingDir}")
@@ -4230,14 +4236,20 @@ private fun getSteamlessTarget(
     } else {
         SteamService.getInstalledExe(gameId)
     }
-    val drives = container.drives
-    val driveIndex = drives.indexOf(appDirPath)
-    // greater than 1 since there is the drive character and the colon before the app dir path
-    val drive = if (driveIndex > 1) {
-        drives[driveIndex - 2]
-    } else {
-        Timber.e("Could not locate game drive")
-        'D'
+    // Use drivesIterator to find the drive whose path == appDirPath.
+    // The old drives.indexOf + drives[driveIndex-2] treated the packed String as
+    // a char array and would produce wrong offsets or SIOOB on unusual paths.
+    var drive: Char = 'D'
+    var driveFound = false
+    for (entry in container.drivesIterator()) {
+        if (entry[1] == appDirPath) {
+            drive = entry[0][0]
+            driveFound = true
+            break
+        }
+    }
+    if (!driveFound) {
+        Timber.e("getSteamlessTarget: could not locate game drive for $appDirPath, falling back to 'D'")
     }
     return "$drive:\\${executablePath}"
 }
@@ -4358,13 +4370,18 @@ private fun getRedistDirectory(
         return null
     }
 
-    // Get the drive letter for the game directory
-    val drives = container.drives
-    val driveIndex = drives.indexOf(gameDirPath)
-    val driveLetter = if (driveIndex > 1) {
-        drives[driveIndex - 2]
-    } else {
-        Timber.tag("installRedist").e("Could not locate game drive for redistributables")
+    // Use drivesIterator to find the drive whose path == gameDirPath.
+    // The old drives.indexOf + drives[driveIndex-2] treated the packed String as
+    // a char array and would produce wrong offsets or SIOOB on unusual paths.
+    var driveLetter: Char = ' '
+    for (entry in container.drivesIterator()) {
+        if (entry[1] == gameDirPath) {
+            driveLetter = entry[0][0]
+            break
+        }
+    }
+    if (driveLetter == ' ') {
+        Timber.tag("installRedist").e("Could not locate game drive for redistributables at $gameDirPath")
         return null
     }
 

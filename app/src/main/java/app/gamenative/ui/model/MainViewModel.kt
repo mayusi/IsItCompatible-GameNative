@@ -482,9 +482,23 @@ class MainViewModel @Inject constructor(
             // Small delay to ensure the splash screen is visible before proceeding
             delay(100)
 
-            apiJob.await()
-
-            _uiEvent.send(MainUiEvent.LaunchApp)
+            try {
+                apiJob.await()
+                _uiEvent.send(MainUiEvent.LaunchApp)
+            } catch (e: CancellationException) {
+                // Coroutine was cancelled — propagate so the scope can clean up normally.
+                setShowBootingSplash(false)
+                throw e
+            } catch (e: Exception) {
+                // Any exception from replaceSteamApi / replaceSteamclientDll is caught here.
+                // Without this guard the coroutine dies silently and LaunchApp is never sent,
+                // leaving the booting splash frozen on screen.
+                Timber.e(e, "Game launch prep failed for $appId — clearing splash and aborting")
+                setShowBootingSplash(false)
+                // Surface the failure through the existing game-launch-error channel so the
+                // UI can show a message rather than silently hanging.
+                onGameLaunchError(e.message ?: "Unknown error during game launch preparation")
+            }
         }
     }
 

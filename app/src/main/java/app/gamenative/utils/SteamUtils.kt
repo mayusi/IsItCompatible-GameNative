@@ -140,7 +140,12 @@ object SteamUtils {
         if (Files.exists(outFile)) return          // already generated on a previous boot
 
         // -------- read DLL into memory ----------------------------------------
-        val bytes = Files.readAllBytes(dllPath)
+        val bytes = try {
+            Files.readAllBytes(dllPath)
+        } catch (e: Exception) {
+            Timber.w(e, "generateInterfacesFile: could not read ${dllPath.fileName}, skipping interface scan")
+            return
+        }
         val strings = mutableSetOf<String>()
 
         val sb = StringBuilder()
@@ -267,7 +272,7 @@ object SteamUtils {
         Timber.i("Finished replaceSteamApi for appId: $appId. Replaced 32bit: $replaced32Count, Replaced 64bit: $replaced64Count")
 
         // Restore unpacked executable if it exists (for DRM-free mode)
-        restoreUnpackedExecutable(context, steamAppId)
+        restoreUnpackedExecutable(context, steamAppId, appId)
 
         // Restore original steamclient.dll files if they exist
         restoreSteamclientFiles(context, steamAppId)
@@ -317,7 +322,7 @@ object SteamUtils {
             imageFs.getRootDir(),
         )
         putBackSteamDlls(appDirPath)
-        restoreUnpackedExecutable(context, steamAppId)
+        restoreUnpackedExecutable(context, steamAppId, appId)
 
         // Get ticket and pass to ensureSteamSettings
         val ticketBase64 = SteamService.instance?.getEncryptedAppTicketBase64(steamAppId)
@@ -559,22 +564,33 @@ object SteamUtils {
     /**
      * Restores the unpacked executable (.unpacked.exe) if it exists and is different from current .exe
      * This ensures we use the DRM-free version when not using real Steam
+     *
+     * @param containerId the full container id (e.g. "STEAM_12345"); falls back to "STEAM_$steamAppId"
+     *                    only when null so callers should always supply it.
      */
-    private fun restoreUnpackedExecutable(context: Context, steamAppId: Int) {
+    private fun restoreUnpackedExecutable(context: Context, steamAppId: Int, containerId: String? = null) {
         try {
             val imageFs = ImageFs.find(context)
             val appDirPath = SteamService.getAppDirPath(steamAppId)
 
-            // Convert to Wine path format
-            val container = ContainerUtils.getContainer(context, "STEAM_$steamAppId")
+            // Resolve container using the real containerId to avoid suffix mismatches.
+            val resolvedContainerId = containerId ?: "STEAM_$steamAppId"
+            val container = ContainerUtils.getContainer(context, resolvedContainerId)
             val executablePath = container.executablePath
-            val drives = container.drives
-            val driveIndex = drives.indexOf(appDirPath)
-            val drive = if (driveIndex > 1) {
-                drives[driveIndex - 2]
-            } else {
-                Timber.e("Could not locate game drive")
-                'D'
+
+            // Use drivesIterator to find the drive whose path matches appDirPath — avoids the
+            // packed-String index arithmetic bug (drives.indexOf + drives[driveIndex-2]).
+            var drive: Char = 'D'
+            var driveFound = false
+            for (entry in container.drivesIterator()) {
+                if (entry[1] == appDirPath) {
+                    drive = entry[0][0]
+                    driveFound = true
+                    break
+                }
+            }
+            if (!driveFound) {
+                Timber.w("restoreUnpackedExecutable: could not locate drive for $appDirPath, falling back to 'D'")
             }
             val executableFile = "$drive:\\${executablePath}"
 
@@ -1106,7 +1122,7 @@ object SteamUtils {
             hiddenDlcApps?.forEach { hiddenDlcApp ->
                 if (!appendedDlcIds.contains(hiddenDlcApp.id) &&
                     // only add hidden dlc apps if it is not a DLC of the main app
-                    appInfo!!.depots.filter { (_, depot) -> depot.dlcAppId == hiddenDlcApp.id }.size <= 1) {
+                    (appInfo?.depots ?: emptyMap()).filter { (_, depot) -> depot.dlcAppId == hiddenDlcApp.id }.size <= 1) {
                     appendLine("${hiddenDlcApp.id}=dlc${hiddenDlcApp.id}")
                 }
             }

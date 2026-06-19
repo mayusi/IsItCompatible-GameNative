@@ -338,6 +338,45 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         ld_preload += ":" + evshimPath;
         ld_preload += ":" + replacePath;
 
+        // wine_shim.so is ONLY needed for the bionic-Steam launch path (it re-exports
+        // wine_nt_to_unix_file_name and rewrites lsteamclient's hardcoded package path).
+        // Normal / coldclient launches do NOT need it — adding it unconditionally causes
+        // a netdClientInit NULL-ptr SIGSEGV during linker call_constructors on some ROMs
+        // (e.g. Retroid Pocket 6), killing Wine in <1 s.  Gate strictly behind bionic-Steam.
+        if (container != null && container.isLaunchBionicSteam()) {
+            String wineShimPath = imageFs.getLibDir() + "/wine_shim.so";
+            try {
+                File wineShimSrc  = new File(context.getApplicationInfo().nativeLibraryDir, "wine_shim.so");
+                File wineShimDest = new File(wineShimPath);
+                boolean wineShimNeedsCopy = !wineShimDest.exists()
+                        || wineShimDest.length() != wineShimSrc.length()
+                        || wineShimDest.lastModified() < wineShimSrc.lastModified();
+                if (wineShimNeedsCopy && wineShimSrc.exists()) {
+                    File destParent = wineShimDest.getParentFile();
+                    if (destParent != null && !destParent.exists()) destParent.mkdirs();
+                    try (java.io.InputStream  in  = new java.io.FileInputStream(wineShimSrc);
+                         java.io.OutputStream out = new java.io.FileOutputStream(wineShimDest)) {
+                        byte[] buf = new byte[65536];
+                        int n;
+                        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                    }
+                    wineShimDest.setReadable(true, false);
+                    wineShimDest.setExecutable(true, false);
+                    Log.i("BionicProgramLauncherComponent",
+                            "wine_shim.so copied to stable path: " + wineShimPath);
+                }
+            } catch (Exception e) {
+                Log.w("BionicProgramLauncherComponent",
+                        "wine_shim.so stable-copy failed: " + e.getMessage());
+            }
+            if (new File(wineShimPath).exists()) {
+                ld_preload += ":" + wineShimPath;
+            } else {
+                Log.w("BionicProgramLauncherComponent", "wine_shim.so missing at " + wineShimPath +
+                        " — Steam games may black-screen (lsteamclient symbol resolution will fail)");
+            }
+        }
+
         // ---- Trainer is now HOST-SIDE — NO LD_PRELOAD into the game ----
         // The memory-cheat engine (libtrainer.so) NO LONGER rides into the game's
         // Wine/Box64 process tree. The in-Wine LD_PRELOAD path is dead on arm64ec
@@ -922,13 +961,81 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
 
         if (new File(sysvPath).exists()) ld_preload += sysvPath;
 
+        // CRITICAL (wineserver launch fix): include libevshim.so from the STABLE imagefs lib dir.
+        // wineserver/wine are linked against libevshim.so; if it's not preloaded from a stable path
+        // the Android linker rejects them ("CANNOT LINK EXECUTABLE: libevshim.so not found") and
+        // wineserver dies in ~7ms — which silently breaks the whole session. The main game-launch
+        // path already does this (copy-to-stable at launch); this shell-command path (used for
+        // `wineserver -k` and other helper commands) must do the same or wineserver can't start.
+        String stableEvshimPath = imageFs.getLibDir() + "/libevshim.so";
+        try {
+            File evshimSrc = new File(context.getApplicationInfo().nativeLibraryDir, "libevshim.so");
+            File evshimDst = new File(stableEvshimPath);
+            if (evshimSrc.exists() && (!evshimDst.exists() || evshimDst.length() != evshimSrc.length())) {
+                try (java.io.InputStream in = new java.io.FileInputStream(evshimSrc);
+                     java.io.OutputStream out = new java.io.FileOutputStream(evshimDst)) {
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                }
+                evshimDst.setReadable(true, false);
+                evshimDst.setExecutable(true, false);
+            }
+            if (!evshimDst.exists()) {
+                // Fall back to the (volatile) nativeLibraryDir path so we at least try.
+                stableEvshimPath = context.getApplicationInfo().nativeLibraryDir + "/libevshim.so";
+            }
+        } catch (Exception e) {
+            Log.w("BionicProgramLauncherComponent", "Failed to stage libevshim.so for shell cmd, falling back", e);
+            stableEvshimPath = context.getApplicationInfo().nativeLibraryDir + "/libevshim.so";
+        }
+        ld_preload += ":" + stableEvshimPath;
+
         ld_preload += ":" + replacePath;
+
+        // wine_shim.so is ONLY needed for the bionic-Steam path — see main-launch gate above.
+        // Unconditional inclusion crashes Wine on some ROMs (netdClientInit SIGSEGV at linker
+        // call_constructors time).  Gate strictly behind isLaunchBionicSteam().
+        if (container != null && container.isLaunchBionicSteam()) {
+            String shellWineShimPath = imageFs.getLibDir() + "/wine_shim.so";
+            try {
+                File shellWineShimSrc = new File(context.getApplicationInfo().nativeLibraryDir, "wine_shim.so");
+                File shellWineShimDst = new File(shellWineShimPath);
+                if (shellWineShimSrc.exists() && (!shellWineShimDst.exists()
+                        || shellWineShimDst.length() != shellWineShimSrc.length())) {
+                    try (java.io.InputStream in = new java.io.FileInputStream(shellWineShimSrc);
+                         java.io.OutputStream out = new java.io.FileOutputStream(shellWineShimDst)) {
+                        byte[] buf = new byte[65536];
+                        int n;
+                        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                    }
+                    shellWineShimDst.setReadable(true, false);
+                    shellWineShimDst.setExecutable(true, false);
+                }
+            } catch (Exception e) {
+                Log.w("BionicProgramLauncherComponent", "Failed to stage wine_shim.so for shell cmd", e);
+            }
+            if (new File(shellWineShimPath).exists()) {
+                ld_preload += ":" + shellWineShimPath;
+            }
+        }
 
         envVars.put("LD_PRELOAD", ld_preload);
         envVars.put("WINEMU_HOST_PKG", BuildConfig.APPLICATION_ID);
 
         String emulator = container.getEmulator();
-        if (this.envVars != null) envVars.putAll(this.envVars);
+        // CRITICAL: never let the persisted/external container env OVERRIDE the freshly-computed
+        // LD_PRELOAD here. A saved container env can carry a STALE absolute libevshim path baked
+        // with an old /data/app/~~<hash>/ apk dir (Android regenerates that hash on every reinstall),
+        // and if it wins, wineserver can't link. Drop any incoming LD_PRELOAD before merging.
+        if (this.envVars != null) {
+            if (this.envVars.has("LD_PRELOAD")) {
+                Log.w("BionicProgramLauncherComponent",
+                        "execShellCommand: dropping stale LD_PRELOAD from container env (keeping computed)");
+                this.envVars.remove("LD_PRELOAD");
+            }
+            envVars.putAll(this.envVars);
+        }
 
         String finalCommand = getFinalCommand(winePath, emulator, envVars, imageFs.getBinDir(), command);
 
