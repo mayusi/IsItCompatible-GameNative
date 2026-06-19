@@ -576,7 +576,65 @@ class AutoTunerEngine(
             "Probe sweep: installed Turnip drivers = ${if (installedTurnipDrivers.isEmpty()) "(none)" else installedTurnipDrivers}",
         )
 
-        val archetypeTrials = SweepPlan.buildProbeTrials(baseline, installedTurnipDrivers)
+        // AUTO-INSTALL: if no Turnip driver is present, download and install one automatically
+        // before building probe trials. This closes the DMC3/RP6 zero-frames blocker — the
+        // user's vision is "it does everything, even download automatically."
+        var driverAutoInstallFailed = false
+        var effectiveTurnipDrivers: Set<String> = installedTurnipDrivers
+        if (installedTurnipDrivers.isEmpty()) {
+            Timber.tag(TAG).i("No Turnip driver installed — attempting automatic GPU driver download+install")
+            emit(TunerProgress.Preparing(
+                trialIndex = 0,
+                total = 0,
+                description = "Installing GPU driver…",
+            ))
+            val installResult = try {
+                DriverAutoInstaller.ensureGpuDriverInstalled(context) { msg ->
+                    // Surface download progress as a Preparing event so the UI stays responsive.
+                    // We use a fire-and-forget launch pattern by emitting directly; the progress
+                    // description field is shown by the existing Preparing UI renderer.
+                    Timber.tag(TAG).d("Driver install progress: $msg")
+                }
+            } catch (e: Exception) {
+                Timber.tag(TAG).e(e, "DriverAutoInstaller.ensureGpuDriverInstalled threw unexpectedly")
+                DriverAutoInstaller.DriverInstallResult.Failed("Unexpected: ${e.message}")
+            }
+
+            when (installResult) {
+                is DriverAutoInstaller.DriverInstallResult.Installed -> {
+                    Timber.tag(TAG).i(
+                        "GPU driver auto-installed: '${installResult.driverName}' — re-enumerating",
+                    )
+                    emit(TunerProgress.Preparing(
+                        trialIndex = 0,
+                        total = 0,
+                        description = "GPU driver installed: ${installResult.driverName}",
+                    ))
+                    // Re-enumerate so the freshly-installed driver appears in probe trials.
+                    effectiveTurnipDrivers = try {
+                        withContext(Dispatchers.IO) {
+                            AdrenotoolsManager(context).enumarateInstalledDrivers().toSet()
+                        }
+                    } catch (e: Exception) {
+                        Timber.tag(TAG).w(e, "Re-enumeration after auto-install failed — using install name as fallback")
+                        setOf(installResult.driverName)
+                    }
+                    Timber.tag(TAG).i("Post-install effective drivers: $effectiveTurnipDrivers")
+                }
+                is DriverAutoInstaller.DriverInstallResult.AlreadyPresent -> {
+                    // Should not happen (we checked isEmpty above), but handle gracefully.
+                    Timber.tag(TAG).i("DriverAutoInstaller reports AlreadyPresent — no change")
+                }
+                is DriverAutoInstaller.DriverInstallResult.Failed -> {
+                    Timber.tag(TAG).w(
+                        "GPU driver auto-install failed: ${installResult.reason} — falling back to System-only probes",
+                    )
+                    driverAutoInstallFailed = true
+                }
+            }
+        }
+
+        val archetypeTrials = SweepPlan.buildProbeTrials(baseline, effectiveTurnipDrivers)
         // WARM START: if this game already has a stored winning config, try it
         // FIRST so a previously-tuned game boots on trial 0 (the early-abort then
         // ends the whole probe immediately). Falls back to the normal archetype
@@ -643,24 +701,31 @@ class AutoTunerEngine(
         }
 
         // BUG 3 FIX: diagnose no-driver failure. When every probe trial black-screened AND
-        // no Turnip driver was installed, give the user an actionable message instead of the
-        // generic "game compatibility issue" text. The installedTurnipDrivers set computed
-        // above is captured via the outer function's scope.
+        // no Turnip driver is available (either was never installed or auto-install failed),
+        // give the user an actionable message instead of the generic "game compatibility issue".
         val allBlackScreened = allResults.isNotEmpty() && allResults.all {
             it.status == TunerResult.TrialStatus.BLACK_SCREEN || it.blackScreenDetected
         }
-        val noTurnipInstalled = installedTurnipDrivers.isEmpty()
-        val outcomeNotes: String? = if (winner == null && allBlackScreened && noTurnipInstalled) {
-            "No working GPU driver is installed. Install a Turnip GPU driver " +
-                "(Settings → Graphics Drivers) and try again — without it most " +
-                "games cannot render on this device."
+        val noTurnipAvailable = effectiveTurnipDrivers.isEmpty()
+        val outcomeNotes: String? = if (winner == null && allBlackScreened && noTurnipAvailable) {
+            if (driverAutoInstallFailed) {
+                // Auto-install was attempted but failed (network error etc.).
+                "Automatic GPU driver installation failed. Please install a Turnip driver " +
+                    "manually (Settings → Graphics Drivers) and try again — without it " +
+                    "most games cannot render on this device."
+            } else {
+                // No driver and no auto-install attempt (shouldn't reach here normally).
+                "No working GPU driver is installed. Install a Turnip GPU driver " +
+                    "(Settings → Graphics Drivers) and try again — without it most " +
+                    "games cannot render on this device."
+            }
         } else {
             null
         }
         if (outcomeNotes != null) {
             Timber.tag(TAG).w(
-                "Probe sweep: all trials black-screened AND no Turnip driver installed — " +
-                    "surfacing driver-install message to user",
+                "Probe sweep: all trials black-screened AND no Turnip driver available " +
+                    "(autoInstallFailed=$driverAutoInstallFailed) — surfacing driver message to user",
             )
         }
 
