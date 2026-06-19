@@ -55,6 +55,7 @@ object FixLadder {
         MSVC_MISSING,
         SEH_ANTICHEAT,
         BLACK_SCREEN_NOFIX,
+        WINE_LAUNCH_FAILED, // Android linker rejected Wine/wineserver — required .so not found (stale LD_PRELOAD path)
         UNKNOWN_CRASH,
     }
 
@@ -103,6 +104,51 @@ object FixLadder {
      * un-tried rung that applies to the current [FailureClass].
      */
     val LADDER: List<Rung> = listOf(
+
+        // Rung 0 — Repair Wine runtime native libraries (WINE_LAUNCH_FAILED).
+        //
+        // When the Android linker rejects Wine/wineserver because libevshim.so (or another
+        // preloaded native lib) is not found at its baked-in LD_PRELOAD path, the game
+        // exits in ~7ms before any Wine log is written.  This rung re-copies libevshim.so
+        // from the CURRENT (valid) nativeLibraryDir into the stable imagefs usr/lib dir —
+        // the same repair BionicProgramLauncherComponent.java does on every normal launch.
+        // After this rung runs, the next launch attempt will pick up the stable path and
+        // succeed.  Null-safe: any failure is swallowed so the rung degrades gracefully.
+        Rung(
+            id = "repair_wine_runtime",
+            description = "Repair Wine runtime — re-copy native preload library to stable path",
+            appliesToClasses = setOf(FailureClass.WINE_LAUNCH_FAILED),
+            apply = { context, appId, baseConfig, _, _ ->
+                try {
+                    val imageFs = com.winlator.xenvironment.ImageFs.find(context)
+                    val stableLibDir = imageFs?.getLibDir()
+                    val nativeLibDir = context.applicationInfo?.nativeLibraryDir
+                    if (stableLibDir != null && nativeLibDir != null) {
+                        val src  = File(nativeLibDir, "libevshim.so")
+                        val dest = File(stableLibDir, "libevshim.so")
+                        if (src.exists()) {
+                            val needsCopy = !dest.exists()
+                                || dest.length() != src.length()
+                                || dest.lastModified() < src.lastModified()
+                            if (needsCopy) {
+                                stableLibDir.mkdirs()
+                                src.inputStream().use { input ->
+                                    dest.outputStream().use { output -> input.copyTo(output) }
+                                }
+                                Timber.tag(TAG).i("repair_wine_runtime: re-copied libevshim.so for $appId")
+                            }
+                            FixResult(
+                                appliedFix = AppliedFix.WineRuntimeRepaired,
+                                patchedConfig = baseConfig,
+                            )
+                        } else null
+                    } else null
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "Rung repair_wine_runtime failed for $appId")
+                    null
+                }
+            },
+        ),
 
         // Rung 1 — Per-game registry fix (compiled-in or JSON)
         Rung(

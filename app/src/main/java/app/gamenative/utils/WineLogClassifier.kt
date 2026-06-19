@@ -114,6 +114,18 @@ object WineLogClassifier {
                 joined.contains(Regex("(?i)box64.*(error|crash|fault)")) ->
                 FixLadder.FailureClass.BOX64_DYNAREC
 
+            // Wine/wineserver could not start — the Android linker rejected the executable
+            // because a required shared library was not found (typically a stale LD_PRELOAD
+            // absolute path pointing at a deleted nativeLibraryDir after an APK update).
+            // Signals: linker "CANNOT LINK EXECUTABLE", soname resolution failure, or
+            // XServerScreen's exit-status-1 report.  Checked before UNKNOWN_CRASH so the
+            // specific repair rung fires rather than a generic retry.
+            joined.contains("CANNOT LINK EXECUTABLE") ||
+                joined.contains(Regex("library .* not found: needed by")) ||
+                joined.contains("cannot locate symbol", ignoreCase = true) ||
+                joined.contains("Guest program terminated with status: 1", ignoreCase = true) ->
+                FixLadder.FailureClass.WINE_LAUNCH_FAILED
+
             else -> FixLadder.FailureClass.UNKNOWN_CRASH
         }
     }

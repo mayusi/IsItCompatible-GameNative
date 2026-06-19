@@ -297,7 +297,39 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
 
         String ld_preload = "";
         String sysvPath = imageFs.getLibDir() + "/libandroid-sysvshm.so";
-        String evshimPath = context.getApplicationInfo().nativeLibraryDir + "/libevshim.so";
+        // FIX: copy libevshim.so from the volatile nativeLibraryDir into the STABLE imagefs lib
+        // dir on every launch (skips if already up-to-date).  The source (nativeLibraryDir) is
+        // valid for the currently-running process; the destination (imageFs.getLibDir()) is the
+        // same stable /data/data/<pkg>/files/imagefs/usr/lib directory that sysvPath and
+        // replacePath already resolve from — and is the first entry on LD_LIBRARY_PATH — so
+        // soname-based DT_NEEDED lookups for "libevshim.so" also resolve from the stable dir.
+        // If the copy fails we fall back to the volatile path (no regression vs. old behaviour).
+        String stableEvshimPath = imageFs.getLibDir() + "/libevshim.so";
+        String evshimPath;
+        try {
+            File evshimSrc  = new File(context.getApplicationInfo().nativeLibraryDir, "libevshim.so");
+            File evshimDest = new File(stableEvshimPath);
+            boolean needsCopy = !evshimDest.exists()
+                    || evshimDest.length() != evshimSrc.length()
+                    || evshimDest.lastModified() < evshimSrc.lastModified();
+            if (needsCopy && evshimSrc.exists()) {
+                File destParent = evshimDest.getParentFile();
+                if (destParent != null && !destParent.exists()) destParent.mkdirs();
+                try (java.io.InputStream  in  = new java.io.FileInputStream(evshimSrc);
+                     java.io.OutputStream out = new java.io.FileOutputStream(evshimDest)) {
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                }
+                Log.i("BionicProgramLauncherComponent",
+                        "libevshim.so copied to stable path: " + stableEvshimPath);
+            }
+            evshimPath = stableEvshimPath;
+        } catch (Exception e) {
+            Log.w("BionicProgramLauncherComponent",
+                    "libevshim stable-copy failed, falling back to volatile path: " + e.getMessage());
+            evshimPath = context.getApplicationInfo().nativeLibraryDir + "/libevshim.so";
+        }
         String replacePath = imageFs.getLibDir() + "/" + BuildConfig.PRELOAD_BIONIC_SO;
 
         if (new File(sysvPath).exists()) ld_preload += sysvPath;
@@ -499,8 +531,21 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
             bootstrapNativeSteamClient(envVars, imageFs);
         }
 
-        // Merge any additional environment variables from external sources
+        // Merge any additional environment variables from external sources.
+        //
+        // CRITICAL: never let the persisted/external env OVERRIDE LD_PRELOAD. The launcher
+        // computes LD_PRELOAD above (line ~355) from the CURRENT nativeLibraryDir + the stable
+        // imagefs lib dir. A container's saved env can contain a STALE absolute LD_PRELOAD baked
+        // with an old /data/app/~~<hash>/ apk path (Android regenerates that hash on every
+        // reinstall/update). If that stale value wins here, the Android linker rejects wine with
+        // "CANNOT LINK EXECUTABLE: libevshim.so not found" and NO game launches. So we drop any
+        // incoming LD_PRELOAD before merging and keep the freshly-computed one.
         if (this.envVars != null) {
+            if (this.envVars.has("LD_PRELOAD")) {
+                Log.w("BionicProgramLauncherComponent",
+                        "Dropping stale LD_PRELOAD from container/external env (keeping freshly-computed one)");
+                this.envVars.remove("LD_PRELOAD");
+            }
             envVars.putAll(this.envVars);
         }
 

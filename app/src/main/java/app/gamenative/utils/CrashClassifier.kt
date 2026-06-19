@@ -299,6 +299,22 @@ object CrashClassifier {
                     "game to at least boot.",
             )
 
+            FixLadder.FailureClass.WINE_LAUNCH_FAILED -> CrashSuggestion(
+                message = "The Wine runtime failed to start — NovaGN is repairing it for the next launch",
+                actionLabel = null,
+                action = null,
+                diagnosis = "What happened: the Android system linker rejected Wine or wineserver " +
+                    "before the game could start (~7 ms launch time). A required shared library " +
+                    "(libevshim.so) was listed in LD_PRELOAD with an absolute path that pointed " +
+                    "at a directory deleted by an APK update or reinstall. The path includes a " +
+                    "volatile hash component that Android regenerates on every install, so it goes " +
+                    "stale the moment the app is updated.\n\n" +
+                    "What the auto-fixer does: re-copies libevshim.so from the app's current " +
+                    "native library directory into a stable location (/data/data/<pkg>/files/" +
+                    "imagefs/usr/lib/) that survives reinstalls. The next launch will use the " +
+                    "stable path, and the linker will find the library correctly.",
+            )
+
             FixLadder.FailureClass.BLACK_SCREEN_NOFIX -> CrashSuggestion(
                 message = "The game started but showed a black screen — we couldn't pinpoint the cause",
                 actionLabel = null,

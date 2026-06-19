@@ -71,4 +71,14 @@ sealed class AppliedFix {
     data class WinComponents(val components: String) : AppliedFix() {
         override fun label(): String = "Win components enabled: $components"
     }
+
+    /**
+     * Wine runtime native preload library (libevshim.so) was re-copied from the app's current
+     * nativeLibraryDir into the stable imagefs usr/lib directory.  Applied when the Android
+     * linker rejected Wine/wineserver at startup because the baked-in LD_PRELOAD path pointed
+     * at a deleted hash directory from a previous APK install.
+     */
+    object WineRuntimeRepaired : AppliedFix() {
+        override fun label(): String = "Wine runtime repaired (libevshim re-copied)"
+    }
 }
