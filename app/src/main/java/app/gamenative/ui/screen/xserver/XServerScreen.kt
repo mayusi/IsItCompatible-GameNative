@@ -3515,9 +3515,27 @@ private fun setupXEnvironment(
                 onError = onGameLaunchError
             )
             if (preInstallCommands.isNotEmpty()) {
-                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Installing prerequisites..."))
+                // The per-step splash is set inside chainPreInstallSteps; this is only a
+                // brief fallback shown while the first step is being handed off.
+                val firstStep = preInstallCommands.first()
+                val totalCount = preInstallCommands.size
+                try {
+                    PluviaApp.events.emit(
+                        AndroidEvent.SetBootingSplashText(
+                            "Installing ${firstStep.displayName} (1/$totalCount)…"
+                        )
+                    )
+                } catch (e: Exception) {
+                    Timber.tag("PreInstall").w(e, "Failed to emit initial prereq splash (non-fatal)")
+                }
+                Timber.tag("PreInstall").i("Starting $totalCount prerequisite step(s): " +
+                    preInstallCommands.joinToString(", ") { it.displayName })
             } else {
-                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Launching game..."))
+                try {
+                    PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Launching game…"))
+                } catch (e: Exception) {
+                    Timber.tag("PreInstall").w(e, "Failed to emit 'Launching game' splash (non-fatal)")
+                }
             }
         }
 
@@ -3645,16 +3663,67 @@ private fun setupXEnvironment(
         PluviaApp.events.emit(AndroidEvent.GuestProgramTerminated)
     }
 
-    fun chainPreInstallSteps(remaining: List<PreInstallSteps.PreInstallCommand>) {
+    // stepStartTimes holds the elapsedRealtime at which the current pre-install step started,
+    // so we can log an accurate duration when it finishes.
+    val stepStartTimes = mutableMapOf<app.gamenative.enums.Marker, Long>()
+
+    // Shared coroutine scope for pre-install watchdog timers.  Uses Dispatchers.IO so
+    // watchdog delays don't block the main thread.  Lives for the duration of the chain.
+    val preInstallWatchdogScope = CoroutineScope(Dispatchers.IO)
+
+    // Per-step timeout: if a Wine guest session (vcredist, GOG, etc.) has not exited after
+    // PREINSTALL_STEP_TIMEOUT_MS milliseconds we force-kill it, write the marker so the step
+    // is not retried next launch (FIX B), and advance the chain so the game still launches
+    // (FIX A).  120 s is generous enough to allow slow installs on low-end devices while
+    // guaranteeing a bounded launch time regardless of installer behaviour.
+    val PREINSTALL_STEP_TIMEOUT_MS = 120_000L
+
+    fun chainPreInstallSteps(
+        remaining: List<PreInstallSteps.PreInstallCommand>,
+        totalSteps: Int = remaining.size,
+    ) {
         if (remaining.isEmpty()) {
             guestProgramLauncherComponent.setGuestExecutable(gameExecutable)
             guestProgramLauncherComponent.setTerminationCallback(gameTerminationCallback)
             return
         }
-        guestProgramLauncherComponent.setGuestExecutable(remaining.first().executable)
-        guestProgramLauncherComponent.setTerminationCallback { _ ->
-            val current = remaining.first()
-            PreInstallSteps.markStepDone(container, current.marker)
+        val current = remaining.first()
+        val stepIndex = totalSteps - remaining.size + 1   // 1-based
+        val stepLabel = "${current.displayName} ($stepIndex/$totalSteps)"
+
+        // Announce the step that is about to start.
+        try {
+            PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Installing $stepLabel…"))
+        } catch (e: Exception) {
+            Timber.tag("PreInstall").w(e, "Failed to emit splash text for step $stepLabel (non-fatal)")
+        }
+        Timber.tag("PreInstall").i("START $stepLabel")
+        stepStartTimes[current.marker] = android.os.SystemClock.elapsedRealtime()
+
+        // FIX A: guard that ensures the chain advances exactly once per step regardless of
+        // whether it was the normal termination callback or the watchdog that fired first.
+        val stepAdvanced = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        // Advance-and-continue helper — called by either the normal callback or the watchdog.
+        // writeMarker: true when the step is considered "done enough" (normal exit OR timeout).
+        fun advanceChain(writeMarker: Boolean) {
+            if (!stepAdvanced.compareAndSet(false, true)) return   // already advanced — no-op
+
+            val startMs = stepStartTimes.remove(current.marker) ?: android.os.SystemClock.elapsedRealtime()
+            val elapsedSec = (android.os.SystemClock.elapsedRealtime() - startMs) / 1000.0
+
+            if (writeMarker) {
+                // FIX B: write the marker so this step is skipped on every future launch.
+                // On a normal exit this records genuine success.  On a timeout-kill this
+                // records "attempted — give up — never retry", which is correct: a hung
+                // vcredist is not going to succeed on the next launch either.
+                try {
+                    PreInstallSteps.markStepDone(container, current.marker)
+                } catch (e: Exception) {
+                    Timber.tag("PreInstall").w(e, "Failed to write marker for $stepLabel (non-fatal)")
+                }
+            }
+
             guestProgramLauncherComponent.setPreUnpack(null)
             try {
                 guestProgramLauncherComponent.execShellCommand("wineserver -k")
@@ -3663,12 +3732,46 @@ private fun setupXEnvironment(
             }
             val nextRemaining = remaining.drop(1)
             if (nextRemaining.isEmpty()) {
-                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Launching game..."))
-            } else {
-                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Installing prerequisites..."))
+                try {
+                    PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Launching game…"))
+                } catch (e: Exception) {
+                    Timber.tag("PreInstall").w(e, "Failed to emit 'Launching game' splash (non-fatal)")
+                }
             }
-            chainPreInstallSteps(nextRemaining)
+            chainPreInstallSteps(nextRemaining, totalSteps)
             guestProgramLauncherComponent.start()
+        }
+
+        // FIX A: watchdog coroutine — fires after PREINSTALL_STEP_TIMEOUT_MS if the Wine
+        // session has not terminated on its own.
+        val watchdogJob = preInstallWatchdogScope.launch {
+            delay(PREINSTALL_STEP_TIMEOUT_MS)
+            // If we reach here the normal termination callback never fired.
+            Timber.tag("PreInstall").w(
+                "TIMEOUT $stepLabel after ${PREINSTALL_STEP_TIMEOUT_MS / 1000}s — " +
+                "killing session and proceeding"
+            )
+            try {
+                guestProgramLauncherComponent.stop()
+            } catch (e: Exception) {
+                Timber.tag("PreInstall").w(e, "stop() during timeout kill (non-fatal)")
+            }
+            // FIX B: write marker on timeout so next launch skips this step entirely.
+            advanceChain(writeMarker = true)
+        }
+
+        guestProgramLauncherComponent.setGuestExecutable(current.executable)
+        guestProgramLauncherComponent.setTerminationCallback { _ ->
+            // Cancel the watchdog first — normal exit, no forced kill needed.
+            watchdogJob.cancel()
+
+            val elapsedSec = run {
+                val startMs = stepStartTimes[current.marker] ?: android.os.SystemClock.elapsedRealtime()
+                (android.os.SystemClock.elapsedRealtime() - startMs) / 1000.0
+            }
+            Timber.tag("PreInstall").i("DONE  $stepLabel (%.1fs)".format(elapsedSec))
+
+            advanceChain(writeMarker = true)
         }
     }
 
@@ -4374,14 +4477,16 @@ private fun getRedistDirectory(
     // Use drivesIterator to find the drive whose path == gameDirPath.
     // The old drives.indexOf + drives[driveIndex-2] treated the packed String as
     // a char array and would produce wrong offsets or SIOOB on unusual paths.
-    var driveLetter: Char = ' '
+    var driveLetter: Char = 'D'
+    var driveFound = false
     for (entry in container.drivesIterator()) {
         if (entry[1] == gameDirPath) {
             driveLetter = entry[0][0]
+            driveFound = true
             break
         }
     }
-    if (driveLetter == ' ') {
+    if (!driveFound) {
         Timber.tag("installRedist").e("Could not locate game drive for redistributables at $gameDirPath")
         return null
     }
@@ -4470,20 +4575,24 @@ private fun unpackExecutableFile(
         }
         if (!monoAlreadyDone) {
             try {
-                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Installing Mono..."))
+                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Installing .NET runtime (Wine Mono)…"))
+                val monoStartMs = android.os.SystemClock.elapsedRealtime()
+                Timber.tag("PreInstall").i("START Wine Mono MSI install (90s timeout)")
                 val monoCmd = "wine msiexec /i Z:\\opt\\mono-gecko-offline\\wine-mono-11.0.0-x86.msi"
                 Timber.i("Install mono command (90s timeout): $monoCmd")
                 val monoOutput = guestProgramLauncherComponent.execShellCommandWithTimeout(monoCmd, 90)
                 output.append(monoOutput)
                 val timedOut = monoOutput.contains("[TIMED OUT]")
+                val monoElapsed = (android.os.SystemClock.elapsedRealtime() - monoStartMs) / 1000.0
                 if (timedOut) {
-                    Timber.w("Mono install timed out after 90s — killing stale Wine processes and proceeding")
+                    Timber.tag("PreInstall").w("DONE  Wine Mono MSI install — TIMED OUT after %.1fs, killing stale Wine processes and proceeding".format(monoElapsed))
                     try {
                         guestProgramLauncherComponent.execShellCommand("wineserver -k")
                     } catch (ke: Exception) {
                         Timber.w(ke, "wineserver -k after mono timeout (non-fatal)")
                     }
                 } else {
+                    Timber.tag("PreInstall").i("DONE  Wine Mono MSI install (%.1fs)".format(monoElapsed))
                     Timber.i("Mono install completed: $output")
                 }
                 // Mark done regardless of timeout — so we never block here again on relaunch.
@@ -4494,12 +4603,17 @@ private fun unpackExecutableFile(
                 Timber.e("Error during mono installation: $e")
             }
         } else {
-            Timber.i("Mono already installed (marker found), skipping msiexec")
+            Timber.tag("PreInstall").i("SKIP  Wine Mono (marker present${if (isProton) "; Proton has it built-in" else ""})")
         }
 
         // Install redistributables if shared depots are present
         try {
+            PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Installing DirectX / redistributables…"))
+            val redistStartMs = android.os.SystemClock.elapsedRealtime()
+            Timber.tag("PreInstall").i("START shared depot redistributables")
             installRedistributables(context, container, appId, guestProgramLauncherComponent, imageFs)
+            val redistElapsed = (android.os.SystemClock.elapsedRealtime() - redistStartMs) / 1000.0
+            Timber.tag("PreInstall").i("DONE  shared depot redistributables (%.1fs)".format(redistElapsed))
         } catch (e: Exception) {
             Timber.tag("installRedist").e(e, "Error installing redistributables: ${e.message}")
         }
@@ -4511,7 +4625,9 @@ private fun unpackExecutableFile(
         val rootDir: File = imageFs.getRootDir()
 
         try {
-            PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Handling DRM..."))
+            PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Generating Steam interfaces…"))
+            Timber.tag("PreInstall").i("START DRM — generate_interfaces_file")
+            val drmIfaceStartMs = android.os.SystemClock.elapsedRealtime()
             // a:/.../GameDir/orig_dll_path.txt  (same dir as the EXE inside A:)
             val origTxtFile  = File("${imageFs.wineprefix}/dosdevices/a:/orig_dll_path.txt")
 
@@ -4558,6 +4674,8 @@ private fun unpackExecutableFile(
             } else {
                 Timber.i("orig_dll_path.txt not present; skipping interface generation")
             }
+            val drmIfaceElapsed = (android.os.SystemClock.elapsedRealtime() - drmIfaceStartMs) / 1000.0
+            Timber.tag("PreInstall").i("DONE  DRM — generate_interfaces_file (%.1fs)".format(drmIfaceElapsed))
         } catch (e: Exception) {
             Timber.e("Error running generate_interfaces_file: $e")
         }
@@ -4575,10 +4693,12 @@ private fun unpackExecutableFile(
             if (exePaths.isEmpty()) {
                 Timber.w("No executable path set, skipping Steamless")
             } else {
-                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Handling DRM..."))
+                val steamlessStartMs = android.os.SystemClock.elapsedRealtime()
+                Timber.tag("PreInstall").i("START Steamless DRM unpack (${exePaths.size} executable(s))")
+                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Removing DRM protection…"))
                 for ((index, executablePath) in exePaths.withIndex()) {
                     if (exePaths.size > 1) {
-                        PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Handling DRM (${index + 1}/${exePaths.size})"))
+                        PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Removing DRM protection… (${index + 1}/${exePaths.size})"))
                     }
                     var batchFile: File? = null
                     try {
@@ -4632,6 +4752,8 @@ private fun unpackExecutableFile(
                         Timber.e(e, "Error moving files for $executablePath")
                     }
                 }
+                val steamlessElapsed = (android.os.SystemClock.elapsedRealtime() - steamlessStartMs) / 1000.0
+                Timber.tag("PreInstall").i("DONE  Steamless DRM unpack (%.1fs)".format(steamlessElapsed))
             }
         } else {
             Timber.i("Skipping Steamless (launchRealSteam=${container.isLaunchRealSteam}, launchBionicSteam=${container.isLaunchBionicSteam}, useLegacyDRM=${container.isUseLegacyDRM}, unpackFiles=${container.isUnpackFiles})")

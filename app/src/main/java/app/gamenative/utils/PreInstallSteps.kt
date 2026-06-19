@@ -21,6 +21,19 @@ object PreInstallSteps {
     data class PreInstallCommand(
         val marker: Marker,
         val executable: String,
+        /** Short human-readable label shown in the booting splash while this step runs. */
+        val displayName: String,
+    )
+
+    /** Maps each Marker to a concise label shown in the booting splash. */
+    private val markerDisplayNames: Map<Marker, String> = mapOf(
+        Marker.VCREDIST_INSTALLED      to "Visual C++ runtime",
+        Marker.DOTNET_INSTALLED        to ".NET runtime",
+        Marker.PHYSX_INSTALLED         to "PhysX",
+        Marker.OPENAL_INSTALLED        to "OpenAL",
+        Marker.XNA_INSTALLED           to "XNA Framework",
+        Marker.GOG_SCRIPT_INSTALLED    to "GOG Script Interpreter",
+        Marker.UBISOFT_CONNECT_INSTALLED to "Ubisoft Connect",
     )
 
     private val steps: List<PreInstallStep> = listOf(
@@ -73,6 +86,7 @@ object PreInstallSteps {
                         PreInstallCommand(
                             marker = step.marker,
                             executable = wrapAsGuestExecutable(cmd, screenInfo),
+                            displayName = markerDisplayNames[step.marker] ?: step.marker.name,
                         ),
                     )
                 }
