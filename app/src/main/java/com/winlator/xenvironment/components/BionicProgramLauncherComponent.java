@@ -927,7 +927,16 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         return execShellCommand(command, true);
     }
 
+    @Override
+    public String execShellCommandWithTimeout(String command, int timeoutSeconds) {
+        return execShellCommandImpl(command, true, timeoutSeconds);
+    }
+
     public String execShellCommand(String command, boolean includeStderr) {
+        return execShellCommandImpl(command, includeStderr, 0 /* no timeout */);
+    }
+
+    private String execShellCommandImpl(String command, boolean includeStderr, int timeoutSeconds) {
         Context context = environment.getContext();
         ImageFs imageFs = ImageFs.find(context);
         File rootDir = imageFs.getRootDir();
@@ -1046,7 +1055,7 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
 
         Log.d("BionicProgramLauncherComponent", "Shell command is " + finalCommand);
         return ProcessHelper.execWithOutput(finalCommand, envVars.toStringArray(),
-                workingDir != null ? workingDir : imageFs.getRootDir(), includeStderr);
+                workingDir != null ? workingDir : imageFs.getRootDir(), includeStderr, timeoutSeconds);
     }
 
     public void restartWineServer() {

@@ -383,4 +383,14 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
     public String execShellCommand(String command, boolean includeStderr){
         return "";
     }
+
+    /**
+     * Like execShellCommand but kills the subprocess and returns after at most
+     * {@code timeoutSeconds} seconds.  Subclasses that support timeouts override this;
+     * the base-class fallback simply delegates to the normal (blocking) variant so existing
+     * callers that do not need timeouts are unaffected.
+     */
+    public String execShellCommandWithTimeout(String command, int timeoutSeconds) {
+        return execShellCommand(command, true);
+    }
 }

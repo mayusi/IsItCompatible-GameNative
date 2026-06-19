@@ -13,4 +13,5 @@ enum class Marker(val fileName: String ) {
     XNA_INSTALLED(".xna_installed"),
     UBISOFT_CONNECT_INSTALLED(".ubisoft_connect_installed"),
     DOTNET_INSTALLED(".dotnet_installed"),
+    MONO_INSTALLED(".mono_installed"),
 }

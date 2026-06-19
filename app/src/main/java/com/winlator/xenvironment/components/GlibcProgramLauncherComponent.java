@@ -284,6 +284,15 @@ public class GlibcProgramLauncherComponent extends GuestProgramLauncherComponent
     }
 
     public String execShellCommand(String command, boolean includeStderr) {
+        return execShellCommandWithTimeout(command, includeStderr, 0 /* no timeout */);
+    }
+
+    @Override
+    public String execShellCommandWithTimeout(String command, int timeoutSeconds) {
+        return execShellCommandWithTimeout(command, true, timeoutSeconds);
+    }
+
+    private String execShellCommandWithTimeout(String command, boolean includeStderr, int timeoutSeconds) {
         Context context = environment.getContext();
         ImageFs imageFs = ImageFs.find(context);
         File rootDir = imageFs.getRootDir();
@@ -336,6 +345,6 @@ public class GlibcProgramLauncherComponent extends GuestProgramLauncherComponent
         // Execute the command and capture its output
         Log.d("GlibcProgramLauncherComponent", "Shell command is " + finalCommand);
         return ProcessHelper.execWithOutput(finalCommand, envVars.toStringArray(),
-                workingDir != null ? workingDir : imageFs.getRootDir(), includeStderr);
+                workingDir != null ? workingDir : imageFs.getRootDir(), includeStderr, timeoutSeconds);
     }
 }

@@ -128,6 +128,7 @@ import app.gamenative.utils.LsfgQuickMenuHelper
 import app.gamenative.utils.ManifestComponentHelper
 import app.gamenative.utils.downloader.DXWrapperDownloader
 import app.gamenative.utils.downloader.GraphicsDriverDownloader
+import app.gamenative.utils.MarkerUtils
 import app.gamenative.utils.PreInstallSteps
 import app.gamenative.utils.SteamTokenLogin
 import app.gamenative.utils.SteamUtils
@@ -4441,15 +4442,59 @@ private fun unpackExecutableFile(
     val imageFs = ImageFs.find(context)
     var output = StringBuilder()
     if (needsUnpacking || containerVariantChanged){
-        try {
-            PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Installing Mono..."))
-            val monoCmd = "wine msiexec /i Z:\\opt\\mono-gecko-offline\\wine-mono-11.0.0-x86.msi && wineserver -k"
-            Timber.i("Install mono command $monoCmd")
-            val monoOutput = guestProgramLauncherComponent.execShellCommand(monoCmd)
-            output.append(monoOutput)
-            Timber.i("Result of mono command " + output)
-        } catch (e: Exception) {
-            Timber.e("Error during mono installation: $e")
+        // Find the A: drive path for marker storage (same logic as PreInstallSteps.getGameDir).
+        val gameDirPath: String? = run {
+            for (drive in Container.drivesIterator(container.drives)) {
+                if (drive[0].equals("A", ignoreCase = true)) return@run drive[1]
+            }
+            null
+        }
+
+        // --- Wine-Mono MSI install ---
+        // wine-mono MSI is a .NET runtime needed only by .NET-dependent Windows apps.
+        // DX9-only games (e.g. DMC3/Devil May Cry HD Collection) never use it.
+        // On ARM64/Box64, "wine msiexec" is known to hang for 15+ minutes with no progress.
+        // Guard with:
+        //   1. A persistent marker (.mono_installed) so this never runs more than once per game dir.
+        //   2. A 90-second timeout — if it hangs, we kill the stuck processes and proceed to launch.
+        // Proton bundles Mono pre-integrated, so the external wine-mono MSI is redundant AND it's
+        // the exact path that deadlocks on ARM64/Box64. Skip it entirely on Proton wine versions.
+        val isProton = container.wineVersion?.contains("proton", ignoreCase = true) == true
+        val monoAlreadyDone = isProton || (gameDirPath != null &&
+            MarkerUtils.hasMarker(gameDirPath, app.gamenative.enums.Marker.MONO_INSTALLED))
+        if (isProton) {
+            Timber.i("Proton wine (${container.wineVersion}) ships Mono integrated — skipping redundant wine-mono MSI install")
+            if (gameDirPath != null) {
+                MarkerUtils.addMarker(gameDirPath, app.gamenative.enums.Marker.MONO_INSTALLED)
+            }
+        }
+        if (!monoAlreadyDone) {
+            try {
+                PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Installing Mono..."))
+                val monoCmd = "wine msiexec /i Z:\\opt\\mono-gecko-offline\\wine-mono-11.0.0-x86.msi"
+                Timber.i("Install mono command (90s timeout): $monoCmd")
+                val monoOutput = guestProgramLauncherComponent.execShellCommandWithTimeout(monoCmd, 90)
+                output.append(monoOutput)
+                val timedOut = monoOutput.contains("[TIMED OUT]")
+                if (timedOut) {
+                    Timber.w("Mono install timed out after 90s — killing stale Wine processes and proceeding")
+                    try {
+                        guestProgramLauncherComponent.execShellCommand("wineserver -k")
+                    } catch (ke: Exception) {
+                        Timber.w(ke, "wineserver -k after mono timeout (non-fatal)")
+                    }
+                } else {
+                    Timber.i("Mono install completed: $output")
+                }
+                // Mark done regardless of timeout — so we never block here again on relaunch.
+                if (gameDirPath != null) {
+                    MarkerUtils.addMarker(gameDirPath, app.gamenative.enums.Marker.MONO_INSTALLED)
+                }
+            } catch (e: Exception) {
+                Timber.e("Error during mono installation: $e")
+            }
+        } else {
+            Timber.i("Mono already installed (marker found), skipping msiexec")
         }
 
         // Install redistributables if shared depots are present

@@ -207,8 +207,21 @@ public abstract class ProcessHelper {
     //                         the main thread reads stdout. This keeps stdout clean for callers
     //                         such as SteamTokenLogin
     public static String execWithOutput(String command, String[] envp, File workingDir, boolean includeStderr) {
+        return execWithOutput(command, envp, workingDir, includeStderr, 0 /* no timeout */);
+    }
+
+    /**
+     * Variant with an optional wall-clock timeout.
+     *
+     * @param timeoutSeconds  Maximum seconds to wait for the process to finish.
+     *                        Pass 0 (or any value ≤ 0) for no timeout (legacy behaviour).
+     * @return collected stdout (+ stderr when includeStderr=true), empty string on timeout or error.
+     */
+    public static String execWithOutput(String command, String[] envp, File workingDir,
+                                        boolean includeStderr, int timeoutSeconds) {
         StringBuilder output = new StringBuilder();
         Thread stderrDrainer = null;
+        java.lang.Process process = null;
         try {
             if (BuildConfig.MODERN_ANDROID) command = "/system/bin/linker64 " + command;
             ProcessBuilder pb = new ProcessBuilder(splitCommand(command));
@@ -223,7 +236,7 @@ public abstract class ProcessHelper {
             if (workingDir != null) pb.directory(workingDir);
             pb.redirectErrorStream(includeStderr); // merge only when caller wants stderr
 
-            java.lang.Process process = pb.start();
+            process = pb.start();
 
             // When not merging, drain stderr on a daemon thread to prevent pipe-buffer deadlock.
             // SteamTokenLogin uses this when calling includeStderr=false
@@ -242,21 +255,49 @@ public abstract class ProcessHelper {
                 stderrDrainer.start();
             }
 
-            // Read stdout (or the merged stream) inline; EOF arrives after the process exits.
-            try (BufferedReader r = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String l;
-                while ((l = r.readLine()) != null) output.append(l).append("\n");
-            }
+            if (timeoutSeconds > 0) {
+                // Timeout path: read stdout on a background thread so we can join with a deadline.
+                final java.lang.Process finalProcess = process;
+                final StringBuilder asyncOutput = output;
+                Thread stdoutReader = new Thread(() -> {
+                    try (BufferedReader r = new BufferedReader(
+                            new InputStreamReader(finalProcess.getInputStream()))) {
+                        String l;
+                        while ((l = r.readLine()) != null) {
+                            synchronized (asyncOutput) { asyncOutput.append(l).append("\n"); }
+                        }
+                    } catch (IOException ignored) {}
+                }, "stdout-reader");
+                stdoutReader.setDaemon(true);
+                stdoutReader.start();
 
-            // Process has already exited (we drained its stdout to EOF).
-            // waitFor() reaps the OS process-table entry.
-            process.waitFor();
+                boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+                if (!finished) {
+                    Log.w("ProcessHelper", "execWithOutput timed out after " + timeoutSeconds
+                            + "s, force-killing: " + command);
+                    process.destroyForcibly();
+                    stdoutReader.interrupt();
+                    output.append("\n[TIMED OUT]");
+                } else {
+                    stdoutReader.join(2_000);
+                }
+            } else {
+                // No-timeout path (original behaviour): read stdout inline until EOF.
+                try (BufferedReader r = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                    String l;
+                    while ((l = r.readLine()) != null) output.append(l).append("\n");
+                }
+                // Process has already exited (we drained its stdout to EOF).
+                // waitFor() reaps the OS process-table entry.
+                process.waitFor();
+            }
 
             if (stderrDrainer != null) {
                 stderrDrainer.join(5_000); // bounded wait; daemon thread is reaped on JVM exit anyway
             }
         } catch (Exception e) {
             output.append("Error: ").append(e.getMessage());
+            if (process != null) process.destroyForcibly();
         }
 
         // Format output: trim trailing whitespace/newlines
