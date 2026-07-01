@@ -1,0 +1,933 @@
+{
+  "version": 1,
+  "_comment": "Cheat-table library for GameNative IIC. Each table is keyed to a game by store source + id (same identity scheme as gamefixes/registry.json). On Box64 memory addresses are NOT stable across runs, so a cheat is a RECIPE that drives the in-process memory engine (scan -> narrow -> freeze), NOT a hardcoded address. The schema is forward-compatible with AOB pattern auto-resolution (the optional 'aob' block on a cheat) so one-tap cheats can be added later without a format change. Ship seed tables here; OTA-update by committing this file (no app release needed) — fetched from https://raw.githubusercontent.com/mayusi/IsItCompatible-GameNative/main/cheattables/registry.json",
+  "_promote_user_imports": "FLYWHEEL: users can import Cheat Engine .CT tables on-device (CheatTab -> 'Import Cheat Engine table (.CT)'). CtImporter.kt converts a .CT into the SAME table JSON shape used in the 'tables' array below, and CheatTableUserStore.kt persists it at filesDir/cheattables_user/<SOURCE_gameId>.json. To PROMOTE a verified user table into this shared catalog (so every install gets it via OTA, no app release): take that per-game user JSON file (it is already one element of this 'tables' array — CheatTableUserStore.serialize() emits the identical structure: source/gameId/title/cheats[]/recipe/chain/aob), paste it as a new object into 'tables' here, DROP its 'provenance' key (see below), verify the chain/aob on-device, then commit this file. No server, no new format. This keeps the OTA catalog growing from real user imports.",
+  "_provenance_field": "OPTIONAL per-table field 'provenance' (string). Records where a table came from for the UI's trust model: 'NOVA_NATIVE' (curated, shipped/OTA'd by maintainers — the DEFAULT when the key is ABSENT here), 'OTA' (assigned automatically by the app to anything delivered over-the-air), or 'CT_IMPORT' (assigned automatically to on-device .CT/DIY user imports). You normally OMIT this key in this file — a table with no 'provenance' loads as NOVA_NATIVE when bundled and is auto-tagged OTA when delivered via CheatTableSyncWorker. Only set it explicitly to override that default. Unknown values fall back to the load-context default. This is DISTINCT from 'source' (STEAM/EPIC/GOG — the game STORE).",
+  "_growth_path_no_app_release": "TO SHIP NEW TABLES WITHOUT AN APP RELEASE: this exact file is fetched by CheatTableSyncWorker from https://raw.githubusercontent.com/mayusi/IsItCompatible-GameNative/main/cheattables/registry.json every 24h (per install, gated by SharedPreferences 'cheattables_sync'), or immediately via the in-app 'Check online for cheat tables' force-sync. Commit an edited registry.json to that repo path; each app picks it up on its next sync, saves it to filesDir/cheattables/registry.json (256KB cap, byte-checked), and the next in-game Cheats-tab open sees the new tables. The bundled copy here is only the seed/fallback. Schema is 100% additive — a new field never breaks an old client (unknown keys are ignored; a bad individual table is skipped, the rest load). guided_known cheats need NO memory offsets (the user scans an on-screen value), so new games can be added safely with only a correct vtype (i32/f32/etc.).",
+  "_ota_status": "LIVE as of 2026-07-01: this file is served at the repo-root path the app fetches (mayusi/IsItCompatible-GameNative main branch), so the in-app OTA sync and the manual 'Check online' button return 200. Update the cheat-table catalog by editing THIS file and pushing — no app release needed.",
+  "tables": [
+    {
+      "source": "STEAM",
+      "gameId": "367520",
+      "title": "Hollow Knight",
+      "_comment": "Seed table — recipe-based. Values are guided scans the user confirms once; addresses resolve at runtime so they survive Box64 relocation.",
+      "cheats": [
+        {
+          "id": "hk_geo",
+          "name": "Lots of Geo (currency)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open your inventory and read your current Geo amount, then enter it below.",
+            "narrowPrompt": "Spend or collect some Geo so the number changes, then enter the new amount.",
+            "freezeValue": 99999,
+            "_comment": "guided_known: user enters the current value -> scanNew(i32). Then narrowPrompt + new value -> scanNext(EXACT). When narrowed to a few, freeze at freezeValue."
+          },
+          "aob": null
+        },
+        {
+          "id": "hk_health",
+          "name": "Infinite Health (Masks)",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Read your current health (number of masks, usually 5-9). Enter it.",
+            "narrowPrompt": "Take damage so you lose a mask, then enter the new (lower) mask count.",
+            "freezeValue": 9,
+            "_comment": "Small-range value -> may need 2-3 narrow passes; the UI loops scanNext until few matches remain."
+          },
+          "aob": null
+        },
+        {
+          "id": "hk_soul",
+          "name": "Soul",
+          "category": "combat",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Soul has no on-screen number. If you can't read a number, use the DIY scanner instead. Internally Soul is 0-198 (the display 0-99 doubled), so enter the display value times 2 (e.g. display 66 -> enter 132).",
+            "narrowPrompt": "Cast a spell or collect soul to change the amount, then enter the new internal value (display value x 2).",
+            "freezeValue": 198
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "413150",
+      "title": "Stardew Valley",
+      "cheats": [
+        {
+          "id": "sv_gold",
+          "name": "Lots of Gold",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Read your current gold (top-right of the screen) and enter it.",
+            "narrowPrompt": "Buy or sell something so your gold changes, then enter the new amount.",
+            "freezeValue": 999999,
+            "_comment": "Stardew gold is a plain i32 in most builds."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "1145360",
+      "title": "Hades",
+      "_comment": "MonoGame .NET/FNA (not Unity) — ALL economy values + HP are stored as f64 (Double), exe Hades.exe. Guided scan (user enters the on-screen value once) is the reliable recipe for this managed runtime.",
+      "cheats": [
+        {
+          "id": "hades_health",
+          "name": "Infinite Health",
+          "category": "survivability",
+          "vtype": "f64",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at the HP number on your health bar (top-left during a run). Enter that exact number.",
+            "narrowPrompt": "Take a hit to reduce HP, then enter the new number shown on the health bar.",
+            "freezeValue": 200
+          },
+          "aob": null
+        },
+        {
+          "id": "hades_darkness",
+          "name": "Lots of Darkness",
+          "category": "resources",
+          "vtype": "f64",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open the Mirror of Night in the House of Hades. Read your Darkness total shown there and enter it.",
+            "narrowPrompt": "Spend or earn some Darkness, then enter the updated total shown at the Mirror.",
+            "freezeValue": 999999
+          },
+          "aob": null
+        },
+        {
+          "id": "hades_gems",
+          "name": "Lots of Gemstones",
+          "category": "resources",
+          "vtype": "f64",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Check your Gemstones total in the Resource Broker or House of Hades currency display. Enter that number.",
+            "narrowPrompt": "Spend or collect a Gemstone to change the count, then enter the new total.",
+            "freezeValue": 999999
+          },
+          "aob": null
+        },
+        {
+          "id": "hades_diamonds",
+          "name": "Lots of Diamonds",
+          "category": "resources",
+          "vtype": "f64",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Check your Diamond count in the Resource Broker. Enter that exact number.",
+            "narrowPrompt": "Spend or earn a Diamond, then enter the new count shown in the Broker.",
+            "freezeValue": 100
+          },
+          "aob": null
+        },
+        {
+          "id": "hades_titan_blood",
+          "name": "Lots of Titan Blood",
+          "category": "resources",
+          "vtype": "f64",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Check your Titan Blood count in the Resource Broker. Enter that exact number.",
+            "narrowPrompt": "Spend or earn Titan Blood, then enter the new count shown in the Broker.",
+            "freezeValue": 100
+          },
+          "aob": null
+        },
+        {
+          "id": "hades_nectar",
+          "name": "Lots of Nectar",
+          "category": "resources",
+          "vtype": "f64",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Check your Nectar count in the Resource Broker. Enter that exact number.",
+            "narrowPrompt": "Gift or collect a Nectar to change the count, then enter the new total.",
+            "freezeValue": 100
+          },
+          "aob": null
+        },
+        {
+          "id": "hades_keys",
+          "name": "Lots of Chthonic Keys",
+          "category": "resources",
+          "vtype": "f64",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Check your Chthonic Key count in the Resource Broker or Mirror. Enter that exact number.",
+            "narrowPrompt": "Spend or find a Key to change the count, then enter the new total.",
+            "freezeValue": 100
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "631510",
+      "title": "Devil May Cry HD Collection",
+      "_comment": "AppID 631510 covers the HD Collection (DMC1/2/3 SE). All cheats target DMC3 SE (dmc3.exe, x64). DATA TYPES: HP and DT are float32 (one gauge bar ~= 1000.0; full HP 3000.0-20000.0 with upgrades; DT ~3000.0 per bar). Red Orbs are uint32. APPROACH: the [RELIABLE] guided_known freeze cheats use the proven scan->freeze engine with NO dependence on Box64 dynarec SMC handling (the only thing that worked end-to-end on-device). The [EXPERIMENTAL] aob_patch cheats are true one-tap NOPs that may fail silently under Box64 dynarec if the JIT cached the pre-patch block — try them, but if HP/DT still drains use the freeze cheats. Pointer chain (for a future true-one-tap data freeze, NOT yet implemented): actorBase = *(dmc3.exe+0xC90DF8 -> +0x28); HP @ actorBase+0x411C, DT @ actorBase+0x3EB8 (source serpentiem/ddmk Mary/Memory.ixx + Mary/Training.ixx, fork berthrage/DMC3-Crimson). NOP sites verified from ddmk Training.ixx.",
+      "cheats": [
+        {
+          "id": "dmc3_hp_onetap",
+          "name": "Infinite Vitality (DMC3) — One-Tap",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "pointer_chain",
+            "prompt": "One-tap: keeps your Vitality at max. Works in-mission.",
+            "narrowPrompt": null,
+            "freezeValue": null,
+            "_comment": "VERIFIED ON-DEVICE (2026-06-15): in-game proxy dinput8.dll resolves actor = *(*(dmc3.exe+0xC90E28)+0x18), writes HP@+0x411C = maxHP@+0x40EC every 16ms. dmc3diag read HP=5300/6000, freeze held through enemy hits. writeMax keeps the bar full without over-range glitching."
+          },
+          "chain": {
+            "module": "dmc3.exe",
+            "base": "0xC90E28",
+            "offsets": [
+              "0x18"
+            ],
+            "valueOffset": "0x411C",
+            "writeMax": true,
+            "maxOffset": "0x40EC"
+          },
+          "aob": null
+        },
+        {
+          "id": "dmc3_dt_onetap",
+          "name": "Infinite Devil Trigger (DMC3) — One-Tap",
+          "category": "combat",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "pointer_chain",
+            "prompt": "One-tap: keeps your Devil Trigger gauge full (once you have DT runes).",
+            "narrowPrompt": null,
+            "freezeValue": null,
+            "_comment": "Same proven actor chain as HP: DT@+0x3EB8 = maxDT@+0x3EBC every tick. Only takes effect once you have at least one DT rune (maxDT>0); the engine skips the write when maxDT is 0 so it never forces a fake gauge."
+          },
+          "chain": {
+            "module": "dmc3.exe",
+            "base": "0xC90E28",
+            "offsets": [
+              "0x18"
+            ],
+            "valueOffset": "0x3EB8",
+            "writeMax": true,
+            "maxOffset": "0x3EBC"
+          },
+          "aob": null
+        },
+        {
+          "id": "dmc3_hp_freeze",
+          "name": "Infinite Vitality (DMC3) — Value Freeze [guided]",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Vitality gauge (the orange bar). One full bar = 1000. If you have 3 bars, enter 3000. For partial HP, estimate from the bars (e.g. 2.5 bars ~ 2500). Enter a whole number.",
+            "narrowPrompt": "Take a hit so your HP drops, then re-read the gauge and enter the new lower value. Repeat until narrowed to a few matches.",
+            "freezeValue": 20000,
+            "_comment": "RELIABLE — proven scan->freeze engine, architecture-agnostic, no dynarec dependency. HP is f32, one bar ~1000.0, max ~20000.0 fully upgraded. Freeze at 20000 locks near max. If freeze looks odd, lower to 3000 (1 bar)."
+          },
+          "aob": null
+        },
+        {
+          "id": "dmc3_dt_freeze",
+          "name": "Infinite Devil Trigger (DMC3) — Value Freeze [RELIABLE]",
+          "category": "combat",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Activate Devil Trigger briefly then cancel it and look at your DT gauge. Each DT orb/star ~ 1000. If you have 3 DT orbs, enter 3000. Enter the current DT as a whole number.",
+            "narrowPrompt": "Let DT drain a little (activate DT for a second), then enter the new lower value.",
+            "freezeValue": 3000,
+            "_comment": "RELIABLE — proven scan->freeze, architecture-agnostic. DT is f32 at actorBase+0x3EB8. One DT star ~1000.0. Freeze 3000 = always-full 3-star DT; raise if more stars unlocked."
+          },
+          "aob": null
+        },
+        {
+          "id": "dmc3_orbs",
+          "name": "Lots of Red Orbs (guided) [RELIABLE]",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Red Orbs count in the top-left HUD. Enter the exact number shown.",
+            "narrowPrompt": "Kill an enemy or break an object to collect some orbs so the number changes, then enter the new total.",
+            "freezeValue": 999999,
+            "_comment": "RELIABLE — Red Orbs = uint32 at MissionData+0x38 (per-mission dynamic alloc, no static chain under Box64 ASLR), so guided i32 scan. Narrows quickly. Applies across DMC1/2/3."
+          },
+          "aob": null
+        },
+        {
+          "id": "dmc3_hp_nop",
+          "name": "Infinite Vitality — NOP patch [EXPERIMENTAL]",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "aob_patch",
+            "prompt": "One-tap: NOPs the main HP-drain instruction so damage stops subtracting Vitality. EXPERIMENTAL under Box64 dynarec — if HP still drains, use the [RELIABLE] freeze cheat instead.",
+            "narrowPrompt": null,
+            "freezeValue": null,
+            "_comment": "EXPERIMENTAL aob_patch. Source ddmk Training.ixx ToggleInfiniteHitPoints site 1 (dmc3.exe+0x88517). Sig 'subss xmm0,xmm8' (5B) + 'movss [rax+08],xmm0' = unique 10B window. Patch 5x NOP at offset 0."
+          },
+          "aob": {
+            "pattern": "F3 41 0F 5C C0 F3 0F 11 40 08",
+            "offset": 0,
+            "vtype": "f32",
+            "patchBytes": "90 90 90 90 90"
+          }
+        },
+        {
+          "id": "dmc3_dt_nop_charge",
+          "name": "Infinite Devil Trigger — NOP patch [EXPERIMENTAL]",
+          "category": "combat",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "aob_patch",
+            "prompt": "One-tap: NOPs the DT charge-drain so the gauge stops depleting when using Devil Trigger. EXPERIMENTAL under Box64 dynarec — if DT still drains, use the [RELIABLE] freeze cheat instead.",
+            "narrowPrompt": null,
+            "freezeValue": null,
+            "_comment": "EXPERIMENTAL. Source ddmk Training.ixx ToggleInfiniteMagicPoints site 2 (dmc3.exe+0x1E788A). 'subss xmm0,xmm1' (4B) + 'movss [rdi+0x3EB8],xmm0' — embedded 0x3EB8 (B8 3E 00 00) makes this 12B sig uniquely match once. Patch 4x NOP over the subss."
+          },
+          "aob": {
+            "pattern": "F3 0F 5C C1 F3 0F 11 87 B8 3E 00 00",
+            "offset": 0,
+            "vtype": "f32",
+            "patchBytes": "90 90 90 90"
+          }
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "489830",
+      "title": "The Elder Scrolls V: Skyrim Special Edition",
+      "_comment": "Skyrim stores gold as an i32 counter; HP is f32. Gold is reliably scannable as a visible on-screen number. HP is displayed as a float (e.g. 115.0) in the console and stored as f32 internally.",
+      "cheats": [
+        {
+          "id": "tes5_gold",
+          "name": "Lots of Gold",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open your inventory and read your current gold amount (shown at bottom of inventory screen). Enter it exactly.",
+            "narrowPrompt": "Buy or sell something to change your gold count, then enter the new amount.",
+            "freezeValue": 999999,
+            "_comment": "Skyrim gold is stored as a plain 32-bit integer. Confirmed by numerous Cheat Engine community tables."
+          },
+          "aob": null
+        },
+        {
+          "id": "tes5_health",
+          "name": "Infinite Health",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open the console (~ key) or look at your health bar. Your base health is shown on the stats page — enter your current HP as a whole number (e.g. 115 for 115 HP).",
+            "narrowPrompt": "Take damage from an enemy so your HP drops, then enter the new lower HP value. Use whole numbers only.",
+            "freezeValue": 500,
+            "_comment": "Skyrim HP is stored as f32. The scanner encodes the entered integer via floatToRawBits. Freeze at 500 (well above typical max for a new character, safe value)."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "105600",
+      "title": "Terraria",
+      "_comment": "Terraria currency exists in four tiers (Copper/Silver/Gold/Platinum) each stored separately as i32. Platinum coins (1 plat = 100 gold = 10,000 silver = 1,000,000 copper) are the most useful to scan — scan your current platinum count. Health is also i32 (displayed as a whole number).",
+      "cheats": [
+        {
+          "id": "terra_platinum",
+          "name": "Lots of Platinum Coins",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open your inventory and count your Platinum Coins (the gold-coloured large coins). Enter the exact number. If you have zero, earn one first by selling items.",
+            "narrowPrompt": "Spend or pick up a platinum coin so the count changes, then enter the new amount.",
+            "freezeValue": 99,
+            "_comment": "Platinum coin count is a separate i32 field. Scanning for 0 will have too many results — start with at least 1 platinum. Freezing at 99 gives 99 platinum coins (near infinite spending power)."
+          },
+          "aob": null
+        },
+        {
+          "id": "terra_health",
+          "name": "Infinite Health",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your HP display (top-left). Enter your current HP as shown (e.g. 200 for 200/400 HP).",
+            "narrowPrompt": "Take a hit from an enemy so your HP drops, then enter the new value.",
+            "freezeValue": 500,
+            "_comment": "Terraria HP is stored as an i32. Max base HP is 400, max boosted is 500 with accessories. Freezing at 500 is safe."
+          },
+          "aob": null
+        },
+        {
+          "id": "terra_mana",
+          "name": "Infinite Mana",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at the blue mana stars in your HUD (top-right area). Read your current mana number and enter it.",
+            "narrowPrompt": "Use a spell to consume some mana, then enter the new mana value shown in the HUD.",
+            "freezeValue": 200
+          },
+          "aob": null
+        },
+        {
+          "id": "terra_defense",
+          "name": "High Defense",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open your inventory (Esc). Your Defense stat is shown near the armor slots. Enter that number.",
+            "narrowPrompt": "Equip or remove a piece of armor to change your Defense, then enter the new number shown.",
+            "freezeValue": 999
+          },
+          "aob": null
+        },
+        {
+          "id": "terra_gold",
+          "name": "Lots of Gold Coins (stack)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open inventory and hover over your Gold Coin stack. Enter the stack count shown (e.g. 47).",
+            "narrowPrompt": "Pick up or spend Gold Coins to change the stack size, then enter the new count.",
+            "freezeValue": 99
+          },
+          "aob": null
+        },
+        {
+          "id": "terra_ammo",
+          "name": "Infinite Ammo (selected slot)",
+          "category": "combat",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at the ammo stack count in your selected ammo slot (inventory or ammo bar). Enter that number.",
+            "narrowPrompt": "Fire a few shots to reduce the stack, then enter the new count shown on the ammo slot.",
+            "freezeValue": 999
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "268910",
+      "title": "Cuphead",
+      "_comment": "Cuphead stores HP as a very small integer (typically 3 for normal, up to 6 with accessibility assist mode). Small values mean more narrow passes are needed — the scanner will loop until few candidates remain. Coins are also a small i32.",
+      "cheats": [
+        {
+          "id": "cup_health",
+          "name": "Infinite HP",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Note your HP hearts in the top-left (usually 3 hearts = 3 HP). Enter your current HP count as a number.",
+            "narrowPrompt": "Take a hit from an enemy or projectile so you lose one heart, then enter the new lower count. Expect to narrow 3-4 times since the value range is very small.",
+            "freezeValue": 3,
+            "_comment": "HP is a small i32 (typically 1-6). Many candidates will remain after first scan; the UI must loop narrowing. Freezing at 3 keeps you at full standard health."
+          },
+          "aob": null
+        },
+        {
+          "id": "cup_coins",
+          "name": "Max Coins",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Visit the shop and note your coin count (shown at the bottom of the shop screen). Enter it.",
+            "narrowPrompt": "Spend a coin on an item in the shop, then enter the new lower count.",
+            "freezeValue": 99,
+            "_comment": "Coins are a plain i32. Scanning in the shop screen while the value is visible makes narrowing easiest."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "588650",
+      "title": "Dead Cells",
+      "_comment": "Dead Cells uses Cells (the main upgrade currency) and Gold (per-run spending money), both stored as i32. Community Cheat Engine tables confirm 4-byte integer for both. Health is also i32.",
+      "cheats": [
+        {
+          "id": "dc_gold",
+          "name": "Lots of Gold",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your gold counter (shown at top of HUD during a run). Enter the exact amount you currently have.",
+            "narrowPrompt": "Pick up a gold pouch or spend gold at a shop so the value changes, then enter the new amount.",
+            "freezeValue": 999999,
+            "_comment": "Gold is per-run currency stored as i32. Narrows quickly since the initial value is fairly unique."
+          },
+          "aob": null
+        },
+        {
+          "id": "dc_cells",
+          "name": "Lots of Cells",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Kill a few enemies so you have some cells, then look at your Cells counter. Enter the current count.",
+            "narrowPrompt": "Kill another enemy to pick up a cell, then enter the new higher count.",
+            "freezeValue": 9999,
+            "_comment": "Cells are the permanent upgrade currency (carried between runs to the Collector). Stored as i32. Collect at least 1 cell before scanning so you don't start from 0."
+          },
+          "aob": null
+        },
+        {
+          "id": "dc_health",
+          "name": "Infinite Health",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your HP bar and the number shown above it. Enter your current HP value.",
+            "narrowPrompt": "Take a hit so HP drops, then enter the new value.",
+            "freezeValue": 100,
+            "_comment": "Dead Cells HP is i32. Starting HP is 100 for most builds. Freezing at 100 keeps full HP."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "504230",
+      "title": "Celeste",
+      "_comment": "Celeste does not have a traditional currency or HP bar — the player dies in one hit. The most useful scannable values are: Death Count (i32, visible on chapter select screen) and Strawberry Count (i32). Neither provides a gameplay advantage by itself, but strawberry count can be frozen to preserve a target for speedruns. Skipping this table: nothing here is reliably freezable for an 'infinite' gameplay advantage. No cheats authored — one-hit-death game, no currency, no HP. SKIP.",
+      "cheats": []
+    },
+    {
+      "source": "STEAM",
+      "gameId": "391540",
+      "title": "Undertale",
+      "_comment": "Undertale stores HP and Gold as plain integers visible on screen. Gold is shown in the ITEM menu; HP is on the battle HUD.",
+      "cheats": [
+        {
+          "id": "ut_gold",
+          "name": "Lots of Gold",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open your ITEM menu (or check the pause screen) and read your current GOLD amount. Enter it.",
+            "narrowPrompt": "Buy something from a shop or receive gold from a battle to change the amount, then enter the new value.",
+            "freezeValue": 9999,
+            "_comment": "Undertale gold maxes out at 9999 in most contexts. Stored as a plain i32."
+          },
+          "aob": null
+        },
+        {
+          "id": "ut_hp",
+          "name": "Infinite HP",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "During or after a battle, read your HP from the battle menu (e.g. 20/20). Enter your current HP as a number.",
+            "narrowPrompt": "Take damage in a battle so HP drops, then enter the new lower HP value.",
+            "freezeValue": 99,
+            "_comment": "Undertale HP is an integer. Max base HP is 20 but can be raised. Freezing at 99 keeps you at very high HP."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "1794680",
+      "title": "Vampire Survivors",
+      "_comment": "Vampire Survivors is a Unity IL2CPP game (since v1.6), exe VampireSurvivors.exe (NOT Godot/Electron). Permanent Gold + in-run gold are i32; HP is f32. Values live in the managed IL2CPP heap, so guided scan (enter the on-screen value once) is the reliable approach.",
+      "cheats": [
+        {
+          "id": "vs_coins",
+          "name": "Lots of Gold (Coins)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "After a run ends (or on the main menu), read your total Gold Coins shown on the PowerUp/shop screen. Enter the exact amount.",
+            "narrowPrompt": "Spend coins on a PowerUp upgrade so the amount decreases, then enter the new lower total.",
+            "freezeValue": 999999,
+            "_comment": "Permanent gold (used between runs for PowerUps) is an i32. Best to scan in the PowerUp/main menu where the value is clearly shown."
+          },
+          "aob": null
+        },
+        {
+          "id": "vs_hp",
+          "name": "Infinite HP",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "During a run, look at your HP number displayed below your character or in the HUD. Enter the current HP value as shown (it may be a decimal like 120.5 — just enter the nearest whole number).",
+            "narrowPrompt": "Take damage from an enemy so your HP drops, then enter the new value.",
+            "freezeValue": 500,
+            "_comment": "Vampire Survivors HP is stored as f32 in most versions. Freezing at 500 keeps you well above death regardless of damage scaling."
+          },
+          "aob": null
+        },
+        {
+          "id": "vs_run_gold",
+          "name": "Lots of Gold (This Run)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at the gold counter shown during your run (top area of the screen). Enter that exact number.",
+            "narrowPrompt": "Pick up some gold coins in-run to increase the count, then enter the new number shown.",
+            "freezeValue": 99999
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "646570",
+      "title": "Slay the Spire",
+      "_comment": "CAUTION: Slay the Spire runs on the JVM (Java Virtual Machine) which can relocate object heap memory mid-run. Guided scanning may work at a single save point but the address can become invalid after combat. Gold is 4-byte int; HP is 4-byte int. These cheats may need re-scanning each time you reload. Authored as best-effort — flag this to the user in the prompt.",
+      "cheats": [
+        {
+          "id": "sts_gold",
+          "name": "Lots of Gold (Best-Effort — JVM game)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your gold total (shown in the top-right area of the map/shop screen). Enter the exact amount. NOTE: This game runs on the JVM and memory may shift after combat — you may need to re-scan after each major state change.",
+            "narrowPrompt": "Visit a shop and buy something to change your gold, then enter the new amount.",
+            "freezeValue": 9999,
+            "_comment": "JVM heap can relocate. Works best when scanned immediately at a shop screen and frozen before entering combat. May become stale after combat ends."
+          },
+          "aob": null
+        },
+        {
+          "id": "sts_hp",
+          "name": "Infinite HP (Best-Effort — JVM game)",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your HP (shown at top-left, e.g. 72/80). Enter your CURRENT HP as a whole number. NOTE: JVM memory may shift — re-scan if the cheat stops working after combat.",
+            "narrowPrompt": "Take a hit so HP drops, then enter the new current HP value.",
+            "freezeValue": 999,
+            "_comment": "HP is 4-byte int in STS. Max HP is typically 80-100. Freezing at 999 keeps HP at a very high value that the game may cap to your max — still prevents death."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "250900",
+      "title": "The Binding of Isaac: Rebirth",
+      "_comment": "Rebirth (and Afterbirth+, Repentance) stores HP as a small integer (number of red heart containers * 2 to account for half-hearts, so 6 = 3 full hearts). Coins are a plain i32 (max 99). Keys and bombs are also i32.",
+      "cheats": [
+        {
+          "id": "boi_coins",
+          "name": "Max Coins",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your coin count in the HUD (bottom-left area, small coin icon). Enter the exact number shown.",
+            "narrowPrompt": "Pick up a coin or spend a coin at a shop so the count changes, then enter the new amount.",
+            "freezeValue": 99,
+            "_comment": "Coins are capped at 99 in-game. Stored as i32. Small range — may need 3+ narrowing passes."
+          },
+          "aob": null
+        },
+        {
+          "id": "boi_keys",
+          "name": "Max Keys",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your key count (key icon in HUD). Enter the number of keys you currently have.",
+            "narrowPrompt": "Use a key to open a door or chest, then enter the new lower key count.",
+            "freezeValue": 99,
+            "_comment": "Keys stored as i32. Capped at 99. Small value range — use 3+ passes."
+          },
+          "aob": null
+        },
+        {
+          "id": "boi_bombs",
+          "name": "Max Bombs",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your bomb count (bomb icon in HUD). Enter how many bombs you have.",
+            "narrowPrompt": "Place a bomb so the count drops, then enter the new lower count.",
+            "freezeValue": 99,
+            "_comment": "Bombs stored as i32. Capped at 99. Small value range — use 3+ passes."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "1313140",
+      "title": "Cult of the Lamb",
+      "_comment": "Cult of the Lamb stores Devotion (building resource) and Gold (coin currency) as integers. Fervor (the combat mana/spell gauge) is also integer-based. Community Cheat Engine tables confirm i32 for all these values.",
+      "cheats": [
+        {
+          "id": "cotl_gold",
+          "name": "Lots of Gold",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Gold coin total (shown in the HUD during cult management or combat). Enter the exact amount.",
+            "narrowPrompt": "Spend gold at a shop or gain gold from a run to change the amount, then enter the new value.",
+            "freezeValue": 9999,
+            "_comment": "Gold is i32. Works best scanning while in the cult base or shop where the value is stable."
+          },
+          "aob": null
+        },
+        {
+          "id": "cotl_devotion",
+          "name": "Max Devotion",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Devotion count in the cult management screen. Enter the current amount shown.",
+            "narrowPrompt": "Collect devotion from followers or spend some, then enter the new amount.",
+            "freezeValue": 9999,
+            "_comment": "Devotion is the main cult-building resource. Stored as i32."
+          },
+          "aob": null
+        },
+        {
+          "id": "cotl_health",
+          "name": "Infinite Health (Combat)",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "During a dungeon run, look at your HP hearts in the top-left. Count your full hearts and enter the number (e.g. enter 3 for 3 hearts).",
+            "narrowPrompt": "Take a hit from an enemy so you lose a heart, then enter the new lower heart count.",
+            "freezeValue": 6,
+            "_comment": "Cult of the Lamb HP is stored as f32 in the Unity engine build. Typical max is 3-6 hearts. Freeze at 6 for max HP."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "1942280",
+      "title": "Brotato",
+      "_comment": "Brotato is a Godot engine game. HP (current and max), gold (in-wave pickup currency), and Materials (the between-wave upgrade currency) are stored as integers. Community Cheat Engine analysis confirms i32 for all these. Materials are most useful for buying upgrades between waves.",
+      "cheats": [
+        {
+          "id": "brot_materials",
+          "name": "Lots of Materials (Between-Wave Currency)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Between waves, look at your Materials count (the blue gem/crystal icon in the upgrade shop). Enter the exact amount shown.",
+            "narrowPrompt": "Buy an upgrade in the shop to spend some materials, then enter the new lower amount.",
+            "freezeValue": 9999,
+            "_comment": "Materials are the permanent upgrade currency used between waves. Stored as i32 in Godot's memory layout."
+          },
+          "aob": null
+        },
+        {
+          "id": "brot_hp",
+          "name": "Infinite HP",
+          "category": "survivability",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "During a wave, look at your current HP shown in the top-left corner. Enter the number exactly.",
+            "narrowPrompt": "Take damage from an enemy so HP drops, then enter the new lower value.",
+            "freezeValue": 150,
+            "_comment": "Brotato HP is i32. Starting HP depends on character (typically 100-150). Freezing at 150 is safe for all characters."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "311690",
+      "title": "Enter the Gungeon",
+      "_comment": "Enter the Gungeon runs on Unity. Currency (Casings/'shells', the run+meta currency) and Keys are integer counters shown on the HUD. HP is stored as a small integer (hearts * 2 for half-hearts). All of these are guided_known scans — the user reads the on-screen number, the engine scans -> narrows -> freezes; no static address or offset is used (Unity + Box64 ASLR make hardcoded addresses unreliable). Value types (i32) are the widely-confirmed community Cheat Engine result for the Casings/Keys counters.",
+      "cheats": [
+        {
+          "id": "etg_casings",
+          "name": "Lots of Casings (Currency)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Casings count (the shell-casing currency icon in the HUD). Enter the exact number shown.",
+            "narrowPrompt": "Pick up or spend some Casings so the number changes, then enter the new amount.",
+            "freezeValue": 99999,
+            "_comment": "Casings are the shell currency, an i32 counter. Guided scan narrows quickly since the starting value is usually distinctive."
+          },
+          "aob": null
+        },
+        {
+          "id": "etg_keys",
+          "name": "Lots of Keys",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Key count (key icon in the HUD). Enter how many keys you have.",
+            "narrowPrompt": "Use a key on a chest or door so the count drops, then enter the new lower number.",
+            "freezeValue": 99,
+            "_comment": "Keys are a small i32 counter — may need a couple of narrowing passes because the value range is small."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "632360",
+      "title": "Risk of Rain 2",
+      "_comment": "Risk of Rain 2 is a Unity IL2CPP game. Gold (in-run purchasing currency) and Lunar Coins (persistent meta currency) are integer counters visible on the HUD. Values live on the managed IL2CPP heap, so guided_known scanning (enter the on-screen value once, then narrow) is the reliable approach — NOT a static address. i32 is the community-confirmed type for both counters. HP is intentionally omitted: it is an f32 that scales heavily with items and is unreliable to freeze meaningfully.",
+      "cheats": [
+        {
+          "id": "ror2_gold",
+          "name": "Lots of Gold (This Run)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Gold counter (top of the screen during a run). Enter the exact amount you currently have.",
+            "narrowPrompt": "Open a chest or pick up gold so the amount changes, then enter the new value.",
+            "freezeValue": 999999,
+            "_comment": "In-run gold is an i32. Best scanned right after a value change so the narrow converges fast."
+          },
+          "aob": null
+        },
+        {
+          "id": "ror2_lunar",
+          "name": "Lots of Lunar Coins",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Open the menu or look at your Lunar Coin count (blue coin icon, top-left of the HUD). Enter the exact number.",
+            "narrowPrompt": "Spend a Lunar Coin at a Lunar pod/shop, or pick one up, then enter the new count.",
+            "freezeValue": 999,
+            "_comment": "Lunar Coins are the persistent meta currency, stored as an i32. Small range — expect 2-3 narrow passes."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "322330",
+      "title": "Don't Starve Together",
+      "_comment": "Don't Starve Together's Health, Hunger and Sanity are the three survival stats. In the Lua-driven engine these are displayed as whole numbers on the three HUD meters. Guided_known scanning of the displayed value is the reliable route (the engine relocates data, so no static address). NOTE: these stats are commonly stored as floating point internally in this engine — the table scans them as f32. If an f32 scan doesn't converge for your build, the value may be i32; re-scan is cheap. Types flagged as best-effort accordingly.",
+      "cheats": [
+        {
+          "id": "dst_health",
+          "name": "Infinite Health (Best-Effort)",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Health meter (the heart icon, top-right cluster). Read the number shown when you hover it and enter it as a whole number.",
+            "narrowPrompt": "Take some damage so Health drops, then enter the new lower number.",
+            "freezeValue": 150,
+            "_comment": "Best-effort: Health is typically an f32 on this engine. Max base is ~150 for most characters. If the f32 scan won't narrow, the build may store it as i32."
+          },
+          "aob": null
+        },
+        {
+          "id": "dst_hunger",
+          "name": "Infinite Hunger (Best-Effort)",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Hunger meter (the stomach icon). Read the number shown when you hover it and enter it.",
+            "narrowPrompt": "Let Hunger drop a little (wait or run around), then enter the new lower number.",
+            "freezeValue": 150,
+            "_comment": "Best-effort f32. Max base hunger ~150. Freezing keeps you fed."
+          },
+          "aob": null
+        },
+        {
+          "id": "dst_sanity",
+          "name": "Infinite Sanity (Best-Effort)",
+          "category": "survivability",
+          "vtype": "f32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Sanity meter (the brain icon). Read the number shown when you hover it and enter it.",
+            "narrowPrompt": "Let Sanity drop (stand in the dark briefly), then enter the new lower number.",
+            "freezeValue": 200,
+            "_comment": "Best-effort f32. Max base sanity ~200. Freezing prevents insanity shadow creatures."
+          },
+          "aob": null
+        }
+      ]
+    },
+    {
+      "source": "STEAM",
+      "gameId": "413410",
+      "title": "Slime Rancher",
+      "_comment": "Slime Rancher is a Unity game. Newbucks (the money currency) is shown as an integer in the HUD/Plort Market. It is the single most useful scannable value and is a plain i32 counter per community Cheat Engine tables. Guided_known scan only (Unity heap + Box64 ASLR rule out static addresses). Health/energy are intentionally omitted as they are less reliably freezable and less requested.",
+      "cheats": [
+        {
+          "id": "sr_newbucks",
+          "name": "Lots of Newbucks (Money)",
+          "category": "resources",
+          "vtype": "i32",
+          "recipe": {
+            "kind": "guided_known",
+            "prompt": "Look at your Newbucks total (top-right money counter, or open the Plort Market). Enter the exact amount shown.",
+            "narrowPrompt": "Sell some plorts or buy an upgrade so your Newbucks change, then enter the new amount.",
+            "freezeValue": 999999,
+            "_comment": "Newbucks is an i32 money counter. Selling at the Plort Market makes the value change on demand for a quick, clean narrow."
+          },
+          "aob": null
+        }
+      ]
+    }
+  ]
+}

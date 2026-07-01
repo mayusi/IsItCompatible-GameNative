@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "_comment": "FLiNG-style trainer catalog for GameNative IIC. Each entry points at a downloadable proxy dinput8.dll trainer for a game. The app downloads the matching trainer on demand, verifies sha256, and stages it. OTA-update by committing this file (fetched from https://raw.githubusercontent.com/mayusi/IsItCompatible-GameNative/main/flingtrainers/registry.json). Trainers are user-/community-sourced, version-specific, and show their OWN in-game number-key overlay.",
+  "_schema": "Each object in 'trainers' has: source (STEAM|GOG|EPIC|AMAZON|CUSTOM_GAME — same identity scheme as cheattables/registry.json), gameId (the store appId string; for EPIC use the catalogId), title, gameVersion (the game build this matches or 'latest'), options (array of human-readable cheat labels the trainer exposes), url (https direct-download URL to the trainer dinput8.dll), sha256 (lowercase hex sha256 of the exact dll bytes — the app REJECTS a download whose hash does not match), sizeBytes (int byte length, used as the download cap alongside a hard 32MB ceiling), proxyName (always 'dinput8' — FLiNG trainers are a proxy dinput8.dll), notes (install/usage notes shown in the UI).",
+  "_how_to_populate": "We do NOT bundle copyrighted trainers and ship no seed entries here — adding a fabricated URL would 404 and break the Download button. To add a trainer: host the trainer's dinput8.dll at a stable HTTPS URL, compute its sha256 (`sha256sum dinput8.dll`) and byte size, add one object to the 'trainers' array below with source+gameId matching the game, then commit this file. Every install picks it up within 24h via the OTA sync (or immediately via the in-app 'Check online for trainers' button, which bypasses the 24h wait) — no app release needed. Until an entry exists for a game, the UI falls back to the manual 'Import a local trainer file' import.",
+  "_ota_status": "LIVE as of 2026-07-01: this file is served at the repo-root path the app fetches (mayusi/IsItCompatible-GameNative main branch), so the in-app OTA sync and the manual 'Check online for trainers' button return 200 (an empty but valid catalog until real trainer entries are added). Add a FLiNG trainer by editing THIS file and pushing no app release needed.",
+  "_sourcing_note": "Sourcing real trainer DLLs is the hard, ongoing part: FLiNG-style trainers on flingtrainer.com / fearlessrevolution.com ship as a .zip containing a self-extracting installer .exe, NOT a bare dinput8.dll ready to hotlink. Someone must: download the trainer, extract/confirm the dinput8.dll proxy form, sha256sum it, host that exact DLL file at a stable HTTPS URL you control (a GitHub release asset or raw file in this repo — do not hotlink flingtrainer.com/fearlessrevolution.com directly, they have no stable direct-link API and redistribution terms need a human legal call), then add the entry below and push. This is per-game community curation, not a one-time fix — start with 2-3 well-known DRM-free titles you already run (this app plays Terraria/DMC5 successfully) to prove the pipeline end-to-end before scaling up.",
+  "_example_entry_DO_NOT_SHIP_WITH_FAKE_URL": {
+    "source": "STEAM",
+    "gameId": "367520",
+    "title": "Example Game Trainer",
+    "gameVersion": "latest",
+    "options": [
+      "Infinite Health",
+      "Infinite Stamina",
+      "Infinite Money"
+    ],
+    "url": "https://example.com/path/to/real/dinput8.dll",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "sizeBytes": 524288,
+    "proxyName": "dinput8",
+    "notes": "Press Num1..Num9 in-game to toggle. Version-specific — match the game build."
+  },
+  "trainers": []
+}
